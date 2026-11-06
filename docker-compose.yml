@@ -1,0 +1,55 @@
+# Local development stack (#12). Linux is the happy path; macOS/Windows work via Docker Desktop/OrbStack.
+#   cp .env.example .env && docker compose up --build
+# Redis is optional and unused by v1 code; enable with: docker compose --profile redis up
+name: crosswire
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: crosswire
+      # Local-only default. Change it (and DATABASE_URL) before exposing this host to any network.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-crosswire-local-dev}
+      POSTGRES_DB: crosswire
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Bound to loopback only: not reachable from other machines.
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crosswire -d crosswire"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  web:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://crosswire:${POSTGRES_PASSWORD:-crosswire-local-dev}@postgres:5432/crosswire
+      NODE_ENV: ${NODE_ENV:-development}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://crosswire:${POSTGRES_PASSWORD:-crosswire-local-dev}@postgres:5432/crosswire
+      NODE_ENV: ${NODE_ENV:-development}
+    command: ["node_modules/.bin/tsx", "src/server/cli/worker.ts"]
+    depends_on:
+      web:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    ports:
+      - "127.0.0.1:6379:6379"
+
+volumes:
+  pgdata:

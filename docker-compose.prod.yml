@@ -1,0 +1,65 @@
+# Production-like stack for any Docker host (#58). No source bind mounts; runtime image only.
+#   cp infra/compose.prod.env.example .env.prod   # fill in real values
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+# Put TLS in front (Caddy/Traefik/nginx); see docs/runbooks/local-docker.md.
+name: crosswire-prod
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crosswire
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD (never use a default in production)}
+      POSTGRES_DB: crosswire
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Not published: only reachable on the internal compose network.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crosswire -d crosswire"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    # Resource hints: tune for your host.
+    deploy:
+      resources:
+        limits: { memory: 1g }
+
+  web:
+    image: ${CROSSWIRE_IMAGE:-crosswire:web}
+    build: .
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://crosswire:${POSTGRES_PASSWORD}@postgres:5432/crosswire
+    ports:
+      # Bind to loopback and terminate TLS in a reverse proxy on the same host.
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { memory: 1g }
+
+  worker:
+    image: ${CROSSWIRE_IMAGE:-crosswire:web}
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://crosswire:${POSTGRES_PASSWORD}@postgres:5432/crosswire
+    command: ["node_modules/.bin/tsx", "src/server/cli/worker.ts"]
+    depends_on:
+      web:
+        condition: service_healthy
+
+volumes:
+  pgdata:

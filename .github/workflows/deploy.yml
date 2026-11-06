@@ -1,0 +1,87 @@
+# Deploy to Azure Container Apps (#61). Manual approval via the `production` environment.
+# - Never runs on pull requests.
+# - Re-runs CI first; deploy only proceeds if quality gates pass.
+# - Azure login uses OIDC federation (no long-lived client secret).
+# Setup: docs/runbooks/azure-deploy.md.
+name: Deploy
+
+on:
+  # Deploys the commit the workflow is dispatched on (pick the branch in the Run workflow dialog).
+  # CI, the image build and the image tag all use that same commit (github.sha).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build and push image
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: meta
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to production
+    needs: build
+    runs-on: ubuntu-latest
+    # Required reviewers on this environment provide the manual approval gate.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Roll out new revision (web + worker)
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+          PREFIX: ${{ vars.CROSSWIRE_NAME_PREFIX }}
+        run: |
+          az containerapp update -g "$RG" -n "${PREFIX}-web" --image "$IMAGE"
+          az containerapp update -g "$RG" -n "${PREFIX}-worker" --image "$IMAGE"
+      - name: Wait for readiness
+        env:
+          RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+          PREFIX: ${{ vars.CROSSWIRE_NAME_PREFIX }}
+        run: |
+          fqdn=$(az containerapp show -g "$RG" -n "${PREFIX}-web" --query properties.configuration.ingress.fqdn -o tsv)
+          for i in $(seq 1 30); do
+            if curl -fsS "https://${fqdn}/readyz" >/dev/null; then echo "ready"; exit 0; fi
+            sleep 10
+          done
+          echo "::error::App did not become ready"; exit 1

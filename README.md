@@ -4,7 +4,7 @@ Open-source SOC kit for Microsoft customers who already use **GitHub Copilot age
 
 The product idea builds on [bradygaster/squad](https://github.com/bradygaster/squad) and `@bradygaster/squad-sdk`: charters, compounding history, parallel fan-out, and inspectable decisions — wrapped in a **TanStack Start** control plane instead of leaving everything in a repo-only Copilot workflow.
 
-> **Status:** early scaffolding. The [milestones](https://github.com/jusso-dev/crosswire/milestones) and [issues](https://github.com/jusso-dev/crosswire/issues) are the build plan.
+> **Status:** v1 implementation (Phases 0–7) landed; Later items are planning notes. The [milestones](https://github.com/jusso-dev/crosswire/milestones) and [issues](https://github.com/jusso-dev/crosswire/issues) track the build plan.
 
 ## Who it is for
 
@@ -19,11 +19,11 @@ The product idea builds on [bradygaster/squad](https://github.com/bradygaster/sq
 | --- | --- |
 | Analyst UI | TanStack Start dashboard + [TanStack AI basic-chat](https://tanstack.com/ai/latest/docs/ui/recipes/basic-chat) |
 | Auth | [Better Auth](https://www.better-auth.com/) with **Entra ID OIDC** first (SAML later) |
-| Agents | Security cast: Lead, Hunter, Intel, Responder, Scribe — Copilot-native; spike embedding `@bradygaster/squad-sdk` |
+| Agents | Security cast: Lead, Hunter, Intel, Responder, Scribe. Squad-shaped charters and memory; hybrid runtime per [ADR 0002](docs/adr/0002-squad-sdk-embed.md) |
 | Hunting | Live Advanced Hunting / Graph and Sentinel queries, with human review of proposed KQL |
 | Response | Propose → human approve → execute (Sentinel playbooks / Logic Apps / Graph containment). Dry-run required. |
-| Threat intel | [pwn.watch](https://pwn.watch) ingest + org watchlists (keywords, CVE, vendor, tag) and a daily digest. Investigate [cve.watch](https://cve.watch) or document a substitute (NVD/KEV). |
-| Cloudflare Radar | **Not in v1** — optional TI feed later |
+| Threat intel | [pwn.watch](https://pwn.watch) ingest + org watchlists (keywords, CVE, vendor, tag) and a daily digest. cve.watch is unavailable, so CISA KEV is the CVE source ([details](docs/ti/cve.watch.md)). |
+| Cloudflare Radar | **Not in v1.** Optional, flag-off IP/domain enrichment on the compare view (Later) |
 | Packaging | Docker (runs anywhere). First deploy guide targets Azure Container Apps (or App Service), Azure Database for PostgreSQL, and Key Vault |
 | Hosting | **No Cloudflare Workers/Pages/D1** as a runtime |
 
@@ -37,27 +37,76 @@ The product idea builds on [bradygaster/squad](https://github.com/bradygaster/sq
 | **Responder** | Drafts gated response proposals; never executes without approval |
 | **Scribe** | Compresses hunt outcomes and analyst feedback into org memory |
 
-## Stack (intended)
+## Quick start
 
-- **App:** TanStack Start + React, TanStack AI chat UI
-- **Auth:** Better Auth (`tanstackStartCookies`), Entra OIDC
-- **Data:** Postgres (compose for local; Azure Database for PostgreSQL in the first deploy)
-- **Agents:** GitHub Copilot agent definitions + Squad-shaped memory (SDK spike in Phase 3)
-- **Secrets:** environment files locally; Azure Key Vault in production
-- **CI/CD:** GitHub Actions (lint, typecheck, tests; deploy with manual approval)
+Requirements: Node 24 (`.nvmrc`), pnpm 10 (`corepack enable`), Docker.
 
-## Repository layout (target)
-
-```
-apps/web          TanStack Start control plane (dashboard, chat, approvals)
-packages/*        Shared types, auth helpers, connectors (as they land)
-.squad/           Security cast charters, routing, and exported memory (if used)
-.github/          Copilot / Agentic Workflow definitions + Actions
-infra/            Docker + Azure Bicep/Terraform
-docs/             ADRs, runbooks, Entra app registration
+```sh
+git clone https://github.com/jusso-dev/crosswire && cd crosswire
+corepack enable && pnpm install
+cp .env.example .env                 # set BETTER_AUTH_SECRET and APP_ENCRYPTION_KEY (openssl rand -hex 32)
+docker compose up -d postgres
+pnpm db:migrate
+pnpm dev                             # http://localhost:3000, then "Create an account"
 ```
 
-Exact folders land in Phase 0. Until then this repo holds the plan, licence, and issues.
+Or run everything in Docker: `docker compose up --build` (app, Postgres, worker; Redis optional via
+`--profile redis`).
+
+No tenant or API key needed: chat uses a labelled stub model, hunting has a demo mode, and TI can be
+loaded from recorded fixtures (`pnpm ingest:pwn --fixtures test/fixtures/pwnwatch`).
+
+| Command | What it does |
+| --- | --- |
+| `pnpm dev` / `pnpm build` / `pnpm start` | Develop, build, run the production server |
+| `pnpm lint` / `pnpm typecheck` / `pnpm test` | The checks CI runs (tests use in-process Postgres) |
+| `pnpm db:generate` / `pnpm db:migrate` | Create / apply Drizzle migrations |
+| `pnpm ingest:pwn` / `pnpm ingest:cve` | Ingest pwn.watch and CISA KEV (polite, cached) |
+| `pnpm match:watches` / `pnpm digest:daily` | Match watchlists, build daily digests |
+| `pnpm expire:proposals` / `pnpm compact-memory` | Expire stale proposals, compact agent memory |
+| `pnpm worker` | Background worker running the jobs above on a schedule |
+
+## Stack
+
+- **App:** TanStack Start + React, [TanStack AI basic-chat](https://tanstack.com/ai/latest/docs/ui/recipes/basic-chat) (`POST /api/chat`, SSE)
+- **Auth:** Better Auth (`tanstackStartCookies`), local email/password, Entra ID OIDC
+- **Data:** Postgres + Drizzle (Compose locally; Azure Database for PostgreSQL in the first deploy)
+- **Agents:** charters in `.squad/`, in-process runtime (stub or BYO Anthropic/OpenAI key), Copilot custom agents in `.github/agents/` ([ADR 0002](docs/adr/0002-squad-sdk-embed.md))
+- **Secrets:** env files locally; Azure Key Vault references in production
+- **CI/CD:** GitHub Actions on GitHub-hosted runners (lint, typecheck, tests, image build); manual-approval deploy to Azure
+
+## Repository layout
+
+```
+apps/web          TanStack Start control plane (dashboard, chat, hunts, watches, approvals)
+  src/routes      Pages and HTTP endpoints (/api/chat, /api/auth/*, /healthz, /readyz)
+  src/fns         Server functions (session-guarded) used by the UI
+  src/server      Auth, DB schema, agents, TI, hunting, response, CLI jobs
+  drizzle/        SQL migrations
+  test/           Vitest suites (PGlite) and recorded TI fixtures
+.squad/           Security cast charters, team and routing
+.github/          Copilot custom agents + CI and deploy workflows
+infra/            Azure Bicep and prod Compose env example
+docs/             ADRs, runbooks, auth, hunting, response, TI
+```
+
+## Documentation
+
+- Architecture: [ADRs](docs/adr/README.md) ([0001 overview](docs/adr/0001-architecture-overview.md))
+- Setup: [configuration](docs/configuration.md), [auth and Entra SSO](docs/auth.md)
+- Product areas: [agents and memory](docs/agents.md), [watchlists and TI](docs/watchlists.md), [hunting](docs/hunting.md), [gated response](docs/response.md), [Copilot agents](docs/copilot-agents.md)
+- Threat intel sources: [pwn.watch](docs/ti/pwn.watch.md), [cve.watch status and CISA KEV substitute](docs/ti/cve.watch.md)
+
+## Deploy
+
+- [Local Docker and any Docker host](docs/runbooks/local-docker.md) (`docker-compose.prod.yml`)
+- [Azure Container Apps](docs/runbooks/azure-deploy.md) (Bicep in `infra/azure/`, manual-approval GitHub Actions)
+- [Customer Entra setup](docs/runbooks/entra-setup.md) (SSO vs hunting permissions)
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and
+[SECURITY.md](SECURITY.md) (report vulnerabilities privately).
 
 ## Build plan
 
@@ -74,7 +123,7 @@ Work is tracked as **epics and child issues** under these milestones:
 | 5 | [Phase 5 — Hunting](https://github.com/jusso-dev/crosswire/milestone/6) | Live Defender XDR + Sentinel hunting, hunt cases, safe KQL |
 | 6 | [Phase 6 — Gated response](https://github.com/jusso-dev/crosswire/milestone/7) | Proposals, approval, executors, dry-run, RBAC, audit |
 | 7 | [Phase 7 — Azure deploy](https://github.com/jusso-dev/crosswire/milestone/8) | Production Docker, Azure first-target, runbooks, probes |
-| Later | [Later](https://github.com/jusso-dev/crosswire/milestone/9) | Cloudflare Radar connector, SAML SSO, commercial / MSSP notes |
+| Later | [Later](https://github.com/jusso-dev/crosswire/milestone/9) | Cloudflare Radar connector, SAML SSO, [commercial notes](docs/commercial-notes.md), [MSSP backlog](docs/mssp-backlog.md) |
 
 Browse all issues: [github.com/jusso-dev/crosswire/issues](https://github.com/jusso-dev/crosswire/issues)
 

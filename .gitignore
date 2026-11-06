@@ -1,0 +1,19 @@
+node_modules/
+.output/
+dist/
+.vinxi/
+.tanstack/
+.nitro/
+coverage/
+*.log
+.DS_Store
+
+# env files: only .env.example is committed
+.env
+.env.*
+!.env.example
+!infra/compose.prod.env.example
+
+# local data
+data/
+.pglite/
