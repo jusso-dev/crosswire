@@ -21,6 +21,11 @@
     "digest:daily": "pnpm --filter web digest:daily",
     "expire:proposals": "pnpm --filter web expire:proposals",
     "compact-memory": "pnpm --filter web compact-memory",
-    "worker": "pnpm --filter web worker"
+    "worker": "pnpm --filter web worker",
+    "bootstrap": "pnpm --filter web bootstrap",
+    "fixtures:load": "pnpm --filter web fixtures:load",
+    "db:status": "pnpm --filter web db:status",
+    "smoke": "bash scripts/smoke.sh",
+    "test:e2e": "pnpm --filter e2e test:e2e"
   }
 }

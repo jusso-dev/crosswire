@@ -47,8 +47,8 @@ export async function ensurePersonalOrg(userId: string, displayName: string) {
 }
 
 /**
- * Resolve the active org for a user. v1: one workspace == org; a user's first membership
- * (oldest) is active unless `preferredOrgId` names another org they belong to.
+ * Resolve the active org for a user. v1: one workspace == org; a team org wins over a personal
+ * workspace, then the oldest membership is active unless `preferredOrgId` names another org they belong to.
  */
 export async function getCurrentOrg(userId: string, preferredOrgId?: string | null): Promise<CurrentOrg | null> {
   const rows = await getDb()
@@ -56,7 +56,8 @@ export async function getCurrentOrg(userId: string, preferredOrgId?: string | nu
     .from(orgMemberships)
     .innerJoin(orgs, eq(orgs.id, orgMemberships.orgId))
     .where(eq(orgMemberships.userId, userId))
-    .orderBy(asc(orgMemberships.createdAt))
+    // Team orgs before personal workspaces, then oldest membership first.
+    .orderBy(asc(orgs.isPersonal), asc(orgMemberships.createdAt))
   if (rows.length === 0) return null
   return rows.find((r) => r.id === preferredOrgId) ?? rows[0] ?? null
 }

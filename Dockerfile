@@ -27,6 +27,7 @@ COPY --from=build --chown=node:node /out/node_modules ./node_modules
 COPY --from=build --chown=node:node /out/package.json ./package.json
 COPY --from=build --chown=node:node /repo/apps/web/dist ./dist
 COPY --from=build --chown=node:node /repo/apps/web/server.mjs ./server.mjs
+COPY --from=build --chown=node:node /repo/apps/web/telemetry.mjs ./telemetry.mjs
 COPY --from=build --chown=node:node /repo/apps/web/drizzle ./drizzle
 COPY --from=build --chown=node:node /repo/apps/web/src ./src
 COPY --chown=node:node .squad ./.squad
@@ -35,5 +36,8 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 ENTRYPOINT ["/usr/bin/tini", "--"]
-# Default: migrate, then serve. Override CMD for the worker: ["npx","tsx","src/server/cli/worker.ts"].
-CMD ["sh", "-c", "node_modules/.bin/tsx src/server/cli/migrate.ts && exec node server.mjs"]
+# Default: serve. Migrations run as a separate one-shot step (#69): the Compose `migrate` service or
+# the Azure Container Apps Job (`node_modules/.bin/tsx src/server/cli/migrate.ts`).
+# Set MIGRATE_ON_START=true for single-container dev setups only.
+# Worker: CMD ["node_modules/.bin/tsx", "src/server/cli/worker.ts"].
+CMD ["sh", "-c", "if [ \"$MIGRATE_ON_START\" = true ]; then node_modules/.bin/tsx src/server/cli/migrate.ts || exit 1; fi; exec node --import ./telemetry.mjs server.mjs"]

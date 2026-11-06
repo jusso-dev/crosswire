@@ -24,6 +24,20 @@ pnpm ingest:cve --fixtures test/fixtures/kev.json
 pnpm match:watches
 ```
 
+Or, after signing up in the UI, load the org-scoped `[DEMO]` pack (watch hits, a hunt case with
+KQL, a dry-run response proposal) with **Load demo data** on the dashboard, or:
+
+```sh
+pnpm fixtures:load --email you@example.test          # load
+pnpm fixtures:load --email you@example.test --reset  # remove [DEMO] records again
+```
+
+Demo data needs `HUNTING_DEMO_MODE=true` and no hunting connector, never touches shared TI tables,
+and is refused in production unless `ALLOW_DEMO_FIXTURES=true`.
+
+Golden-path E2E (local only, not in CI): start the app, then `BASE_URL=http://localhost:3000 pnpm test:e2e`
+(first time: `pnpm --filter e2e exec playwright install chromium`).
+
 ## The same checks CI runs
 
 ```sh

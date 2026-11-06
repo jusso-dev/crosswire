@@ -11,6 +11,7 @@ const bool = (fallback: boolean) =>
     .transform((v) => (v === undefined || v === '' ? fallback : v === 'true' || v === '1'))
 
 const executorFlag = z.enum(['off', 'dry-run', 'on']).default('off')
+const optionalBool = z.enum(['true', 'false', '1', '0']).optional().transform((v) => (v === undefined ? undefined : v === 'true' || v === '1'))
 
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -62,6 +63,8 @@ const schema = z.object({
   RESPONSE_EXECUTOR_LOGICAPP: executorFlag,
   RESPONSE_EXECUTOR_GRAPH: executorFlag,
   RESPONSE_LOGICAPP_URL: z.url().optional(),
+  /** Global dry-run switch (#83). Unset = true. Live execution needs RESPONSE_DRY_RUN=false explicitly. */
+  RESPONSE_DRY_RUN: optionalBool,
   RESPONSE_ALLOW_SELF_APPROVAL: bool(false),
   RESPONSE_PROPOSAL_TTL_HOURS: z.coerce.number().int().positive().default(24),
 
@@ -71,6 +74,14 @@ const schema = z.object({
   CLOUDFLARE_API_TOKEN: z.string().optional(),
 
   WORKER_TIMEZONE: z.string().default('UTC'),
+
+  /** Comma-separated extra origins allowed for CORS / Better Auth trusted origins (#74). APP_URL is always allowed. */
+  CORS_ALLOWED_ORIGINS: z.string().optional(),
+  /** Per-IP requests per minute for /api/chat (#74). */
+  RATE_LIMIT_CHAT_PER_MIN: z.coerce.number().int().positive().default(20),
+
+  /** Application Insights (#73). When set, OpenTelemetry exports traces/logs to Azure Monitor. */
+  APPLICATIONINSIGHTS_CONNECTION_STRING: z.string().optional(),
 })
 
 export type Env = z.infer<typeof schema>
@@ -106,4 +117,36 @@ export function env(): Env {
 /** Test hook: reset the cached configuration after mutating process.env. */
 export function resetEnvForTests() {
   cached = undefined
+}
+
+export type ExecutorName = 'sentinel' | 'logicapp' | 'graph'
+
+export interface ResponseSafety {
+  /** True when no executor may perform a live call (global dry-run). */
+  dryRun: boolean
+  executors: Record<ExecutorName, 'off' | 'dry-run' | 'on'>
+  /** Human-readable reasons a requested `on` executor was downgraded (fail closed). */
+  warnings: string[]
+}
+
+/**
+ * Effective response safety (#83). Fails closed:
+ * - RESPONSE_DRY_RUN unset => dry-run ON.
+ * - Any executor flag `on` while dry-run is ON is downgraded to `dry-run` and reported.
+ * - Executor flags unset => off.
+ */
+export function responseSafety(e: Env = env()): ResponseSafety {
+  const dryRun = e.RESPONSE_DRY_RUN !== false
+  const requested = { sentinel: e.RESPONSE_EXECUTOR_SENTINEL, logicapp: e.RESPONSE_EXECUTOR_LOGICAPP, graph: e.RESPONSE_EXECUTOR_GRAPH }
+  const warnings: string[] = []
+  const executors = { ...requested }
+  if (dryRun) {
+    for (const [k, v] of Object.entries(requested) as Array<[ExecutorName, 'off' | 'dry-run' | 'on']>) {
+      if (v === 'on') {
+        executors[k] = 'dry-run'
+        warnings.push(`RESPONSE_EXECUTOR_${k.toUpperCase()}=on ignored: RESPONSE_DRY_RUN is not explicitly false, so live execution stays disabled.`)
+      }
+    }
+  }
+  return { dryRun, executors, warnings }
 }

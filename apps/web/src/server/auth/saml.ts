@@ -32,6 +32,8 @@ export async function provisionSamlUser({ user, provider }: { user: { id: string
     return null
   }
   await addMembership(binding.orgId, user.id, 'analyst')
+  const { claimBootstrapOwner } = await import('../ops/bootstrap')
+  await claimBootstrapOwner(binding.orgId, user.id)
   await writeAudit({ category: 'auth', action: 'saml_linked', actorType: 'user', actorId: user.id, orgId: binding.orgId, data: { providerId: provider.providerId } })
   return binding.orgId
 }

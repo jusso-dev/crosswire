@@ -41,6 +41,19 @@ Shared TypeScript types: `apps/web/src/shared/response.ts`.
 
 Flag values: `off` (default; execute refused), `dry-run` (execute records a dry run instead), `on`.
 
+### Production flag matrix (#83, fail closed)
+
+| `RESPONSE_DRY_RUN` | `RESPONSE_EXECUTOR_X` | Effective | Notes |
+| --- | --- | --- | --- |
+| unset / `true` | unset / `off` | **off** | Default. Execute refused. |
+| unset / `true` | `dry-run` | dry-run | Execute records a dry run. |
+| unset / `true` | `on` | **dry-run** | Downgraded; warning logged at boot and shown on the dashboard. |
+| `false` | `on` | on | Live calls. Requires a change ticket. |
+| invalid value (e.g. `maybe`) | any | — | Server refuses to start (config error). |
+
+Row limits (`HUNTING_MAX_ROWS`, hard cap 1,000) are always on. The effective state is logged at boot
+(`response safety`), shown on the dashboard, and in the first-run checklist.
+
 The Logic App URL comes only from server configuration, never from a proposal, so an agent cannot
 redirect the call. Executors are called only from `executeProposal`, which requires an approved,
 unexpired proposal and an approver, and claims the proposal atomically so it runs once.

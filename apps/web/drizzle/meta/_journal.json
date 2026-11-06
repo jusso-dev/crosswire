@@ -15,6 +15,13 @@
       "when": 1793974300549,
       "tag": "0001_saml_sso",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793979026819,
+      "tag": "0002_phase8_bootstrap",
+      "breakpoints": true
     }
   ]
 }

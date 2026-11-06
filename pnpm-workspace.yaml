@@ -1,6 +1,12 @@
 packages:
   - apps/*
   - packages/*
+  - e2e
 
 onlyBuiltDependencies:
   - esbuild
+
+# Supply chain (#85): drizzle-kit pins old esbuild builds whose bundled Go stdlib has CRITICAL CVEs.
+# Force the patched esbuild everywhere (API-compatible for drizzle-kit's usage).
+overrides:
+  esbuild: 0.28.2

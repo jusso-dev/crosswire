@@ -5,6 +5,7 @@ import { env } from '../env'
 import { recordDecision } from '../agents/decisions'
 import { assertSafeKql } from './safety'
 import { huntingClient } from './client'
+import { logger } from '../lib/logger'
 
 export type Actor = { type: 'user'; id: string } | { type: 'agent'; id: string }
 
@@ -123,6 +124,7 @@ export async function approveAndRunKql(orgId: string, userId: string, proposalId
     return { status: 'run' as const, summary }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
+    logger.error('hunt run_kql failed', { orgId, proposalId, target: existing.target, error: message })
     await db.update(kqlProposals).set({ status: 'failed', error: message }).where(eq(kqlProposals.id, proposalId))
     await addEvidence(orgId, existing.huntId, 'kql_failed', { proposalId, error: message }, { type: 'system', id: null })
     await recordDecision({ orgId, actorType: 'user', actorKey: userId, action: 'run_kql_failed', input: { proposalId }, output: message, huntId: existing.huntId })

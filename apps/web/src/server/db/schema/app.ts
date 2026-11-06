@@ -37,6 +37,10 @@ export const orgs = pgTable('orgs', {
   entraTenantId: text('entra_tenant_id').unique(),
   emailDomain: text('email_domain'),
   isPersonal: boolean('is_personal').notNull().default(false),
+  /** Set by `pnpm bootstrap` (#78): the first Entra/SAML sign-in with this email becomes owner. */
+  bootstrapOwnerEmail: text('bootstrap_owner_email'),
+  /** First-run checklist dismissed (#79). */
+  setupDismissedAt: timestamp('setup_dismissed_at', { withTimezone: true }),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 })

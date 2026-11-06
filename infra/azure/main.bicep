@@ -29,6 +29,12 @@ param postgresPublicAccess bool = false
 @description('Object ID of the operator who seeds Key Vault secrets (gets Key Vault Secrets Officer).')
 param operatorObjectId string = ''
 
+@description('Email for alert notifications (#73). Empty = no action group.')
+param alertEmail string = ''
+
+@description('Optional custom domain (#70), e.g. crosswire.contoso.com. Bind after DNS is in place; see docs/runbooks/custom-domain.md.')
+param customDomain string = ''
+
 var names = {
   identity: '${prefix}-id'
   logs: '${prefix}-logs'
@@ -48,6 +54,14 @@ resource logs 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: names.logs
   location: location
   properties: { sku: { name: 'PerGB2018' }, retentionInDays: 30 }
+}
+
+// Application Insights (#73), workspace-based.
+resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
+  name: '${prefix}-ai'
+  location: location
+  kind: 'web'
+  properties: { Application_Type: 'web', WorkspaceResourceId: logs.id }
 }
 
 module data 'modules/data.bicep' = {
@@ -77,6 +91,18 @@ module apps 'modules/apps.bicep' = {
     logsCustomerId: logs.properties.customerId
     logsSharedKey: logs.listKeys().primarySharedKey
     keyVaultUri: data.outputs.keyVaultUri
+    appInsightsConnectionString: appInsights.properties.ConnectionString
+    corsAllowedOrigins: empty(customDomain) ? '' : 'https://${customDomain}'
+  }
+}
+
+module alerts 'modules/alerts.bicep' = {
+  name: 'alerts'
+  params: {
+    location: location
+    prefix: prefix
+    logsWorkspaceId: logs.id
+    alertEmail: alertEmail
   }
 }
 
@@ -84,3 +110,4 @@ output webFqdn string = apps.outputs.webFqdn
 output keyVaultName string = names.kv
 output postgresHost string = data.outputs.postgresHost
 output identityClientId string = identity.properties.clientId
+output appInsightsName string = appInsights.name

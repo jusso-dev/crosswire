@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite dev --port 3000",
     "build": "vite build && node scripts/build-env-check.mjs",
-    "start": "node server.mjs",
+    "start": "node --import ./telemetry.mjs server.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -19,9 +19,13 @@
     "digest:daily": "tsx --env-file-if-exists=../../.env src/server/cli/digest.ts",
     "expire:proposals": "tsx --env-file-if-exists=../../.env src/server/cli/expire.ts",
     "compact-memory": "tsx --env-file-if-exists=../../.env src/server/cli/compact.ts",
-    "worker": "tsx --env-file-if-exists=../../.env src/server/cli/worker.ts"
+    "worker": "tsx --env-file-if-exists=../../.env src/server/cli/worker.ts",
+    "bootstrap": "tsx --env-file-if-exists=../../.env src/server/cli/bootstrap.ts",
+    "fixtures:load": "tsx --env-file-if-exists=../../.env src/server/cli/fixtures.ts",
+    "db:status": "tsx --env-file-if-exists=../../.env src/server/cli/db-status.ts"
   },
   "dependencies": {
+    "@azure/monitor-opentelemetry": "1.21.0",
     "@better-auth/sso": "1.7.18",
     "@tanstack/ai": "1.2.0",
     "@tanstack/ai-anthropic": "1.1.1",

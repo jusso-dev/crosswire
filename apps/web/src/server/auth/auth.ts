@@ -9,6 +9,7 @@ import * as schema from '../db/schema'
 import { env } from '../env'
 import { writeAudit } from '../audit'
 import { ensurePersonalOrg, getCurrentOrg } from '../orgs'
+import { claimPendingBootstrapByEmail } from '../ops/bootstrap'
 import { UnknownTenantError, decodeJwtClaims, placeEntraUser, resolveEntraOrg } from './entra'
 import { logger } from '../lib/logger'
 
@@ -39,6 +40,8 @@ function createAuth() {
   return betterAuth({
     appName: 'Crosswire',
     baseURL: e.APP_URL,
+    // Custom domains and extra origins (#70, #74). APP_URL is always trusted.
+    trustedOrigins: [e.APP_URL, ...(e.CORS_ALLOWED_ORIGINS ?? '').split(',').map((o) => o.trim()).filter((o) => o && o !== '*')],
     secret: e.BETTER_AUTH_SECRET,
     database: drizzleAdapter(getDb(), { provider: 'pg', schema }),
     advanced: {
@@ -85,6 +88,8 @@ function createAuth() {
           after: async (created, ctx) => {
             // Entra users are placed by the account hook below; local users get a personal org.
             if (ctx?.path?.startsWith('/callback') || ctx?.path?.startsWith('/sso/')) return
+            // Bootstrap admin signing up locally joins the bootstrapped org as owner (#78).
+            if (await claimPendingBootstrapByEmail(created.id, created.email)) return
             await ensurePersonalOrg(created.id, created.name || created.email)
           },
         },

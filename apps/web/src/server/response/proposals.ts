@@ -11,6 +11,7 @@ import type { OrgRole } from '../orgs'
 import { asJson } from '../../shared/json'
 import { assertCanDecide, canApprove, ForbiddenError } from './rbac'
 import { dryRun, executeLive, executorMode, type ExecutionOutcome } from './executors'
+import { logger } from '../lib/logger'
 
 export class ProposalStateError extends Error {}
 export class ProposalNotFoundError extends Error {}
@@ -191,6 +192,7 @@ export async function executeProposal(orgId: string, actor: { userId: string; ro
   await event(orgId, id, 'execute_attempt', { type: 'user', id: actor.userId }, { executor: p.actionType })
   const outcome = await executeLive(p, fetchImpl)
   const status = outcome.status === 'succeeded' || outcome.status === 'stub' ? 'executed' : 'failed'
+  if (status === 'failed') logger.error('response execute failed', { orgId, proposalId: id, executor: p.actionType, error: outcome.error ?? null })
   const [updated] = await getDb()
     .update(responseProposals)
     .set({ status, execution: outcome as unknown as Record<string, unknown>, rollbackNotes: outcome.rollbackNotes })

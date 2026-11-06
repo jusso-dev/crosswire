@@ -1,4 +1,4 @@
-import { env } from '../env'
+import { env, responseSafety } from '../env'
 import { redactValue } from '../lib/redact'
 import type { ResponseActionType, ResponseTargets } from '../../shared/response'
 import type { Json } from '../../shared/json'
@@ -40,14 +40,15 @@ export interface Executor {
 
 /** Executor flags (#52). Default off; `.env.example` documents each. */
 export function executorMode(type: ResponseActionType): ExecutorMode {
-  const e = env()
+  // Effective mode after the global dry-run guard (#83): fails closed to dry-run when ambiguous.
+  const { executors } = responseSafety()
   switch (type) {
     case 'sentinel_playbook':
-      return e.RESPONSE_EXECUTOR_SENTINEL
+      return executors.sentinel
     case 'logic_app':
-      return e.RESPONSE_EXECUTOR_LOGICAPP
+      return executors.logicapp
     case 'graph_containment':
-      return e.RESPONSE_EXECUTOR_GRAPH
+      return executors.graph
     case 'other':
       return 'off'
   }

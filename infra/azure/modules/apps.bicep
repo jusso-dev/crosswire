@@ -11,6 +11,10 @@ param logsCustomerId string
 @secure()
 param logsSharedKey string
 param keyVaultUri string
+@description('Application Insights connection string (not a secret: it identifies the resource).')
+param appInsightsConnectionString string = ''
+@description('Comma-separated extra CORS / trusted origins (custom domains).')
+param corsAllowedOrigins string = ''
 
 // Key Vault secret name -> container secret name -> env var. Names match .env.example.
 var kvSecrets = [
@@ -31,6 +35,11 @@ var plainEnv = [
   { name: 'RESPONSE_EXECUTOR_SENTINEL', value: 'off' }
   { name: 'RESPONSE_EXECUTOR_LOGICAPP', value: 'off' }
   { name: 'RESPONSE_EXECUTOR_GRAPH', value: 'off' }
+  // Fail-closed global dry-run (#83). Live execution requires changing this to 'false' via a change ticket.
+  { name: 'RESPONSE_DRY_RUN', value: 'true' }
+  { name: 'MIGRATIONS_DIR', value: '/app/drizzle' }
+  { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
+  { name: 'CORS_ALLOWED_ORIGINS', value: corsAllowedOrigins }
 ]
 
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
@@ -93,4 +102,35 @@ resource worker 'Microsoft.App/containerApps@2024-03-01' = {
   }
 }
 
+// One-shot migration job (#69): run after each image update, before shifting traffic.
+// `az containerapp job start -n <prefix>-migrate -g <rg> --image <image>`; the deploy workflow does this.
+resource migrateJob 'Microsoft.App/jobs@2024-03-01' = {
+  name: '${webName}-migrate'
+  location: location
+  identity: { type: 'UserAssigned', userAssignedIdentities: { '${identityId}': {} } }
+  properties: {
+    environmentId: env.id
+    configuration: {
+      triggerType: 'Manual'
+      replicaTimeout: 600
+      replicaRetryLimit: 0
+      manualTriggerConfig: { parallelism: 1, replicaCompletionCount: 1 }
+      secrets: secrets
+    }
+    template: {
+      containers: [
+        {
+          name: 'migrate'
+          image: image
+          command: ['node_modules/.bin/tsx', 'src/server/cli/migrate.ts']
+          resources: { cpu: json('0.25'), memory: '0.5Gi' }
+          env: concat(plainEnv, secretEnv)
+        }
+      ]
+    }
+  }
+}
+
 output webFqdn string = web.properties.configuration.ingress.fqdn
+output webName string = web.name
+output envId string = env.id

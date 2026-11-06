@@ -8,3 +8,5 @@ param postgresAdminPassword = readEnvironmentVariable('CROSSWIRE_PG_PASSWORD', '
 // Lab only: set true to use the Allow-Azure-services firewall rule instead of private networking.
 param postgresPublicAccess = false
 param operatorObjectId = ''
+param alertEmail = ''
+param customDomain = ''

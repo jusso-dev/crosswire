@@ -12,6 +12,10 @@ const { parseEnv } = await import(path.join(here, 'dist/server/env-check.js')).c
 if (parseEnv) {
   try {
     parseEnv(process.env)
+    // Response safety state (#83): logged loudly at boot so operators see it.
+    const { responseSafety } = await import(path.join(here, 'dist/server/env-check.js'))
+    const safety = responseSafety(parseEnv(process.env))
+    console.log(JSON.stringify({ time: new Date().toISOString(), level: safety.warnings.length ? 'warn' : 'info', msg: 'response safety', dryRun: safety.dryRun, executors: safety.executors, warnings: safety.warnings }))
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err))
     process.exit(1)

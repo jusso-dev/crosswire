@@ -31,7 +31,7 @@ function withEnv(vars: Record<string, string>) {
   resetEnvForTests()
 }
 afterEach(() => {
-  for (const k of ['RESPONSE_EXECUTOR_LOGICAPP', 'RESPONSE_LOGICAPP_URL', 'RESPONSE_ALLOW_SELF_APPROVAL']) delete process.env[k]
+  for (const k of ['RESPONSE_EXECUTOR_LOGICAPP', 'RESPONSE_LOGICAPP_URL', 'RESPONSE_ALLOW_SELF_APPROVAL', 'RESPONSE_DRY_RUN']) delete process.env[k]
   resetEnvForTests()
 })
 
@@ -126,7 +126,7 @@ describe('executors + dry run + audit (#52, #53, #54)', () => {
   })
 
   it('live Logic App executor runs against a mock HTTP server only after approval; full lifecycle audited', async () => {
-    withEnv({ RESPONSE_EXECUTOR_LOGICAPP: 'on', RESPONSE_LOGICAPP_URL: 'https://mock.logic.example/invoke?sig=abc123secret' })
+    withEnv({ RESPONSE_DRY_RUN: 'false', RESPONSE_EXECUTOR_LOGICAPP: 'on', RESPONSE_LOGICAPP_URL: 'https://mock.logic.example/invoke?sig=abc123secret' })
     const t = await team()
     const p = await createProposal(t.orgId, { type: 'agent', agentKey: 'responder', onBehalfOfUserId: t.analyst }, base)
     await dryRunProposal(t.orgId, { userId: t.approver, role: 'approver' }, p.id)
@@ -152,6 +152,7 @@ describe('executors + dry run + audit (#52, #53, #54)', () => {
   it('stub executors in on mode record a stub outcome without any network call', async () => {
     const t = await team()
     process.env.RESPONSE_EXECUTOR_GRAPH = 'on'
+    process.env.RESPONSE_DRY_RUN = 'false'
     resetEnvForTests()
     const p = await createProposal(t.orgId, { type: 'user', userId: t.analyst }, { ...base, actionType: 'graph_containment' })
     await decideProposal(t.orgId, { userId: t.owner, role: 'owner' }, p.id, 'approve')
@@ -160,5 +161,6 @@ describe('executors + dry run + audit (#52, #53, #54)', () => {
     expect(out.status).toBe('stub')
     expect(fetchImpl).not.toHaveBeenCalled()
     delete process.env.RESPONSE_EXECUTOR_GRAPH
+    delete process.env.RESPONSE_DRY_RUN
   })
 })

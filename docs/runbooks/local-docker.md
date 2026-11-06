@@ -8,8 +8,9 @@ cp .env.example .env
 docker compose up --build
 ```
 
-- `postgres` (loopback 5432, volume `pgdata`, healthcheck), `web` (http://localhost:3000; runs
-  migrations on start), `worker` (ingest, match, digest, expiry).
+- `postgres` (loopback 5432, volume `pgdata`, healthcheck), `migrate` (one-shot; applies migrations
+  then exits), `web` (http://localhost:3000; starts after `migrate` succeeds), `worker` (ingest,
+  match, digest, expiry).
 - Redis is optional and unused by v1: `docker compose --profile redis up`.
 - `docker compose down` keeps data; `docker compose down -v` deletes the Postgres volume.
 - Linux is the happy path; Docker Desktop/OrbStack work on macOS and Windows.

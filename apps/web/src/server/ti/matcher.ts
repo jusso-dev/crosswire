@@ -1,4 +1,4 @@
-import { isNull } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { cveRecords, pwnIncidents, watchEntries, watchHits } from '../db/schema'
 import { logger } from '../lib/logger'
@@ -88,13 +88,13 @@ export interface MatchStats {
 }
 
 /** Run the matcher across all orgs. Idempotent via the (org, entry, source, source_id) unique index. */
-export async function runMatcher(): Promise<MatchStats> {
+export async function runMatcher(opts: { orgId?: string; records?: TiRecord[] } = {}): Promise<MatchStats> {
   const db = getDb()
   const entries = await db
     .select({ id: watchEntries.id, orgId: watchEntries.orgId, type: watchEntries.type, normalized: watchEntries.normalized })
     .from(watchEntries)
-    .where(isNull(watchEntries.disabledAt))
-  const records = await loadRecords()
+    .where(opts.orgId ? and(isNull(watchEntries.disabledAt), eq(watchEntries.orgId, opts.orgId)) : isNull(watchEntries.disabledAt))
+  const records = opts.records ?? (await loadRecords())
   let matched = 0
   let inserted = 0
   for (const entry of entries) {

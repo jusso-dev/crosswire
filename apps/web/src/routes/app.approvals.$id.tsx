@@ -31,6 +31,7 @@ function ProposalDetail() {
   return (
     <>
       <h1>{p.title}</h1>
+      {p.payload.demo === true && <p className="cw-banner">Demo fixture: not a real proposal. Executors never contact a tenant for demo data in dry-run.</p>}
       <p>
         <span className="cw-badge" data-tone={statusTone(p.status)}>
           {p.status}

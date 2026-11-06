@@ -1,5 +1,6 @@
 import { addMembership, createOrg, findOrgByEntraTenant } from '../orgs'
 import { env } from '../env'
+import { claimBootstrapOwner } from '../ops/bootstrap'
 
 /**
  * Entra org mapping rule (documented in docs/auth.md):
@@ -24,6 +25,7 @@ export async function resolveEntraOrg(tid: string): Promise<{ orgId: string; cre
 export async function placeEntraUser(userId: string, tid: string) {
   const { orgId, created } = await resolveEntraOrg(tid)
   await addMembership(orgId, userId, created ? 'owner' : 'analyst')
+  await claimBootstrapOwner(orgId, userId)
   return orgId
 }
 

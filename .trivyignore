@@ -1,0 +1,3 @@
+# Trivy waivers (#85). Each entry needs: CVE id, why it does not apply, link to the ADR or issue
+# approving the waiver, and an expiry date. Example:
+# CVE-2099-0001  # not reachable: dev-only path; ADR 0004; expires 2027-01-31

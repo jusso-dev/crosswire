@@ -65,6 +65,7 @@ loaded from recorded fixtures (`pnpm ingest:pwn --fixtures test/fixtures/pwnwatc
 | `pnpm match:watches` / `pnpm digest:daily` | Match watchlists, build daily digests |
 | `pnpm expire:proposals` / `pnpm compact-memory` | Expire stale proposals, compact agent memory |
 | `pnpm worker` | Background worker running the jobs above on a schedule |
+| `pnpm bootstrap` / `pnpm fixtures:load` / `pnpm db:status` | First org + admin, `[DEMO]` data, migration status |
 
 ## Stack
 
@@ -102,6 +103,13 @@ docs/             ADRs, runbooks, auth, hunting, response, TI
 - [Local Docker and any Docker host](docs/runbooks/local-docker.md) (`docker-compose.prod.yml`)
 - [Azure Container Apps](docs/runbooks/azure-deploy.md) (Bicep in `infra/azure/`, manual-approval GitHub Actions)
 - [Customer Entra setup](docs/runbooks/entra-setup.md) (SSO vs hunting permissions)
+
+## Go live (Phase 8)
+
+- [Go-live checklist](docs/go-live-checklist.md) and [Day-1 operator playbook](docs/day-1-operator-playbook.md)
+- Runbooks: [bootstrap](docs/runbooks/bootstrap.md), [migrations](docs/runbooks/migrations.md), [custom domain + TLS](docs/runbooks/custom-domain.md), [rollback](docs/runbooks/rollback.md), [backup and restore](docs/runbooks/backup-restore.md), [staging](docs/runbooks/staging.md)
+- [Releasing](docs/releasing.md) ([latest release](https://github.com/jusso-dev/crosswire/releases/latest), [CHANGELOG](CHANGELOG.md)) and the [v1 ship gate](docs/ship-gate.md)
+- Post-deploy smoke: `pnpm smoke https://<host>`; golden-path E2E (local, not in CI): `pnpm test:e2e`
 
 ## Contributing
 

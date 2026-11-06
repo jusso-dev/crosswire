@@ -22,6 +22,9 @@ are Key Vault references (`infra/azure/modules/apps.bicep`):
 | `ENTRA_CLIENT_SECRET` | `entra-client-secret` | SSO app registration secret |
 | `ENTRA_CLIENT_ID`, `ENTRA_TENANT_ID`, `APP_URL`, flags | (plain env) | Not secret |
 | `RESPONSE_LOGICAPP_URL` | add `response-logicapp-url` if used | Contains a SAS signature |
+| `RESPONSE_DRY_RUN`, `RESPONSE_EXECUTOR_*` | (plain env, Bicep sets `true` / `off`) | Fail closed, see docs/response.md |
+| `CORS_ALLOWED_ORIGINS`, `RATE_LIMIT_CHAT_PER_MIN`, `TRUSTED_PROXIES` | (plain env) | HTTP hardening (#74) |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | (plain env from Bicep) | Not a secret |
 | Customer hunting secrets | any name, referenced as `env:NAME` from the connector | See docs/hunting.md |
 
 Rotation: update the Key Vault secret, then restart the revision

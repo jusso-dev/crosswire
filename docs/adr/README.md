@@ -8,3 +8,4 @@ take the next number, and open a PR. Never renumber or delete an ADR; supersede 
 | [0001](0001-architecture-overview.md) | Architecture overview | Accepted |
 | [0002](0002-squad-sdk-embed.md) | Embed `@bradygaster/squad-sdk` vs Copilot-only agents | Accepted (Hybrid) |
 | [0003](0003-azure-first-target.md) | Azure first deploy target: Container Apps | Accepted |
+| [0004](0004-migrations-and-release.md) | Production migrations and releases | Accepted |

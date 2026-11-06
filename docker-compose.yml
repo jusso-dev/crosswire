@@ -22,8 +22,22 @@ services:
       timeout: 3s
       retries: 20
 
-  web:
+  # One-shot migration runner (#69). web starts only after it exits successfully.
+  migrate:
+    image: crosswire:web
     build: .
+    restart: "no"
+    env_file: .env
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: postgres://crosswire:${POSTGRES_PASSWORD:-crosswire-local-dev}@postgres:5432/crosswire
+    command: ["node_modules/.bin/tsx", "src/server/cli/migrate.ts"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    image: crosswire:web
     env_file: .env
     environment:
       DATABASE_URL: postgres://crosswire:${POSTGRES_PASSWORD:-crosswire-local-dev}@postgres:5432/crosswire
@@ -31,11 +45,11 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   worker:
-    build: .
+    image: crosswire:web
     env_file: .env
     environment:
       DATABASE_URL: postgres://crosswire:${POSTGRES_PASSWORD:-crosswire-local-dev}@postgres:5432/crosswire
