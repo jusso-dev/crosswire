@@ -4,7 +4,7 @@ Open-source SOC kit for Microsoft customers who already use **GitHub Copilot age
 
 The product idea builds on [bradygaster/squad](https://github.com/bradygaster/squad) and `@bradygaster/squad-sdk`: charters, compounding history, parallel fan-out, and inspectable decisions — wrapped in a **TanStack Start** control plane instead of leaving everything in a repo-only Copilot workflow.
 
-> **Status:** v1 implementation (Phases 0–7) landed; Later items are planning notes. The [milestones](https://github.com/jusso-dev/crosswire/milestones) and [issues](https://github.com/jusso-dev/crosswire/issues) track the build plan.
+> **Status:** Phases 0–7 and the Later items are implemented; Phase 8 (production hardening and first use) is the v1 ship gate. The [milestones](https://github.com/jusso-dev/crosswire/milestones) and [issues](https://github.com/jusso-dev/crosswire/issues) are the build plan (Phases 0–8 plus Later).
 
 ## Who it is for
 
@@ -122,7 +122,8 @@ Work is tracked as **epics and child issues** under these milestones:
 | 4 | [Phase 4 — Watch + TI](https://github.com/jusso-dev/crosswire/milestone/5) | pwn.watch, watchlists, matcher, daily digest, TI compare (no Radar) |
 | 5 | [Phase 5 — Hunting](https://github.com/jusso-dev/crosswire/milestone/6) | Live Defender XDR + Sentinel hunting, hunt cases, safe KQL |
 | 6 | [Phase 6 — Gated response](https://github.com/jusso-dev/crosswire/milestone/7) | Proposals, approval, executors, dry-run, RBAC, audit |
-| 7 | [Phase 7 — Azure deploy](https://github.com/jusso-dev/crosswire/milestone/8) | Production Docker, Azure first-target, runbooks, probes |
+| 7 | [Phase 7 — Azure deploy](https://github.com/jusso-dev/crosswire/milestone/8) | Production Docker, Azure first-target, runbooks, probes, SBOM scan, optional staging |
+| 8 | [Phase 8 — Prod + first use](https://github.com/jusso-dev/crosswire/milestone/10) | Prod hardening, release, go-live checklist, first successful operator use (SSO → watch → hunt → gated dry-run) |
 | Later | [Later](https://github.com/jusso-dev/crosswire/milestone/9) | Cloudflare Radar connector, SAML SSO, [commercial notes](docs/commercial-notes.md), [MSSP backlog](docs/mssp-backlog.md) |
 
 Browse all issues: [github.com/jusso-dev/crosswire/issues](https://github.com/jusso-dev/crosswire/issues)
@@ -138,6 +139,7 @@ Crosswire is built for **human-led** security operations:
 3. Phase 5 hunting must not issue destructive Graph calls.
 4. Phase 6 executors are feature-flagged and must support dry-run.
 5. Every agent action and approval is auditable.
+6. v1 is not considered shipped until Phase 8’s first-use / ship-gate checklist passes on the Azure deploy (dry-run ON by default).
 
 Do not point this kit at a production tenant without reviewing the Entra app permissions and running dry-run first.
 
