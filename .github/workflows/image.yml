@@ -1,0 +1,79 @@
+# Reusable: build the production image, generate an SBOM, fail on CRITICAL CVEs in the runtime
+# image (#85), then push to GHCR. Callers pass extra tags (e.g. the git tag); :sha-<sha> is always added.
+name: Image
+
+on:
+  workflow_call:
+    inputs:
+      tags:
+        description: Extra tag (e.g. v1.2.3). Optional.
+        type: string
+        default: ''
+    outputs:
+      image:
+        description: Immutable image reference (sha tag)
+        value: ${{ jobs.build.outputs.image }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: meta
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "image=$repo:sha-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build (load locally for scanning)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          tags: crosswire:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: SBOM (SPDX)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: crosswire:scan
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: false
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+      - name: Vulnerability gate (fail on CRITICAL with a fix available)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: crosswire:scan
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push
+        run: |
+          docker tag crosswire:scan "${{ steps.meta.outputs.image }}"
+          docker push "${{ steps.meta.outputs.image }}"
+          if [ -n "${{ inputs.tags }}" ]; then
+            docker tag crosswire:scan "${{ steps.meta.outputs.repo }}:${{ inputs.tags }}"
+            docker push "${{ steps.meta.outputs.repo }}:${{ inputs.tags }}"
+          fi

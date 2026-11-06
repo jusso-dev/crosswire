@@ -1,0 +1,84 @@
+# Reusable: deploy one image to one GitHub Environment's Azure Container Apps.
+# Each environment (staging, production) has its own variables, so staging can never touch
+# production resources: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
+# AZURE_RESOURCE_GROUP, CROSSWIRE_NAME_PREFIX, CROSSWIRE_BASE_URL.
+name: Deploy environment
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      image:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Required reviewers on the environment provide the manual approval gate.
+    environment: ${{ inputs.environment }}
+    # One deploy per environment at a time, regardless of the dispatching branch.
+    concurrency:
+      group: deploy-env-${{ inputs.environment }}
+      cancel-in-progress: false
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      IMAGE: ${{ inputs.image }}
+      RG: ${{ vars.AZURE_RESOURCE_GROUP }}
+      PREFIX: ${{ vars.CROSSWIRE_NAME_PREFIX }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          # Same commit the image was built from (for the smoke script and migration journal).
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Record current revision (for rollback)
+        run: |
+          prev=$(az containerapp show -g "$RG" -n "${PREFIX}-web" --query properties.latestRevisionName -o tsv)
+          echo "Previous web revision: $prev (rollback: docs/runbooks/rollback.md)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Run migrations (one-shot job, #69)
+        run: |
+          az containerapp job update -g "$RG" -n "${PREFIX}-web-migrate" --image "$IMAGE" >/dev/null
+          exec_name=$(az containerapp job start -g "$RG" -n "${PREFIX}-web-migrate" --query name -o tsv)
+          for _ in $(seq 1 60); do
+            status=$(az containerapp job execution show -g "$RG" -n "${PREFIX}-web-migrate" --job-execution-name "$exec_name" --query properties.status -o tsv)
+            echo "migration: $status"
+            case "$status" in Succeeded) exit 0 ;; Failed|Stopped|Degraded) echo "::error::Migration $status. App not updated; see docs/runbooks/rollback.md"; exit 1 ;; esac
+            sleep 10
+          done
+          echo "::error::Migration timed out"; exit 1
+      - name: Roll out web and worker
+        run: |
+          az containerapp update -g "$RG" -n "${PREFIX}-web" --image "$IMAGE" >/dev/null
+          az containerapp update -g "$RG" -n "${PREFIX}-worker" --image "$IMAGE" >/dev/null
+      - name: Wait for the new revision to be ready
+        run: |
+          for _ in $(seq 1 60); do
+            latest=$(az containerapp show -g "$RG" -n "${PREFIX}-web" --query properties.latestRevisionName -o tsv)
+            ready=$(az containerapp show -g "$RG" -n "${PREFIX}-web" --query properties.latestReadyRevisionName -o tsv)
+            img=$(az containerapp revision show -g "$RG" -n "${PREFIX}-web" --revision "$latest" --query properties.template.containers[0].image -o tsv)
+            if [ "$latest" = "$ready" ] && [ "$img" = "$IMAGE" ]; then echo "revision $latest ready"; exit 0; fi
+            sleep 10
+          done
+          echo "::error::New revision did not become ready; see docs/runbooks/rollback.md"; exit 1
+      - name: Smoke test (#75)
+        env:
+          BASE_URL: ${{ vars.CROSSWIRE_BASE_URL }}
+        run: |
+          base="${BASE_URL:-https://$(az containerapp show -g "$RG" -n "${PREFIX}-web" --query properties.configuration.ingress.fqdn -o tsv)}"
+          expected=$(jq -r '.entries[-1].tag' apps/web/drizzle/meta/_journal.json)
+          bash scripts/smoke.sh "$base" "$expected"
+          echo "Deployed $IMAGE to ${{ inputs.environment }} ($base); smoke passed." >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,467 @@
+import {
+  boolean,
+  date,
+  index,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core'
+import { user } from './auth'
+
+const id = () =>
+  text('id')
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID())
+const createdAt = () => timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+const updatedAt = () =>
+  timestamp('updated_at', { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date())
+const orgRef = () =>
+  text('org_id')
+    .notNull()
+    .references(() => orgs.id, { onDelete: 'cascade' })
+
+// ---------- Tenancy (#21) ----------
+export const orgRole = pgEnum('org_role', ['owner', 'approver', 'analyst'])
+
+export const orgs = pgTable('orgs', {
+  id: id(),
+  name: text('name').notNull(),
+  slug: text('slug').notNull().unique(),
+  entraTenantId: text('entra_tenant_id').unique(),
+  emailDomain: text('email_domain'),
+  isPersonal: boolean('is_personal').notNull().default(false),
+  /** Set by `pnpm bootstrap` (#78): the first Entra/SAML sign-in with this email becomes owner. */
+  bootstrapOwnerEmail: text('bootstrap_owner_email'),
+  /** First-run checklist dismissed (#79). */
+  setupDismissedAt: timestamp('setup_dismissed_at', { withTimezone: true }),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+})
+
+export const orgMemberships = pgTable(
+  'org_memberships',
+  {
+    id: id(),
+    orgId: orgRef(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    role: orgRole('role').notNull().default('analyst'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('org_memberships_org_user_uq').on(t.orgId, t.userId), index('org_memberships_user_idx').on(t.userId)],
+)
+
+// ---------- Audit (#22, shared shape) ----------
+export const auditCategory = pgEnum('audit_category', ['auth', 'agent', 'memory', 'ti', 'hunt', 'response', 'system'])
+
+export const auditEvents = pgTable(
+  'audit_events',
+  {
+    id: id(),
+    orgId: text('org_id').references(() => orgs.id, { onDelete: 'set null' }),
+    category: auditCategory('category').notNull(),
+    action: text('action').notNull(),
+    result: text('result', { enum: ['success', 'failure'] }).notNull().default('success'),
+    actorType: text('actor_type', { enum: ['user', 'agent', 'system'] }).notNull(),
+    actorId: text('actor_id'),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    targetType: text('target_type'),
+    targetId: text('target_id'),
+    data: jsonb('data').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: createdAt(),
+  },
+  (t) => [index('audit_events_org_created_idx').on(t.orgId, t.createdAt), index('audit_events_category_idx').on(t.category, t.createdAt)],
+)
+
+// ---------- Chat (#26, #27) ----------
+export const chatThreads = pgTable(
+  'chat_threads',
+  {
+    id: id(),
+    orgId: orgRef(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    title: text('title').notNull().default('New thread'),
+    agentKey: text('agent_key').notNull().default('lead'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('chat_threads_org_user_idx').on(t.orgId, t.userId, t.updatedAt)],
+)
+
+export const chatMessages = pgTable(
+  'chat_messages',
+  {
+    id: id(),
+    orgId: orgRef(),
+    threadId: text('thread_id')
+      .notNull()
+      .references(() => chatThreads.id, { onDelete: 'cascade' }),
+    role: text('role', { enum: ['user', 'assistant', 'system'] }).notNull(),
+    content: text('content').notNull(),
+    agentKey: text('agent_key'),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: createdAt(),
+  },
+  (t) => [index('chat_messages_thread_idx').on(t.threadId, t.createdAt)],
+)
+
+export const messageFeedback = pgTable(
+  'message_feedback',
+  {
+    id: id(),
+    orgId: orgRef(),
+    messageId: text('message_id')
+      .notNull()
+      .references(() => chatMessages.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    rating: text('rating', { enum: ['useful', 'wrong', 'escalate'] }).notNull(),
+    rationale: text('rationale'),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('message_feedback_msg_user_uq').on(t.messageId, t.userId)],
+)
+
+// ---------- Agent memory + decisions (#31, #33, #35) ----------
+export const agentMemories = pgTable(
+  'agent_memories',
+  {
+    id: id(),
+    orgId: orgRef(),
+    agentKey: text('agent_key').notNull(),
+    body: text('body').notNull().default(''),
+    version: integer('version').notNull().default(0),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex('agent_memories_org_agent_uq').on(t.orgId, t.agentKey)],
+)
+
+export const agentMemoryEntries = pgTable(
+  'agent_memory_entries',
+  {
+    id: id(),
+    orgId: orgRef(),
+    agentKey: text('agent_key').notNull(),
+    kind: text('kind', { enum: ['fact', 'feedback', 'safety', 'summary'] }).notNull().default('fact'),
+    body: text('body').notNull(),
+    sourceType: text('source_type'),
+    sourceId: text('source_id'),
+    redacted: boolean('redacted').notNull().default(false),
+    compactedAt: timestamp('compacted_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index('agent_memory_entries_org_agent_idx').on(t.orgId, t.agentKey, t.createdAt)],
+)
+
+export const agentDecisions = pgTable(
+  'agent_decisions',
+  {
+    id: id(),
+    orgId: orgRef(),
+    actorType: text('actor_type', { enum: ['agent', 'user', 'system'] }).notNull(),
+    actorKey: text('actor_key').notNull(),
+    action: text('action').notNull(),
+    inputSummary: text('input_summary').notNull().default(''),
+    outputSummary: text('output_summary').notNull().default(''),
+    threadId: text('thread_id'),
+    huntId: text('hunt_id'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('agent_decisions_org_created_idx').on(t.orgId, t.createdAt)],
+)
+
+// ---------- Threat intel (#36, #37, #42) — global, not org-scoped ----------
+export const tiFetchCache = pgTable('ti_fetch_cache', {
+  url: text('url').primaryKey(),
+  etag: text('etag'),
+  lastModified: text('last_modified'),
+  status: integer('status').notNull(),
+  body: text('body').notNull(),
+  fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull(),
+})
+
+export const pwnIncidents = pgTable(
+  'pwn_incidents',
+  {
+    slug: text('slug').primaryKey(),
+    title: text('title').notNull(),
+    summary: text('summary').notNull().default(''),
+    category: text('category'),
+    severity: text('severity'),
+    status: text('status'),
+    patchStatus: text('patch_status'),
+    product: text('product'),
+    tags: text('tags').array().notNull().default([]),
+    stacks: text('stacks').array().notNull().default([]),
+    cveIds: text('cve_ids').array().notNull().default([]),
+    startedAt: text('started_at'),
+    upstreamUpdatedAt: text('upstream_updated_at'),
+    url: text('url').notNull(),
+    source: text('source').notNull().default('pwn.watch'),
+    sourceUrl: text('source_url').notNull(),
+    retrievedAt: timestamp('retrieved_at', { withTimezone: true }).notNull(),
+    raw: jsonb('raw').$type<Record<string, unknown>>().notNull(),
+  },
+  (t) => [index('pwn_incidents_retrieved_idx').on(t.retrievedAt)],
+)
+
+export const pwnChanges = pgTable('pwn_changes', {
+  id: text('id').primaryKey(),
+  incidentSlug: text('incident_slug').notNull(),
+  incidentTitle: text('incident_title'),
+  category: text('category'),
+  severity: text('severity'),
+  status: text('status'),
+  date: text('date'),
+  title: text('title').notNull(),
+  body: text('body'),
+  url: text('url'),
+  upstreamSourceUrl: text('upstream_source_url'),
+  source: text('source').notNull().default('pwn.watch'),
+  sourceUrl: text('source_url').notNull(),
+  retrievedAt: timestamp('retrieved_at', { withTimezone: true }).notNull(),
+})
+
+export const pwnTags = pgTable('pwn_tags', {
+  id: text('id').primaryKey(),
+  label: text('label').notNull(),
+  group: text('group'),
+  groupLabel: text('group_label'),
+  incidents: integer('incidents').notNull().default(0),
+  url: text('url'),
+  source: text('source').notNull().default('pwn.watch'),
+  sourceUrl: text('source_url').notNull(),
+  retrievedAt: timestamp('retrieved_at', { withTimezone: true }).notNull(),
+})
+
+/** Generic CVE store so CISA KEV, NVD, cve.watch (if it returns) share one shape. */
+export const cveRecords = pgTable(
+  'cve_records',
+  {
+    id: id(),
+    source: text('source', { enum: ['cisa-kev', 'nvd', 'cve.watch'] }).notNull(),
+    cveId: text('cve_id').notNull(),
+    vendor: text('vendor'),
+    product: text('product'),
+    title: text('title'),
+    description: text('description'),
+    severity: text('severity'),
+    publishedAt: text('published_at'),
+    dueDate: text('due_date'),
+    knownRansomware: text('known_ransomware'),
+    url: text('url'),
+    sourceUrl: text('source_url').notNull(),
+    retrievedAt: timestamp('retrieved_at', { withTimezone: true }).notNull(),
+    raw: jsonb('raw').$type<Record<string, unknown>>().notNull(),
+  },
+  (t) => [uniqueIndex('cve_records_source_cve_uq').on(t.source, t.cveId), index('cve_records_cve_idx').on(t.cveId)],
+)
+
+// ---------- Watchlists (#38, #39, #40) ----------
+export const watchType = pgEnum('watch_type', ['keyword', 'cve', 'vendor', 'tag'])
+
+export const watchEntries = pgTable(
+  'watch_entries',
+  {
+    id: id(),
+    orgId: orgRef(),
+    type: watchType('type').notNull(),
+    value: text('value').notNull(),
+    normalized: text('normalized').notNull(),
+    notes: text('notes'),
+    createdBy: text('created_by').references(() => user.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    disabledAt: timestamp('disabled_at', { withTimezone: true }),
+  },
+  (t) => [index('watch_entries_org_idx').on(t.orgId)],
+)
+
+export const watchHits = pgTable(
+  'watch_hits',
+  {
+    id: id(),
+    orgId: orgRef(),
+    entryId: text('entry_id')
+      .notNull()
+      .references(() => watchEntries.id, { onDelete: 'cascade' }),
+    source: text('source').notNull(),
+    sourceId: text('source_id').notNull(),
+    title: text('title').notNull(),
+    snippet: text('snippet').notNull().default(''),
+    url: text('url'),
+    cveIds: text('cve_ids').array().notNull().default([]),
+    createdAt: createdAt(),
+    seenAt: timestamp('seen_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('watch_hits_dedupe_uq').on(t.orgId, t.entryId, t.source, t.sourceId),
+    index('watch_hits_org_created_idx').on(t.orgId, t.createdAt),
+  ],
+)
+
+export const digests = pgTable(
+  'digests',
+  {
+    id: id(),
+    orgId: orgRef(),
+    day: date('day').notNull(),
+    hitCount: integer('hit_count').notNull().default(0),
+    items: jsonb('items').$type<Array<{ hitId: string; title: string; url: string | null; source: string; entry: string }>>().notNull().default([]),
+    emailedAt: timestamp('emailed_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('digests_org_day_uq').on(t.orgId, t.day)],
+)
+
+// ---------- Hunting (#44 - #49) ----------
+export const orgConnectors = pgTable('org_connectors', {
+  id: id(),
+  orgId: orgRef().unique(),
+  tenantId: text('tenant_id').notNull(),
+  clientId: text('client_id').notNull(),
+  /** AES-256-GCM ciphertext (APP_ENCRYPTION_KEY). Never returned to clients. */
+  clientSecretEnc: text('client_secret_enc'),
+  /** Alternative to clientSecretEnc: an env var or Key Vault secret name, resolved server-side. */
+  clientSecretRef: text('client_secret_ref'),
+  sentinelSubscriptionId: text('sentinel_subscription_id'),
+  sentinelResourceGroup: text('sentinel_resource_group'),
+  sentinelWorkspaceName: text('sentinel_workspace_name'),
+  sentinelWorkspaceId: text('sentinel_workspace_id'),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+})
+
+export const huntCases = pgTable(
+  'hunt_cases',
+  {
+    id: id(),
+    orgId: orgRef(),
+    title: text('title').notNull(),
+    hypothesis: text('hypothesis').notNull().default(''),
+    status: text('status', { enum: ['open', 'closed'] }).notNull().default('open'),
+    createdBy: text('created_by').references(() => user.id, { onDelete: 'set null' }),
+    threadId: text('thread_id').references(() => chatThreads.id, { onDelete: 'set null' }),
+    watchHitId: text('watch_hit_id').references(() => watchHits.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('hunt_cases_org_idx').on(t.orgId, t.updatedAt)],
+)
+
+export const huntEvidence = pgTable(
+  'hunt_evidence',
+  {
+    id: id(),
+    orgId: orgRef(),
+    huntId: text('hunt_id')
+      .notNull()
+      .references(() => huntCases.id, { onDelete: 'cascade' }),
+    type: text('type', {
+      enum: ['note', 'kql_proposed', 'kql_approved', 'kql_rejected', 'kql_result', 'kql_failed', 'incidents', 'response_proposed'],
+    }).notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+    actorType: text('actor_type', { enum: ['user', 'agent', 'system'] }).notNull(),
+    actorId: text('actor_id'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('hunt_evidence_hunt_idx').on(t.huntId, t.createdAt)],
+)
+
+export const kqlStatus = pgEnum('kql_status', ['proposed', 'approved', 'rejected', 'run', 'failed', 'expired'])
+
+export const kqlProposals = pgTable(
+  'kql_proposals',
+  {
+    id: id(),
+    orgId: orgRef(),
+    huntId: text('hunt_id')
+      .notNull()
+      .references(() => huntCases.id, { onDelete: 'cascade' }),
+    target: text('target', { enum: ['defender', 'sentinel'] }).notNull(),
+    kql: text('kql').notNull(),
+    originalKql: text('original_kql').notNull(),
+    rationale: text('rationale').notNull().default(''),
+    status: kqlStatus('status').notNull().default('proposed'),
+    proposedByType: text('proposed_by_type', { enum: ['user', 'agent'] }).notNull(),
+    proposedById: text('proposed_by_id').notNull(),
+    decidedBy: text('decided_by'),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    ranAt: timestamp('ran_at', { withTimezone: true }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    resultSummary: jsonb('result_summary').$type<Record<string, unknown>>(),
+    error: text('error'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('kql_proposals_hunt_idx').on(t.huntId, t.createdAt)],
+)
+
+// ---------- Response (#50 - #56) ----------
+export const responseActionType = pgEnum('response_action_type', ['sentinel_playbook', 'logic_app', 'graph_containment', 'other'])
+export const responseStatus = pgEnum('response_status', ['pending', 'approved', 'rejected', 'expired', 'executed', 'failed'])
+
+export const responseProposals = pgTable(
+  'response_proposals',
+  {
+    id: id(),
+    orgId: orgRef(),
+    huntId: text('hunt_id').references(() => huntCases.id, { onDelete: 'set null' }),
+    title: text('title').notNull(),
+    actionType: responseActionType('action_type').notNull(),
+    targets: jsonb('targets').$type<{ devices?: string[]; users?: string[]; incidents?: string[] }>().notNull(),
+    blastRadius: jsonb('blast_radius').$type<{ summary: string; devices: number; users: number; incidents: number }>().notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+    requesterType: text('requester_type', { enum: ['user', 'agent'] }).notNull(),
+    requesterId: text('requester_id').notNull(),
+    requestedByUserId: text('requested_by_user_id'),
+    status: responseStatus('status').notNull().default('pending'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    decidedBy: text('decided_by'),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    decisionComment: text('decision_comment'),
+    lastDryRun: jsonb('last_dry_run').$type<Record<string, unknown>>(),
+    execution: jsonb('execution').$type<Record<string, unknown>>(),
+    rollbackNotes: text('rollback_notes'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('response_proposals_org_status_idx').on(t.orgId, t.status, t.createdAt)],
+)
+
+export const responseEvents = pgTable(
+  'response_events',
+  {
+    id: id(),
+    orgId: orgRef(),
+    proposalId: text('proposal_id')
+      .notNull()
+      .references(() => responseProposals.id, { onDelete: 'cascade' }),
+    event: text('event', {
+      enum: ['created', 'dry_run', 'approved', 'rejected', 'expired', 'execute_attempt', 'executed', 'execute_failed'],
+    }).notNull(),
+    actorType: text('actor_type', { enum: ['user', 'agent', 'system'] }).notNull(),
+    actorId: text('actor_id'),
+    data: jsonb('data').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: createdAt(),
+  },
+  (t) => [index('response_events_proposal_idx').on(t.proposalId, t.createdAt)],
+)
+
+// SAML provider -> Crosswire org binding (#65). Crosswire owns orgs; Better Auth's organization plugin is not used.
+export const ssoOrgBindings = pgTable('sso_org_bindings', {
+  providerId: text('provider_id').primaryKey(),
+  orgId: orgRef(),
+  createdBy: text('created_by').references(() => user.id, { onDelete: 'set null' }),
+  createdAt: createdAt(),
+})

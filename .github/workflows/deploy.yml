@@ -1,0 +1,81 @@
+# Deploy to Azure Container Apps (#61, Phase 8). Manual dispatch only; never on pull requests.
+#   1. CI on the dispatched commit.
+#   2. Image: build, SBOM, CRITICAL CVE gate (#85), push ghcr.io/<owner>/crosswire:sha-<sha>.
+#      Or pass an existing release tag (vX.Y.Z) to promote that exact image (#76).
+#   3. Optional staging (#86): deploy + migrate + smoke on the `staging` environment.
+#   4. Production: required-reviewer approval -> migration job (#69) -> update web/worker ->
+#      smoke test (#75). Rollback: docs/runbooks/rollback.md (#71).
+# Azure auth: OIDC federation, no long-lived secrets. Setup: docs/runbooks/azure-deploy.md.
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Promote an existing release tag (e.g. v1.2.0). Empty = build this commit.
+        default: ''
+      staging:
+        description: Deploy to the staging environment first
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    if: inputs.image_tag == ''
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    if: inputs.image_tag == ''
+    needs: ci
+    uses: ./.github/workflows/image.yml
+    permissions:
+      contents: read
+      packages: write
+
+  resolve:
+    needs: image
+    if: always() && (needs.image.result == 'success' || inputs.image_tag != '')
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.r.outputs.image }}
+    steps:
+      - id: r
+        env:
+          BUILT: ${{ needs.image.outputs.image }}
+          TAG: ${{ inputs.image_tag }}
+        run: |
+          if [ -n "$TAG" ]; then
+            echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::image_tag must be vX.Y.Z"; exit 1; }
+            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:$TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "image=$BUILT" >> "$GITHUB_OUTPUT"
+          fi
+
+  staging:
+    needs: resolve
+    if: always() && needs.resolve.result == 'success' && inputs.staging
+    uses: ./.github/workflows/deploy-env.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      environment: staging
+      image: ${{ needs.resolve.outputs.image }}
+
+  production:
+    needs: [resolve, staging]
+    if: always() && needs.resolve.result == 'success' && (needs.staging.result == 'success' || needs.staging.result == 'skipped')
+    uses: ./.github/workflows/deploy-env.yml
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      environment: production
+      image: ${{ needs.resolve.outputs.image }}

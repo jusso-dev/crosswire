@@ -1,0 +1,31 @@
+{
+  "name": "crosswire",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "engines": {
+    "node": ">=24 <27"
+  },
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "start": "pnpm --filter web start",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "db:generate": "pnpm --filter web db:generate",
+    "db:migrate": "pnpm --filter web db:migrate",
+    "ingest:pwn": "pnpm --filter web ingest:pwn",
+    "ingest:cve": "pnpm --filter web ingest:cve",
+    "match:watches": "pnpm --filter web match:watches",
+    "digest:daily": "pnpm --filter web digest:daily",
+    "expire:proposals": "pnpm --filter web expire:proposals",
+    "compact-memory": "pnpm --filter web compact-memory",
+    "worker": "pnpm --filter web worker",
+    "bootstrap": "pnpm --filter web bootstrap",
+    "fixtures:load": "pnpm --filter web fixtures:load",
+    "db:status": "pnpm --filter web db:status",
+    "smoke": "bash scripts/smoke.sh",
+    "test:e2e": "pnpm --filter e2e test:e2e"
+  }
+}

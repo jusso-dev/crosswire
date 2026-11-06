@@ -1,0 +1,147 @@
+import { eq } from 'drizzle-orm'
+import { getDb } from '../db/client'
+import { orgConnectors } from '../db/schema'
+import { decryptSecret, encryptSecret } from '../lib/crypto'
+
+export class HuntingNotConfiguredError extends Error {
+  constructor(orgId: string) {
+    super(`Hunting is not configured for this org (${orgId}). Add a connector in Settings or enable demo mode.`)
+  }
+}
+
+export interface TokenResult {
+  accessToken: string
+  expiresAt: number
+}
+
+export interface Sts {
+  /** OAuth2 client-credentials grant against Entra (login.microsoftonline.com/{tenant}/oauth2/v2.0/token). */
+  clientCredentials(input: { tenantId: string; clientId: string; clientSecret: string; scope: string }): Promise<TokenResult>
+}
+
+/** Default STS: plain HTTPS client-credentials call. No secrets leave this module. */
+export const entraSts: Sts = {
+  async clientCredentials({ tenantId, clientId, clientSecret, scope }) {
+    const res = await fetch(`https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'client_credentials', client_id: clientId, client_secret: clientSecret, scope }),
+      signal: AbortSignal.timeout(15_000),
+    })
+    const body = (await res.json().catch(() => ({}))) as { access_token?: string; expires_in?: number; error?: string; error_description?: string }
+    if (!res.ok || !body.access_token) {
+      // error_description from Entra never contains the secret; still keep the message short.
+      throw new Error(`Token request failed (${res.status}): ${body.error ?? 'unknown_error'}`)
+    }
+    return { accessToken: body.access_token, expiresAt: Date.now() + (body.expires_in ?? 3600) * 1000 }
+  },
+}
+
+/**
+ * Resolve the client secret for a connector:
+ * - `client_secret_enc`: AES-GCM ciphertext under APP_ENCRYPTION_KEY
+ * - `client_secret_ref`: `env:NAME` reads process.env.NAME. In Azure Container Apps, a Key Vault
+ *   reference secret is surfaced as an env var, so `env:` covers Key Vault too (docs/hunting.md).
+ *   NAME must be the org's own namespace (`CROSSWIRE_HUNT_<ORG>_...`, see `allowedSecretRefPrefix`),
+ *   so one org can never point its connector at another org's secret or at app secrets.
+ */
+export function allowedSecretRefPrefix(orgId: string) {
+  return `CROSSWIRE_HUNT_${orgId.replace(/[^A-Za-z0-9]/g, '').toUpperCase()}_`
+}
+
+export function assertSecretRefAllowed(orgId: string, ref: string) {
+  const prefix = `env:${allowedSecretRefPrefix(orgId)}`
+  if (!ref.startsWith(prefix) || !/^env:[A-Z0-9_]+$/.test(ref)) {
+    throw new Error(`Secret reference must be env:${allowedSecretRefPrefix(orgId)}<NAME> (uppercase letters, digits, underscores).`)
+  }
+}
+
+export function resolveClientSecret(c: Pick<typeof orgConnectors.$inferSelect, 'orgId' | 'clientSecretEnc' | 'clientSecretRef'>): string | null {
+  if (c.clientSecretEnc) return decryptSecret(c.clientSecretEnc)
+  if (c.clientSecretRef) {
+    assertSecretRefAllowed(c.orgId, c.clientSecretRef)
+    return process.env[c.clientSecretRef.slice(4)] ?? null
+  }
+  return null
+}
+
+/** Token broker (#44): per-org client-credentials tokens, cached in memory until shortly before expiry. */
+export class TokenBroker {
+  private cache = new Map<string, TokenResult>()
+  constructor(private readonly sts: Sts = entraSts) {}
+
+  async acquire({ orgId, scope }: { orgId: string; scope: string }): Promise<string> {
+    const cacheKey = `${orgId}|${scope}`
+    const hit = this.cache.get(cacheKey)
+    if (hit && hit.expiresAt - 60_000 > Date.now()) return hit.accessToken
+    const connector = await getConnector(orgId)
+    if (!connector) throw new HuntingNotConfiguredError(orgId)
+    const clientSecret = resolveClientSecret(connector)
+    if (!clientSecret) throw new HuntingNotConfiguredError(orgId)
+    const token = await this.sts.clientCredentials({ tenantId: connector.tenantId, clientId: connector.clientId, clientSecret, scope })
+    this.cache.set(cacheKey, token)
+    return token.accessToken
+  }
+
+  clear() {
+    this.cache.clear()
+  }
+}
+
+let broker: TokenBroker | undefined
+export function tokenBroker(): TokenBroker {
+  broker ??= new TokenBroker()
+  return broker
+}
+export function setTokenBroker(b: TokenBroker) {
+  broker = b
+}
+
+export async function getConnector(orgId: string) {
+  const [row] = await getDb().select().from(orgConnectors).where(eq(orgConnectors.orgId, orgId)).limit(1)
+  return row ?? null
+}
+
+/** Public (client-safe) view of a connector: never includes secret material. */
+export async function getConnectorView(orgId: string) {
+  const c = await getConnector(orgId)
+  if (!c) return null
+  return {
+    tenantId: c.tenantId,
+    clientId: c.clientId,
+    secretSource: c.clientSecretEnc ? 'encrypted' : c.clientSecretRef ? c.clientSecretRef.split(':')[0] : 'none',
+    sentinelSubscriptionId: c.sentinelSubscriptionId,
+    sentinelResourceGroup: c.sentinelResourceGroup,
+    sentinelWorkspaceName: c.sentinelWorkspaceName,
+    sentinelWorkspaceId: c.sentinelWorkspaceId,
+  }
+}
+
+export async function upsertConnector(
+  orgId: string,
+  input: {
+    tenantId: string
+    clientId: string
+    clientSecret?: string
+    clientSecretRef?: string
+    sentinelSubscriptionId?: string
+    sentinelResourceGroup?: string
+    sentinelWorkspaceName?: string
+    sentinelWorkspaceId?: string
+  },
+) {
+  if (!input.clientSecret && input.clientSecretRef) assertSecretRefAllowed(orgId, input.clientSecretRef)
+  const values = {
+    orgId,
+    tenantId: input.tenantId,
+    clientId: input.clientId,
+    clientSecretEnc: input.clientSecret ? encryptSecret(input.clientSecret) : null,
+    clientSecretRef: input.clientSecret ? null : (input.clientSecretRef ?? null),
+    sentinelSubscriptionId: input.sentinelSubscriptionId ?? null,
+    sentinelResourceGroup: input.sentinelResourceGroup ?? null,
+    sentinelWorkspaceName: input.sentinelWorkspaceName ?? null,
+    sentinelWorkspaceId: input.sentinelWorkspaceId ?? null,
+  }
+  await getDb().insert(orgConnectors).values(values).onConflictDoUpdate({ target: orgConnectors.orgId, set: values })
+  tokenBroker().clear()
+}

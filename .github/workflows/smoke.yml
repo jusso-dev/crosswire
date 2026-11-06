@@ -1,0 +1,23 @@
+# Run the post-deploy smoke test against any URL (#75), e.g. a lab or after a manual rollback.
+name: Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: Base URL, e.g. https://crosswire.example.com
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - env:
+          BASE_URL: ${{ inputs.base_url }}
+        run: bash scripts/smoke.sh "$BASE_URL"
