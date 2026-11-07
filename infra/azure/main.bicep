@@ -35,6 +35,20 @@ param alertEmail string = ''
 @description('Optional custom domain (#70), e.g. crosswire.contoso.com. Bind after DNS is in place; see docs/runbooks/custom-domain.md.')
 param customDomain string = ''
 
+@description('Entra SSO app (client) id and tenant id (not secrets). Set here so redeploys keep them.')
+param entraClientId string = ''
+param entraTenantId string = ''
+
+@description('IANA time zone for displayed times and the daily digest day.')
+param appTimeZone string = 'Australia/Sydney'
+
+@description('Chat: endpoint of an existing Azure OpenAI resource, e.g. https://contoso-ai.openai.azure.com. Empty = chat off. See docs/chat-model.md.')
+param azureOpenAiEndpoint string = ''
+@description('Chat: model deployment name in that resource.')
+param azureOpenAiDeployment string = ''
+@description('Chat: name of that Azure OpenAI resource, when it is in this resource group. Bicep then grants the app identity "Cognitive Services OpenAI User" on it. Leave empty to assign the role yourself.')
+param azureOpenAiResourceName string = ''
+
 var names = {
   identity: '${prefix}-id'
   logs: '${prefix}-logs'
@@ -93,6 +107,27 @@ module apps 'modules/apps.bicep' = {
     keyVaultUri: data.outputs.keyVaultUri
     appInsightsConnectionString: appInsights.properties.ConnectionString
     corsAllowedOrigins: empty(customDomain) ? '' : 'https://${customDomain}'
+    entraClientId: entraClientId
+    entraTenantId: entraTenantId
+    appTimeZone: appTimeZone
+    azureOpenAiEndpoint: azureOpenAiEndpoint
+    azureOpenAiDeployment: azureOpenAiDeployment
+    identityClientId: identity.properties.clientId
+  }
+}
+
+// Keyless chat (ADR 0004): the app identity may call the Azure OpenAI resource, nothing more.
+resource openAi 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = if (!empty(azureOpenAiResourceName)) {
+  name: azureOpenAiResourceName
+}
+resource openAiUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(azureOpenAiResourceName)) {
+  name: guid(resourceGroup().id, azureOpenAiResourceName, identity.id, 'openai-user')
+  scope: openAi
+  properties: {
+    // Cognitive Services OpenAI User
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
+    principalId: identity.properties.principalId
+    principalType: 'ServicePrincipal'
   }
 }
 

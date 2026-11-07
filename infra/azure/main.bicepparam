@@ -10,3 +10,5 @@ param postgresPublicAccess = false
 param operatorObjectId = ''
 param alertEmail = ''
 param customDomain = ''
+param entraClientId = ''
+param entraTenantId = ''
