@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { and, eq } from 'drizzle-orm'
 import { auth, resetAuthForTests } from '../src/server/auth/auth'
 import { resetEnvForTests } from '../src/server/env'
@@ -13,6 +13,7 @@ import { AGENT_TOOLS, EXECUTION_TOOL_NAMES, buildTools } from '../src/server/age
 import { systemPromptFor } from '../src/server/agents/runtime'
 import { AGENT_KEYS } from '../src/shared/agents'
 import { makeOrg, makeUser, member, readSse } from './helpers'
+import { mockEnv, startMockModel } from './mock-model'
 
 const BASE = 'http://localhost:3000'
 
@@ -46,9 +47,33 @@ function chatRequest(cookie: string | null, threadId: string, text: string, agen
   })
 }
 
-beforeAll(() => {
+// The real agent runtime, pointed at a local OpenAI-compatible mock model.
+// The mock answers in the voice of whichever charter it receives, and Intel calls search_intel.
+let model: Awaited<ReturnType<typeof startMockModel>>
+const saved: Record<string, string | undefined> = {}
+beforeAll(async () => {
+  model = await startMockModel((req) => {
+    if (req.lastUser.includes('FAIL_PLEASE')) return { status: 400, body: JSON.stringify({ error: { message: 'mock model refused' } }) }
+    const who = /You are \*\*Hunter\*\*|# Hunter/i.test(req.system) ? 'Hunter' : /# Intel|\*\*Intel\*\*/i.test(req.system) ? 'Intel' : 'Lead'
+    if (who === 'Intel' && req.tools.includes('search_intel') && req.lastRole !== 'tool') return { toolCall: { name: 'search_intel', args: { query: 'CVE-2026-1' } } }
+    if (req.toolResult !== undefined) return { text: `${who} here. I checked the intel sources for you.` }
+    return { text: `${who} here. ${who === 'Hunter' ? 'I will propose it on a hunt case for your review.' : 'Here is my answer.'}` }
+  })
+  for (const [k, v] of Object.entries(mockEnv(model.baseUrl))) {
+    saved[k] = process.env[k]
+    process.env[k] = v
+  }
   resetEnvForTests()
   resetAuthForTests()
+}, 120_000)
+
+afterAll(async () => {
+  await model?.close()
+  for (const [k, v] of Object.entries(saved)) {
+    if (v === undefined) delete process.env[k]
+    else process.env[k] = v
+  }
+  resetEnvForTests()
 })
 
 describe('charters + tools (#30, #56)', () => {
@@ -84,7 +109,7 @@ describe('/api/chat (#25, #26, #27, #32)', () => {
     expect(res.status).toBe(401)
   })
 
-  it('streams a stub reply over SSE, persists both messages, tags the agent, and logs a decision', async () => {
+  it('streams a model reply over SSE, runs allowlisted tools, persists both messages and logs a decision', async () => {
     const cookie = await signUp('chat-user@example.test')
     const session = await auth().api.getSession({ headers: new Headers({ cookie }) })
     const { getCurrentOrg } = await import('../src/server/orgs')
@@ -95,10 +120,15 @@ describe('/api/chat (#25, #26, #27, #32)', () => {
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toMatch(/text\/event-stream/)
     const events = await readSse(res)
-    const text = events.filter((e) => e.type === 'TEXT_MESSAGE_CONTENT').map((e) => e.delta).join('')
-    expect(text).toMatch(/stub model/)
+    const deltas = events.filter((e) => e.type === 'TEXT_MESSAGE_CONTENT')
+    const text = deltas.map((e) => e.delta).join('')
+    expect(deltas.length).toBeGreaterThan(1) // streamed incrementally, not one blob
     expect(text).toMatch(/Intel here/)
+    expect(events.some((e) => e.type === 'TOOL_CALL_START')).toBe(true)
     expect(events.at(-1)?.type).toBe('RUN_FINISHED')
+    // The model only ever saw Intel's allowlisted tools, never built-in shell or file tools.
+    const intelCall = model.calls.find((c) => c.tools.includes('search_intel'))!
+    expect(intelCall.tools.sort()).toEqual([...AGENT_TOOLS.intel].sort())
 
     const msgs = await listMessages(org.id, session!.user.id, thread.id)
     expect(msgs.map((m) => m.role)).toEqual(['user', 'assistant'])
@@ -108,12 +138,28 @@ describe('/api/chat (#25, #26, #27, #32)', () => {
     expect(threads[0]!.agentKey).toBe('intel')
     const decisions = await listDecisions(org.id, { threadId: thread.id })
     expect(decisions.some((d) => d.action === 'turn' && d.actorKey === 'intel')).toBe(true)
+    expect(decisions.some((d) => d.action === 'tool:search_intel')).toBe(true)
 
     // Hunter gets a different, charter-driven answer.
     const res2 = await handleChat(chatRequest(cookie, thread.id, 'Find PowerShell abuse', 'hunter'))
     const t2 = (await readSse(res2)).filter((e) => e.type === 'TEXT_MESSAGE_CONTENT').map((e) => e.delta).join('')
     expect(t2).toMatch(/Hunter here/)
     expect(t2).toMatch(/propose it on a hunt case/)
+    // Follow-up turns carry the thread history as real chat messages.
+    expect(model.calls.at(-1)!.userMessages).toEqual(['Is CVE-2026-1 exploited?', 'Find PowerShell abuse'])
+  }, 120_000)
+
+  it('reports a model failure as a stream error and persists it', async () => {
+    const cookie = await signUp('chat-fail@example.test')
+    const session = await auth().api.getSession({ headers: new Headers({ cookie }) })
+    const { getCurrentOrg } = await import('../src/server/orgs')
+    const org = (await getCurrentOrg(session!.user.id))!
+    const thread = await createThread(org.id, session!.user.id)
+    const res = await handleChat(chatRequest(cookie, thread.id, 'FAIL_PLEASE', 'lead'))
+    const events = await readSse(res)
+    expect(events.some((e) => e.type === 'RUN_ERROR')).toBe(true)
+    const msgs = await listMessages(org.id, session!.user.id, thread.id)
+    expect(msgs.at(-1)!.content).toMatch(/⚠️/)
   })
 
   it("user B cannot read or post to user A's thread", async () => {

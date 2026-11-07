@@ -1,7 +1,7 @@
 import { fetchAndIngestPwnWatch } from '../ti/pwnwatch'
 import { fetchAndIngestKev } from '../ti/kev'
 import { runMatcher } from '../ti/matcher'
-import { refreshTodayDigests, runDailyDigest, utcDay } from '../ti/digest'
+import { appDay, dayBounds, refreshTodayDigests, runDailyDigest } from '../ti/digest'
 import { expireProposals } from '../response/proposals'
 import { expireKqlProposals } from '../hunting/hunts'
 import { runDueSchedules } from '../hunting/schedules'
@@ -51,10 +51,10 @@ async function tickBody() {
   // Approved scheduled hunts (#92); claims are atomic, so extra replicas are safe.
   await safe('hunts:scheduled', () => runDueSchedules())
   const now = new Date()
-  const day = utcDay(now)
-  if (day !== lastDigestDay && now.getUTCHours() * 60 + now.getUTCMinutes() >= 5) {
-    // Digest the previous full UTC day.
-    const prev = utcDay(new Date(now.getTime() - 86_400_000))
+  const day = appDay(now)
+  // Five minutes after local midnight (APP_TIMEZONE), digest the previous full local day.
+  if (day !== lastDigestDay && now.getTime() - dayBounds(day).start.getTime() >= 5 * 60_000) {
+    const prev = appDay(new Date(dayBounds(day).start.getTime() - 1))
     await safe('digest:daily', () => runDailyDigest(prev))
     lastDigestDay = day
   }

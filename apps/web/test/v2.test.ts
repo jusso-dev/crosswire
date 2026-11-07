@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { chat } from '@tanstack/ai'
-import { fakeText } from '@tanstack/ai/testing'
 import { getDb } from '../src/server/db/client'
 import { auditEvents, huntSchedules, orgNotificationChannels, orgResponseConnectors, responseProposals } from '../src/server/db/schema'
 import { resetEnvForTests } from '../src/server/env'
@@ -23,7 +21,7 @@ import { approveAndRunKql, createHunt, getHunt, proposeKql, setHuntStatus } from
 import { createSchedule, disableSchedule, reapproveSchedule, runDueSchedules } from '../src/server/hunting/schedules'
 import { huntReportMarkdown, REPORT_MAX_CHARS } from '../src/server/hunting/report'
 import { LlmAgentRuntime, delegateParallelInput } from '../src/server/agents/runtime'
-import * as model from '../src/server/agents/model'
+import { mockEnv, startMockModel } from './mock-model'
 import { AGENT_TOOLS, EXECUTION_TOOL_NAMES } from '../src/server/agents/tools'
 import { makeUser, member, team } from './helpers'
 
@@ -428,31 +426,37 @@ describe('parallel Lead fan-out (#93)', () => {
     const t = await team()
     let inFlight = 0
     let maxInFlight = 0
-    vi.spyOn(model, 'createModelAdapter').mockImplementation((agent) => {
-      const a = fakeText({ model: 'fake' })
-      a.setResponses(
-        Array.from({ length: 4 }, () => async () => {
-          inFlight++
-          maxInFlight = Math.max(maxInFlight, inFlight)
-          await new Promise((r) => setTimeout(r, 50))
-          inFlight--
-          return agent === 'scribe' ? { error: 'scribe exploded' } : { text: `${agent} answer` }
-        }),
-      )
-      return a as never
+    // Real model calls against a local mock endpoint. Scribe's model call fails.
+    const mock = await startMockModel(async (req) => {
+      inFlight++
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      await new Promise((r) => setTimeout(r, 150))
+      inFlight--
+      const who = /^# (\w+)/m.exec(req.system)?.[1]?.toLowerCase() ?? 'unknown'
+      if (who === 'scribe') return { status: 500, body: JSON.stringify({ error: { message: 'scribe exploded' } }) }
+      return { text: `${who} answer` }
     })
-    const rt = new LlmAgentRuntime()
-    const tool = (rt as unknown as { delegateParallelTool: (i: unknown, tr: unknown[]) => { execute: (a: unknown) => Promise<{ results: Array<{ agent: string; answer?: string; error?: string }> }> } }).delegateParallelTool(
-      { orgId: t.orgId, userId: t.analyst, selection: 'lead-orchestrate', threadId: null, messages: [], abortController: new AbortController() },
-      [],
-    )
-    const out = await tool.execute({ tasks: [{ agent: 'intel', task: 'what is CVE-1' }, { agent: 'hunter', task: 'hunt for it' }, { agent: 'scribe', task: 'remember it' }] })
-    expect(maxInFlight).toBeGreaterThan(1)
-    expect(out.results.find((r) => r.agent === 'Intel')!.answer).toMatch(/intel answer/)
-    expect(out.results.find((r) => r.agent === 'Hunter')!.answer).toMatch(/hunter answer/)
-    expect(out.results).toHaveLength(3)
-    void chat
-  })
+    const saved = { ...process.env }
+    Object.assign(process.env, mockEnv(mock.baseUrl))
+    resetEnvForTests()
+    try {
+      const rt = new LlmAgentRuntime()
+      const tool = (rt as unknown as { delegateParallelTool: (i: unknown, tr: unknown[]) => { execute: (a: unknown) => Promise<{ results: Array<{ agent: string; answer?: string; error?: string }> }> } }).delegateParallelTool(
+        { orgId: t.orgId, userId: t.analyst, selection: 'lead-orchestrate', threadId: null, messages: [], abortController: new AbortController() },
+        [],
+      )
+      const out = await tool.execute({ tasks: [{ agent: 'intel', task: 'what is CVE-1' }, { agent: 'hunter', task: 'hunt for it' }, { agent: 'scribe', task: 'remember it' }] })
+      expect(maxInFlight).toBeGreaterThan(1)
+      expect(out.results.find((r) => r.agent === 'Intel')!.answer).toMatch(/intel answer/)
+      expect(out.results.find((r) => r.agent === 'Hunter')!.answer).toMatch(/hunter answer/)
+      expect(out.results.find((r) => r.agent === 'Scribe')!.error).toBeTruthy()
+      expect(out.results).toHaveLength(3)
+    } finally {
+          await mock.close()
+      process.env = saved
+      resetEnvForTests()
+    }
+  }, 120_000)
 
   it('refuses duplicate specialists, more than 4 tasks, and lead itself', () => {
     expect(delegateParallelInput.safeParse({ tasks: [{ agent: 'intel', task: 'aaaaa' }, { agent: 'intel', task: 'bbbbb' }] }).success).toBe(false)

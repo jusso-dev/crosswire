@@ -1,18 +1,27 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { authed } from './middleware'
-import { addWatch, disableWatch, listWatchHits, listWatches, WatchValidationError } from '../server/ti/watchlists'
-import { listDigests } from '../server/ti/digest'
+import { addWatch, countHitsByEntry, disableWatch, listWatchHits, listWatches, WatchValidationError } from '../server/ti/watchlists'
+import { dayBounds, listDigests } from '../server/ti/digest'
 import { compareKey } from '../server/ti/compare'
 
 export const fetchWatches = createServerFn({ method: 'GET' })
   .middleware([authed])
-  .handler(async ({ context }) => {
+  .validator(z.object({ entryId: z.string().max(100).optional(), day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }).optional())
+  .handler(async ({ context, data }) => {
     const orgId = context.session.org.id
-    const [entries, hits] = await Promise.all([listWatches(orgId), listWatchHits(orgId, { limit: 100 })])
+    // A selected watch or digest day fetches exactly those hits (org-scoped), not just the newest 100.
+    const bounds = data?.day ? dayBounds(data.day) : null
+    const scoped = Boolean(data?.entryId || bounds)
+    const [entries, hits, counts] = await Promise.all([
+      listWatches(orgId),
+      listWatchHits(orgId, { limit: scoped ? 500 : 100, entryId: data?.entryId, since: bounds?.start, until: bounds?.end }),
+      countHitsByEntry(orgId),
+    ])
     return {
-      entries: entries.map((e) => ({ id: e.id, type: e.type, value: e.value, notes: e.notes, createdAt: e.createdAt.toISOString() })),
+      entries: entries.map((e) => ({ id: e.id, type: e.type, value: e.value, notes: e.notes, createdAt: e.createdAt.toISOString(), hitCount: counts[e.id] ?? 0 })),
       hits: hits.map((h) => ({ ...h, createdAt: h.createdAt.toISOString() })),
+      totalHits: Object.values(counts).reduce((a, b) => a + b, 0),
     }
   })
 

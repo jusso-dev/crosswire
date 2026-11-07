@@ -64,6 +64,8 @@ resource alertRules 'Microsoft.Insights/scheduledQueryRules@2023-03-15-preview' 
       ]
     }
     autoMitigate: true
+    // ContainerApp*_CL tables only exist after the first logs arrive; a fresh workspace fails validation.
+    skipQueryValidation: true
     actions: { actionGroups: actions }
   }
 }]

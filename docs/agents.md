@@ -1,6 +1,6 @@
 # Agents, memory and the learning loop (Phase 3)
 
-Decision record: [ADR 0002](adr/0002-squad-sdk-embed.md) (hybrid: Squad-shaped files, in-process runtime, Copilot defs).
+Decision records: [ADR 0002](adr/0002-squad-sdk-embed.md) (Squad-shaped files, Copilot custom agents) and [ADR 0004](adr/0004-chat-model-azure-openai.md) (Crosswire hosts the agents; model on Azure OpenAI). Setup: [copilot-chat.md](chat-model.md).
 
 ## Cast and charters (issue #30)
 
@@ -15,9 +15,8 @@ startup (`SQUAD_DIR` overrides the path; the Docker image copies them to `/app/.
 
 1. Builds the system prompt: charter + org memory (compacted body + recent entries) + global safety rule.
 2. Registers only that agent's tools (`AGENT_TOOLS` in `tools.ts`).
-3. Streams through TanStack AI `chat()` with `MODEL_PROVIDER`:
-   - `stub` (default): deterministic, labelled fake model; no key, works offline.
-   - `anthropic` / `openai`: bring your own key (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`), optional `MODEL_NAME`.
+3. Streams through TanStack AI `chat()` with the model from `model.ts`: `MODEL_PROVIDER=azure`
+   (Azure OpenAI, Entra ID sign-in) or `openai-compatible`. See [chat-model.md](chat-model.md).
 4. Enforces `AGENT_TIMEOUT_MS`; on timeout the chat shows an error instead of hanging.
 
 **Lead (orchestrate squad):** selecting it gives Lead two tools. `delegate` runs one specialist
@@ -27,7 +26,7 @@ others, and all share the turn's abort signal and `AGENT_TIMEOUT_MS`. Lead then 
 combined answer. Each delegation is a decision row. Sub-agents get only their own tool allowlist,
 which never contains an execute, approve, schedule or rollback tool.
 
-No GitHub token or Copilot entitlement is required by the control plane.
+No GitHub token or Copilot entitlement is required.
 
 ### Registering tools (Phase 5+)
 

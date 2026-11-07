@@ -19,7 +19,7 @@ The product idea builds on [bradygaster/squad](https://github.com/bradygaster/sq
 | --- | --- |
 | Analyst UI | TanStack Start dashboard + [TanStack AI basic-chat](https://tanstack.com/ai/latest/docs/ui/recipes/basic-chat) |
 | Auth | [Better Auth](https://www.better-auth.com/) with **Entra ID OIDC** first (SAML later) |
-| Agents | Security cast: Lead, Hunter, Intel, Responder, Scribe. Squad-shaped charters and memory; hybrid runtime per [ADR 0002](docs/adr/0002-squad-sdk-embed.md) |
+| Agents | Security cast: Lead, Hunter, Intel, Responder, Scribe. Squad-shaped charters and memory; model on Azure OpenAI ([ADR 0004](docs/adr/0004-chat-model-azure-openai.md)) |
 | Hunting | Live Advanced Hunting / Graph and Sentinel queries, with human review of proposed KQL |
 | Response | Propose → human approve → execute (Sentinel playbooks / Logic Apps / Defender isolate). Dry-run by default; v2 adds live Microsoft executors on a separate response app and rollback as a gated proposal. |
 | Threat intel | [pwn.watch](https://pwn.watch) ingest + org watchlists (keywords, CVE, vendor, tag) and a daily digest. cve.watch is unavailable, so CISA KEV is the CVE source ([details](docs/ti/cve.watch.md)). |
@@ -53,8 +53,10 @@ pnpm dev                             # http://localhost:3000, then "Create an ac
 Or run everything in Docker: `docker compose up --build` (app, Postgres, worker; Redis optional via
 `--profile redis`).
 
-No tenant or API key needed: chat uses a labelled stub model, hunting has a demo mode, and TI can be
+No tenant needed: hunting has a demo mode and TI can be
 loaded from recorded fixtures (`pnpm ingest:pwn --fixtures test/fixtures/pwnwatch`).
+Chat needs a model: Azure OpenAI with Entra ID sign-in (no key), or any OpenAI-compatible endpoint.
+See [docs/chat-model.md](docs/chat-model.md).
 
 | Command | What it does |
 | --- | --- |
@@ -72,7 +74,7 @@ loaded from recorded fixtures (`pnpm ingest:pwn --fixtures test/fixtures/pwnwatc
 - **App:** TanStack Start + React, [TanStack AI basic-chat](https://tanstack.com/ai/latest/docs/ui/recipes/basic-chat) (`POST /api/chat`, SSE)
 - **Auth:** Better Auth (`tanstackStartCookies`), local email/password, Entra ID OIDC
 - **Data:** Postgres + Drizzle (Compose locally; Azure Database for PostgreSQL in the first deploy)
-- **Agents:** charters in `.squad/`, in-process runtime (stub or BYO Anthropic/OpenAI key), Copilot custom agents in `.github/agents/` ([ADR 0002](docs/adr/0002-squad-sdk-embed.md))
+- **Agents:** charters in `.squad/`, Crosswire-hosted runtime with Azure OpenAI (Entra ID, keyless), Copilot custom agents in `.github/agents/` ([ADR 0004](docs/adr/0004-chat-model-azure-openai.md))
 - **Secrets:** env files locally; Azure Key Vault references in production
 - **CI/CD:** GitHub Actions on GitHub-hosted runners (lint, typecheck, tests, image build); manual-approval deploy to Azure
 

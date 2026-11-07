@@ -9,7 +9,7 @@ import { ingestKev, normaliseCveId } from '../src/server/ti/kev'
 import { politeFetch, USER_AGENT } from '../src/server/ti/http'
 import { addWatch, disableWatch, listWatches, WatchValidationError } from '../src/server/ti/watchlists'
 import { matchRecord, runMatcher } from '../src/server/ti/matcher'
-import { buildDigest, runDailyDigest, utcDay } from '../src/server/ti/digest'
+import { buildDigest, runDailyDigest, appDay } from '../src/server/ti/digest'
 import { compareKey } from '../src/server/ti/compare'
 import * as mail from '../src/server/mail'
 import { makeOrg, makeUser, member } from './helpers'
@@ -157,7 +157,7 @@ describe('matcher, digest, compare (#39, #40, #41)', () => {
   })
 
   it('in-app digest summarises today; empty orgs get a quiet digest', async () => {
-    const day = utcDay()
+    const day = appDay()
     const d = await buildDigest(orgA, day)
     expect(d.hitCount).toBeGreaterThan(0)
     const empty = await buildDigest(orgB, day)
@@ -166,7 +166,7 @@ describe('matcher, digest, compare (#39, #40, #41)', () => {
 
   it('emails owners once per org-day only when SMTP is configured', async () => {
     const send = vi.spyOn(mail, 'sendMail').mockResolvedValue(true)
-    const day = utcDay()
+    const day = appDay()
     await runDailyDigest(day)
     const callsForA = send.mock.calls.filter((c) => (c[0] as string[]).includes('owner-a@example.test'))
     expect(callsForA).toHaveLength(1)

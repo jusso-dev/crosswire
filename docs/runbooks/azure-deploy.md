@@ -42,14 +42,17 @@ az keyvault secret set --vault-name $KV -n entra-client-secret --value '<SSO app
 | `entra-client-secret` | `ENTRA_CLIENT_SECRET` | Before the Entra secret expires |
 
 Email/password sign-up is disabled in Azure (`AUTH_EMAIL_PASSWORD=false`); analysts sign in with
-Entra. Set the non-secret Entra values on both apps:
+Entra. Pass the non-secret Entra values as Bicep parameters on the redeploy (with the real
+`appUrl`), so later redeploys keep them:
 
 ```sh
-for app in crosswire-web crosswire-worker; do
-  az containerapp update -g crosswire-prod -n $app --set-env-vars ENTRA_CLIENT_ID=<id> ENTRA_TENANT_ID=<tenant>
-done
-az containerapp revision restart -g crosswire-prod -n crosswire-web --revision $(az containerapp show -g crosswire-prod -n crosswire-web --query properties.latestRevisionName -o tsv)
+az deployment group create -g crosswire-prod -f infra/azure/main.bicep -p infra/azure/main.bicepparam \
+  -p image=ghcr.io/jusso-dev/crosswire:<sha> appUrl=https://<webFqdn> operatorObjectId=<id> \
+  entraClientId=<SSO app id> entraTenantId=<tenant guid>
 ```
+
+`postgresAdminPassword` comes from `CROSSWIRE_PG_PASSWORD` on every run; a new value rotates the
+Postgres password and the `database-url` secret together.
 
 **Run migrations (first provision and whenever you deploy by hand):**
 
@@ -86,7 +89,10 @@ smoke test (`scripts/smoke.sh`). The job summary records the previous revision f
 Setup:
 
 1. Entra: create an app registration `crosswire-deploy` with a **federated credential** for
-   `repo:<owner>/crosswire:environment:production` (OIDC; no client secret).
+   `repo:<owner>/crosswire:environment:production` (OIDC; no client secret). Repos using GitHub's
+   immutable-ID subject format send `repo:<owner>@<owner-id>/crosswire@<repo-id>:environment:production`
+   instead; if `azure/login` fails with `AADSTS700213`, copy the exact `subject claim` from the
+   job log into the federated credential.
 2. Grant it **Contributor on the resource group only** (it updates container apps and starts the migration job).
 3. GitHub → Settings → Environments → `production`: add required reviewers.
 4. **Environment** variables on `production` (staging gets its own set): `AZURE_CLIENT_ID`,

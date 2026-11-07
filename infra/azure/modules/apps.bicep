@@ -15,6 +15,18 @@ param keyVaultUri string
 param appInsightsConnectionString string = ''
 @description('Comma-separated extra CORS / trusted origins (custom domains).')
 param corsAllowedOrigins string = ''
+@description('IANA time zone for displayed times and the daily digest day.')
+param appTimeZone string = 'Australia/Sydney'
+@description('Chat model endpoint: Azure OpenAI resource endpoint (empty = chat off). See docs/chat-model.md.')
+param azureOpenAiEndpoint string = ''
+@description('Chat model deployment name in that resource.')
+param azureOpenAiDeployment string = ''
+@description('Client ID of the user-assigned managed identity used to sign in to Azure OpenAI (keyless).')
+param identityClientId string
+@description('Entra SSO app (client) id. Not a secret.')
+param entraClientId string = ''
+@description('Entra tenant id for SSO. Not a secret.')
+param entraTenantId string = ''
 
 // Key Vault secret name -> container secret name -> env var. Names match .env.example.
 var kvSecrets = [
@@ -29,6 +41,12 @@ var plainEnv = [
   { name: 'NODE_ENV', value: 'production' }
   { name: 'APP_URL', value: appUrl }
   { name: 'LOG_LEVEL', value: 'info' }
+  { name: 'APP_TIMEZONE', value: appTimeZone }
+  // Keyless Azure OpenAI: DefaultAzureCredential uses this user-assigned identity. No API key secret.
+  { name: 'MODEL_PROVIDER', value: empty(azureOpenAiEndpoint) ? 'off' : 'azure' }
+  { name: 'AZURE_OPENAI_ENDPOINT', value: azureOpenAiEndpoint }
+  { name: 'AZURE_OPENAI_DEPLOYMENT', value: azureOpenAiDeployment }
+  { name: 'AZURE_CLIENT_ID', value: identityClientId }
   // Production sign-in is Entra SSO; local email/password sign-up stays off.
   { name: 'AUTH_EMAIL_PASSWORD', value: 'false' }
   { name: 'HUNTING_DEMO_MODE', value: 'false' }
@@ -40,6 +58,8 @@ var plainEnv = [
   { name: 'MIGRATIONS_DIR', value: '/app/drizzle' }
   { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsightsConnectionString }
   { name: 'CORS_ALLOWED_ORIGINS', value: corsAllowedOrigins }
+  { name: 'ENTRA_CLIENT_ID', value: entraClientId }
+  { name: 'ENTRA_TENANT_ID', value: entraTenantId }
 ]
 
 resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {

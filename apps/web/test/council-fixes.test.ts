@@ -6,7 +6,7 @@ import { parseEnv } from '../src/server/env'
 import { assertSafeKql, UnsafeQueryError } from '../src/server/hunting/safety'
 import { allowedSecretRefPrefix, resolveClientSecret, upsertConnector } from '../src/server/hunting/broker'
 import { withTimeout } from '../src/server/agents/runtime'
-import { buildDigest, runDailyDigest, utcDay } from '../src/server/ti/digest'
+import { buildDigest, runDailyDigest, appDay } from '../src/server/ti/digest'
 import * as mail from '../src/server/mail'
 import { getDb } from '../src/server/db/client'
 import { digests } from '../src/server/db/schema'
@@ -27,7 +27,7 @@ describe('council review regressions', () => {
     )
     const e = parseEnv({ ...vars, BETTER_AUTH_SECRET: 'x'.repeat(40), APP_ENCRYPTION_KEY: 'a'.repeat(64) })
     expect(e.RESPONSE_LOGICAPP_URL).toBeUndefined()
-    expect(e.MODEL_NAME).toBeUndefined()
+    expect(e.OPENAI_MODEL).toBeUndefined()
   })
 
   it('a // inside a string literal cannot hide blocked operators', () => {
@@ -65,7 +65,7 @@ describe('council review regressions', () => {
   })
 
   it('an SMTP failure for one org does not stop other orgs, and the claim is released for retry', async () => {
-    const day = utcDay()
+    const day = appDay()
     const a = await makeOrg('MailA')
     const b = await makeOrg('MailB')
     const ua = await makeUser('mail-a@example.test')

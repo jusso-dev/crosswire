@@ -22,8 +22,8 @@ pwn.watch incidents and CISA KEV records and writes `watch_hits`. A unique index
 
 ## Daily digest
 
-`pnpm digest:daily [YYYY-MM-DD]`, or the worker once per UTC day (00:05 UTC, for the previous
-day). One `digests` row per org per UTC day; quiet days produce a "no hits" digest. **Digests**
+`pnpm digest:daily [YYYY-MM-DD]`, or the worker once per local day (00:05 in `APP_TIMEZONE`, default
+`Australia/Sydney`, for the previous day). One `digests` row per org per local day (DST-safe); quiet days produce a "no hits" digest. **Digests**
 page shows them. Email goes to that org's owners only when `SMTP_HOST` is set; `emailed_at`
 prevents double sends. Dates are stored in UTC; the UI shows local time.
 

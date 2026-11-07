@@ -7,7 +7,7 @@ import { charter } from './charters'
 import { memoryContext } from './memory'
 import { recordDecision } from './decisions'
 import { toolsFor, type ToolContext } from './tools'
-import { createModelAdapter } from './model'
+import { createModelAdapter, ModelNotConfiguredError } from './model'
 
 export interface AgentRunInput {
   orgId: string
@@ -25,9 +25,9 @@ export interface AgentRunHandle {
 }
 
 /**
- * AgentRuntime (#32). ADR 0002 picked the hybrid path: the control plane runs agents in-process
- * with charters + tools via TanStack AI (any configured model, or the stub), and the same charters
- * ship as GitHub Copilot custom agents for use inside GitHub. Phase 5/6 tools register in tools.ts.
+ * AgentRuntime (#32). ADR 0004: Crosswire hosts the agents (charter as system prompt, per-agent
+ * tool allowlist, org memory) and runs the tool loop with TanStack AI `chat()`. The model is
+ * Azure OpenAI (or an OpenAI-compatible endpoint) via model.ts. The stream is AG-UI chunks.
  */
 export interface AgentRuntime {
   run(input: AgentRunInput): Promise<AgentRunHandle>
@@ -47,7 +47,7 @@ export async function systemPromptFor(orgId: string, agentKey: AgentKey, orchest
     .join('\n\n')
 }
 
-/** Model-backed runtime (Anthropic/OpenAI via TanStack AI adapters, or the stub adapter). */
+/** Model-backed runtime: Azure OpenAI or an OpenAI-compatible endpoint. */
 export class LlmAgentRuntime implements AgentRuntime {
   async run(input: AgentRunInput): Promise<AgentRunHandle> {
     const agentKey = selectionAgent(input.selection)
@@ -66,8 +66,14 @@ export class LlmAgentRuntime implements AgentRuntime {
       threadId: input.threadId,
     })
 
+    let adapter
+    try {
+      adapter = createModelAdapter(agentKey)
+    } catch (err) {
+      return { stream: errorStream(err instanceof ModelNotConfiguredError ? err.message : `Chat model error: ${err instanceof Error ? err.message : String(err)}`), traces }
+    }
     const stream = chat({
-      adapter: createModelAdapter(agentKey),
+      adapter,
       messages: input.messages,
       threadId: input.threadId ?? `ephemeral-${crypto.randomUUID()}`,
       systemPrompts: [await systemPromptFor(input.orgId, agentKey, orchestrate)],
@@ -91,7 +97,7 @@ export class LlmAgentRuntime implements AgentRuntime {
       stream: false,
       abortController: input.abortController,
     })
-    const answer = typeof text === 'string' ? text : (text as { text?: string }).text ?? ''
+    const answer = typeof text === 'string' ? text : ((text as { text?: string }).text ?? '')
     await recordDecision({ orgId: input.orgId, actorType: 'agent', actorKey: 'lead', action: `delegate:${agent}`, input: task, output: answer, threadId: input.threadId })
     traces.push({ tool: via, input: { agent, task }, output: answer.slice(0, 500) })
     return { agent: AGENT_LABELS[agent].name, answer }
@@ -169,3 +175,8 @@ export async function* withTimeout(stream: AsyncIterable<StreamChunk>, ms: numbe
 }
 
 export const agentTimeoutMs = () => env().AGENT_TIMEOUT_MS
+
+/** A one-event stream that reports a setup or construction error to the chat UI. */
+async function* errorStream(message: string): AsyncIterable<StreamChunk> {
+  yield { type: EventType.RUN_ERROR, message, timestamp: Date.now(), error: { message } } as unknown as StreamChunk
+}
