@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { getDb } from '../src/server/db/client'
 import { watchEntries, watchHits } from '../src/server/db/schema'
 import { createHunt, getHunt } from '../src/server/hunting/hunts'
-import { applyFilters, cellText, decodeFilters, encodeFilters, kqlLiteral, summariseEntities } from '../src/components/results'
+import { applyFilters, cellText, decodeFilters, decodeSort, encodeFilters, encodeSort, kqlIdentifier, kqlLiteral, sortRows, summariseEntities } from '../src/components/results'
+import { controlPanel, lastCalendarDays } from '../src/server/ops/overview'
+import { createProposal } from '../src/server/response/proposals'
+import { proposeKql } from '../src/server/hunting/hunts'
+import { pwnIncidents, kqlProposals, responseProposals } from '../src/server/db/schema'
+import { eq } from 'drizzle-orm'
 import { normaliseSeverity } from '../src/components/signals'
 import { makeOrg, makeUser, member } from './helpers'
 
@@ -62,10 +67,38 @@ describe('result grid helpers', () => {
     expect(cellText(null)).toBe('')
   })
 
-  it('builds escaped KQL literals for pivots', () => {
+  it('builds escaped KQL literals for pivots, including line breaks', () => {
     expect(kqlLiteral('say "hi"')).toBe('"say \\"hi\\""')
     expect(kqlLiteral('a\\b')).toBe('"a\\\\b"')
     expect(kqlLiteral(10)).toBe('10')
+    const lit = kqlLiteral('line1\n.set evil\r\tx')
+    expect(lit).not.toMatch(/[\n\r\t]/)
+    expect(lit).toBe('"line1\\n.set evil\\r\\tx"')
+  })
+
+  it('quotes column names that are not plain KQL identifiers', () => {
+    expect(kqlIdentifier('DeviceName')).toBe('DeviceName')
+    expect(kqlIdentifier('Remote IP')).toBe("['Remote IP']")
+    expect(kqlIdentifier('user.name')).toBe("['user.name']")
+    expect(kqlIdentifier("o'brien")).toBe("['o\\'brien']")
+  })
+
+  it('keeps operators separate from column names, even ones starting with !', () => {
+    const f = [{ col: '!weird', op: 'eq' as const, value: 'x' }]
+    expect(decodeFilters(encodeFilters(f))).toEqual(f)
+    expect(decodeFilters('garbage&eq:%E0%A4%A=1')).toEqual([])
+  })
+
+  it('shares one sort order between grid and inspector, and round-trips through the URL', () => {
+    const sorted = sortRows(applyFilters(rows, []), { col: 'Count', dir: 'desc' })
+    expect(sorted.map((r) => r.index)).toEqual([1, 0, 2])
+    expect(decodeSort(encodeSort({ col: 'Remote IP', dir: 'asc' }))).toEqual({ col: 'Remote IP', dir: 'asc' })
+    expect(decodeSort('sideways:x')).toBeNull()
+  })
+
+  it('generates consecutive calendar days across a DST change', () => {
+    expect(lastCalendarDays('2026-10-05', 4)).toEqual(['2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05'])
+    expect(lastCalendarDays('2026-03-01', 2)).toEqual(['2026-02-28', '2026-03-01'])
   })
 
   it('summarises entities within the sample only', () => {
@@ -79,5 +112,38 @@ describe('result grid helpers', () => {
     expect(normaliseSeverity('CRITICAL')).toBe('critical')
     expect(normaliseSeverity('informational')).toBe('unknown')
     expect(normaliseSeverity(null)).toBe('unknown')
+  })
+})
+
+describe('control panel (overview) counts', () => {
+  it('lists only live incidents, excludes expired and approved items from "waiting", and counts beyond the preview caps', async () => {
+    const orgId = await makeOrg('Ov')
+    const u = await makeUser()
+    await member(orgId, u, 'owner')
+    const now = new Date()
+    const base = { url: 'https://pwn.watch/x', sourceUrl: 'https://pwn.watch/incidents.json', retrievedAt: now, raw: {} }
+    await getDb().insert(pwnIncidents).values([
+      { ...base, slug: `live-${orgId}`, title: 'Live one', status: 'live' },
+      { ...base, slug: `closed-${orgId}`, title: 'Closed one', status: 'closed' },
+    ])
+    const hunt = await createHunt(orgId, u, { title: 'H' })
+    for (let i = 0; i < 7; i++) await createHunt(orgId, u, { title: `Open ${i}` })
+    const fresh = await proposeKql(orgId, { type: 'user', id: u }, { huntId: hunt.id, target: 'defender', kql: 'DeviceInfo | take 1' })
+    const stale = await proposeKql(orgId, { type: 'user', id: u }, { huntId: hunt.id, target: 'defender', kql: 'DeviceInfo | take 2' })
+    await getDb().update(kqlProposals).set({ expiresAt: new Date(now.getTime() - 1000) }).where(eq(kqlProposals.id, stale.id))
+    const action = { title: 'Isolate', actionType: 'graph_containment' as const, targets: { devices: ['d1'] }, blastRadius: { summary: 'one demo device only' }, payload: {} }
+    await createProposal(orgId, { type: 'user', userId: u }, action)
+    const approved = await createProposal(orgId, { type: 'user', userId: u }, action)
+    await getDb().update(responseProposals).set({ status: 'approved' }).where(eq(responseProposals.id, approved.id))
+
+    const p = await controlPanel(orgId, now)
+    expect(p.emerging.every((i) => i.status === 'live')).toBe(true)
+    expect(p.emerging.some((i) => i.title === 'Closed one')).toBe(false)
+    expect(p.pendingQueries.map((q) => q.id)).toEqual([fresh.id])
+    expect(p.pendingResponses).toHaveLength(1)
+    expect(p.totals.awaitingDecision).toBe(2)
+    expect(p.totals.openHunts).toBe(8) // more than the 6-item preview
+    expect(p.openHunts).toHaveLength(6)
+    expect(p.chartDays).toHaveLength(14)
   })
 })

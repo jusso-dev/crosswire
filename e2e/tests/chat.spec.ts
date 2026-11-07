@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test'
 
 /**
- * Chat (ChatGPT-style). Needs the app configured with MODEL_PROVIDER=openai-compatible (or azure)
- * pointed at a model endpoint that streams (a local mock is fine) and calls
- * search_intel when offered it.
+ * Chat (ChatGPT-style). Runs against the deterministic mock model in e2e/support/mock-model.mjs:
+ * start it with `node e2e/support/mock-model.mjs` and run the app with MODEL_PROVIDER=openai-compatible,
+ * OPENAI_BASE_URL=http://127.0.0.1:18099/v1, OPENAI_MODEL=mock-model, OPENAI_API_KEY=any.
+ * Its answer is fixed (a list and a table) and paced, so streaming is observable.
  */
 const stamp = Date.now()
 
@@ -27,12 +28,13 @@ test('chat streams a markdown reply, shows tool steps, persists, and supports st
   await input.fill('What is new for Fortinet?')
   await page.keyboard.press('Enter')
   const reply = page.locator('.cw-turn[data-role="assistant"]').last()
-  await expect(reply.locator('.cw-md[data-streaming]')).toBeVisible({ timeout: 30_000 })
-  const partial = await reply.locator('.cw-md').innerText()
-  await expect(reply.getByRole('table')).toBeVisible({ timeout: 30_000 }) // markdown table rendered
-  const full = await reply.locator('.cw-md').innerText()
-  expect(full.length).toBeGreaterThan(partial.length)
-  await expect(reply.locator('.cw-md[data-streaming]')).toHaveCount(0)
+  // Streaming: the first words are on screen while the reply is still marked as streaming.
+  await expect(reply.locator('.cw-md[data-streaming]')).toContainText('Here is what I found', { timeout: 30_000 })
+  await expect(reply.locator('.cw-md[data-streaming]')).not.toContainText('Next step')
+  // Finished: the full fixed answer rendered as markdown, including its table.
+  await expect(reply.locator('.cw-md[data-streaming]')).toHaveCount(0, { timeout: 30_000 })
+  await expect(reply.getByRole('table')).toBeVisible()
+  await expect(reply.getByRole('cell', { name: 'CISA KEV' })).toBeVisible()
   await expect(reply.getByText('Fortinet', { exact: false }).first()).toBeVisible()
 
   // Tool step chip and the copy action appear after the reply finishes.

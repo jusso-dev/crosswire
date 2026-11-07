@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 
 export type Row = Record<string, unknown>
 export type Filter = { col: string; op: 'eq' | 'ne'; value: string }
@@ -10,9 +10,10 @@ export function cellText(v: unknown): string {
   return String(v)
 }
 
+/** Encode filters for the URL. The operator is its own field ("eq"/"ne"), so column names may contain any character. */
 export function encodeFilters(filters: Filter[]): string | undefined {
   if (!filters.length) return undefined
-  return filters.map((f) => `${f.op === 'ne' ? '!' : ''}${encodeURIComponent(f.col)}=${encodeURIComponent(f.value)}`).join('&')
+  return filters.map((f) => `${f.op}:${encodeURIComponent(f.col)}=${encodeURIComponent(f.value)}`).join('&')
 }
 
 export function decodeFilters(raw: string | undefined): Filter[] {
@@ -20,12 +21,42 @@ export function decodeFilters(raw: string | undefined): Filter[] {
   return raw
     .split('&')
     .map((part) => {
-      const ne = part.startsWith('!')
-      const [col, ...rest] = (ne ? part.slice(1) : part).split('=')
-      if (!col) return null
-      return { col: decodeURIComponent(col), op: ne ? 'ne' : 'eq', value: decodeURIComponent(rest.join('=')) } as Filter
+      const m = /^(eq|ne):([^=]*)=(.*)$/s.exec(part)
+      if (!m || !m[2]) return null
+      try {
+        return { op: m[1] as Filter['op'], col: decodeURIComponent(m[2]), value: decodeURIComponent(m[3]!) }
+      } catch {
+        return null
+      }
     })
     .filter((f): f is Filter => f !== null)
+}
+
+export type Sort = { col: string; dir: 'asc' | 'desc' } | null
+
+export function encodeSort(sort: Sort) {
+  return sort ? `${sort.dir}:${encodeURIComponent(sort.col)}` : undefined
+}
+
+export function decodeSort(raw: string | undefined): Sort {
+  const m = raw ? /^(asc|desc):(.+)$/.exec(raw) : null
+  if (!m) return null
+  try {
+    return { dir: m[1] as 'asc' | 'desc', col: decodeURIComponent(m[2]!) }
+  } catch {
+    return null
+  }
+}
+
+/** Sort rows the same way for the grid and the inspector, so next/previous follow what is on screen. */
+export function sortRows(rows: Array<{ row: Row; index: number }>, sort: Sort) {
+  if (!sort) return rows
+  return [...rows].sort((a, b) => {
+    const x = a.row[sort.col]
+    const y = b.row[sort.col]
+    const cmp = typeof x === 'number' && typeof y === 'number' ? x - y : cellText(x).localeCompare(cellText(y), 'en', { numeric: true })
+    return sort.dir === 'asc' ? cmp : -cmp
+  })
 }
 
 export function applyFilters(rows: Row[], filters: Filter[]) {
@@ -34,10 +65,25 @@ export function applyFilters(rows: Row[], filters: Filter[]) {
     .filter(({ row }) => filters.every((f) => (f.op === 'eq' ? cellText(row[f.col]) === f.value : cellText(row[f.col]) !== f.value)))
 }
 
-/** KQL literal for a "where" pivot. Strings are double-quoted with escapes; numbers stay bare. */
+/** KQL literal for a "where" pivot. Strings are double-quoted with escapes (including line breaks); numbers stay bare. */
 export function kqlLiteral(v: unknown): string {
   if (typeof v === 'number' || typeof v === 'boolean') return String(v)
-  return `"${cellText(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  const escaped = cellText(v)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\t/g, '\\t')
+    // Any other control character as a Unicode escape.
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+  return `"${escaped}"`
+}
+
+/** KQL identifier for a column. Plain names stay bare; anything else uses the ['name'] form. */
+export function kqlIdentifier(name: string): string {
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return name
+  return `['${name.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}']`
 }
 
 /**
@@ -50,28 +96,22 @@ export function ResultGrid({
   selected,
   onSelect,
   caption,
+  sort,
+  onSort,
 }: {
   columns: string[]
+  /** Already filtered and sorted (sortRows), so the grid and inspector share one order. */
   rows: Array<{ row: Row; index: number }>
   selected: number | null
   onSelect: (index: number | null) => void
   caption: string
+  sort: Sort
+  onSort: (sort: Sort) => void
 }) {
-  const [sort, setSort] = useState<{ col: string; dir: 'asc' | 'desc' } | null>(null)
   const [wrap, setWrap] = useState(false)
   const body = useRef<HTMLTableSectionElement>(null)
-
-  const sorted = useMemo(() => {
-    if (!sort) return rows
-    const out = [...rows]
-    out.sort((a, b) => {
-      const x = a.row[sort.col]
-      const y = b.row[sort.col]
-      const cmp = typeof x === 'number' && typeof y === 'number' ? x - y : cellText(x).localeCompare(cellText(y), 'en', { numeric: true })
-      return sort.dir === 'asc' ? cmp : -cmp
-    })
-    return out
-  }, [rows, sort])
+  const sorted = rows
+  const setSort = onSort
 
   // Keep the selected row in view when it changes via keyboard or URL.
   useEffect(() => {
@@ -237,11 +277,49 @@ export function Inspector({
       setCopied('Copy failed: clipboard not available')
     }
   }
+  // Narrow screens show the inspector as an overlay: move focus in, keep it in, restore it on close.
+  // Wide screens keep it as a side panel next to the grid, so focus stays where the analyst is.
+  const ref = useRef<HTMLElement>(null)
+  const [overlay, setOverlay] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 1180px)')
+    const on = () => setOverlay(mq.matches)
+    on()
+    mq.addEventListener('change', on)
+    return () => mq.removeEventListener('change', on)
+  }, [])
+  useEffect(() => {
+    if (!overlay) return
+    const opener = document.activeElement as HTMLElement | null
+    ref.current?.querySelector<HTMLElement>('h2')?.focus()
+    return () => opener?.focus?.()
+  }, [overlay])
+  const trap = (e: KeyboardEvent<HTMLElement>) => {
+    if (!overlay || e.key !== 'Tab' || !ref.current) return
+    const items = [...ref.current.querySelectorAll<HTMLElement>('button:not([disabled]), input, select, textarea, a[href], [tabindex]:not([tabindex="-1"])')].filter((el) => el.offsetParent !== null)
+    if (!items.length) return
+    const first = items[0]!
+    const last = items[items.length - 1]!
+    // Includes the case where focus is on the (programmatically focused) heading or outside the list.
+    const inList = items.includes(document.activeElement as HTMLElement)
+    if (e.shiftKey && (document.activeElement === first || !inList)) {
+      e.preventDefault()
+      last.focus()
+    } else if (!e.shiftKey && (document.activeElement === last || !inList)) {
+      e.preventDefault()
+      first.focus()
+    }
+  }
+
   return (
     <aside
+      ref={ref}
       className="cw-inspector"
       aria-label={title}
+      role={overlay ? 'dialog' : undefined}
+      aria-modal={overlay ? true : undefined}
       onKeyDown={(e) => {
+        trap(e)
         // Same keys as the grid, so analysts can step through rows from either side.
         const typing = (e.target as HTMLElement).closest('input, textarea, select')
         if (e.key === 'Escape') onClose()
@@ -255,7 +333,7 @@ export function Inspector({
       }}
     >
       <div className="cw-inspector-head">
-        <h2>{title}</h2>
+        <h2 tabIndex={-1}>{title}</h2>
         <span className="cw-muted num">{position}</span>
         <button type="button" className="cw-iconbtn" onClick={onPrev} disabled={!onPrev}>
           <span aria-hidden>↑</span>

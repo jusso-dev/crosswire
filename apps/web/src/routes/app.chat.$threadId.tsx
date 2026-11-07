@@ -1,4 +1,4 @@
-import { Link, createFileRoute, notFound, useRouter } from '@tanstack/react-router'
+import { Link, createFileRoute, getRouteApi, notFound, useRouter } from '@tanstack/react-router'
 import { fetchServerSentEvents, useChat, type UIMessage } from '@tanstack/ai-react'
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
@@ -68,6 +68,9 @@ function textOf(m: UIMessage) {
     .join('')
 }
 
+// Drafts typed while a reply streams survive the remount that follows it (keyed per thread).
+const drafts = new Map<string, string>()
+
 function Thread() {
   const data = Route.useLoaderData()
   const { threadId } = Route.useParams()
@@ -79,7 +82,13 @@ function Thread() {
 function ThreadChat({ data, threadId }: { data: Loaded; threadId: string }) {
   const router = useRouter()
   const [agent, setAgent] = useState<AgentSelection>(toAgentSelection(data.thread.agentKey))
-  const [input, setInput] = useState('')
+  const [input, setInputState] = useState(() => drafts.get(threadId) ?? '')
+  const setInput = (v: string) => {
+    drafts.set(threadId, v)
+    setInputState(v)
+  }
+  const { runtime } = getRouteApi('/app/chat').useLoaderData()
+  const ready = runtime.configured
   const initialMessages = useMemo(() => toUiMessages(data.messages), [data.messages])
   const { messages, sendMessage, isLoading, error, stop } = useChat({
     connection: fetchServerSentEvents('/api/chat', { credentials: 'same-origin' }),
@@ -97,7 +106,7 @@ function ThreadChat({ data, threadId }: { data: Loaded; threadId: string }) {
 
   const submit = (text = input) => {
     const t = text.trim()
-    if (!t || isLoading) return
+    if (!t || isLoading || !ready) return
     pinned.current = true
     void sendMessage(t)
     setInput('')
@@ -165,7 +174,7 @@ function ThreadChat({ data, threadId }: { data: Loaded; threadId: string }) {
               <ul className="cw-prompts" aria-label="Suggested questions">
                 {STARTERS.map((s) => (
                   <li key={s}>
-                    <button type="button" onClick={() => submit(s)}>
+                    <button type="button" disabled={!ready} onClick={() => submit(s)}>
                       {s}
                     </button>
                   </li>
@@ -217,6 +226,7 @@ function ThreadChat({ data, threadId }: { data: Loaded; threadId: string }) {
             id="chat-input"
             ref={inputRef}
             rows={1}
+            disabled={!ready}
             aria-describedby="chat-input-help"
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -234,14 +244,14 @@ function ThreadChat({ data, threadId }: { data: Loaded; threadId: string }) {
               <span className="cw-sr-only">Stop reply</span>
             </button>
           ) : (
-            <button className="cw-sendbtn" type="submit" disabled={!input.trim()}>
+            <button className="cw-sendbtn" type="submit" disabled={!input.trim() || !ready}>
               <span aria-hidden>↑</span>
               <span className="cw-sr-only">Send</span>
             </button>
           )}
         </div>
         <p id="chat-input-help" className="cw-help">
-          Enter to send, Shift+Enter for a new line. Agents can be wrong: check sources before acting. Nothing runs in your tenant without an approver.
+          {ready ? 'Enter to send, Shift+Enter for a new line. Agents can be wrong: check sources before acting. Nothing runs in your tenant without an approver.' : 'Chat is not set up, so new messages are turned off. You can still read this conversation.'}
         </p>
       </form>
     </section>

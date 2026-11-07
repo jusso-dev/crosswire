@@ -5,19 +5,22 @@ import { addNote, approveKqlFn, createScheduleFn, disableScheduleFn, fetchHunt, 
 import { fmtTime } from '../components/format'
 import { Notice, Term } from '../components/ui'
 import { Freshness, ModeTag, StatusTag, TARGET_LABEL } from '../components/signals'
-import { FilterChips, Inspector, ResultGrid, applyFilters, decodeFilters, encodeFilters, kqlLiteral, summariseEntities, type Filter, type Row } from '../components/results'
+import { FilterChips, Inspector, ResultGrid, applyFilters, decodeFilters, decodeSort, encodeFilters, encodeSort, kqlIdentifier, kqlLiteral, sortRows, summariseEntities, type Filter, type Row, type Sort } from '../components/results'
 
 /**
  * Hunt workspace (reference slice for the analyst design system, see design.md).
  * View state lives in the URL so reload, back/forward and shared links restore the exact view:
  *   q   selected search id      row  selected row in that search's sample
- *   f   result filters          tl   timeline filter
+ *   f   result filters          s    result sort (shared by grid and inspector)
+ *   tl  timeline filter         ev   a repeat-search run whose sample is shown
  */
 const search = z.object({
   q: z.string().optional(),
   row: z.coerce.number().int().min(0).optional(),
   f: z.string().optional(),
+  s: z.string().optional(),
   tl: z.enum(['all', 'searches', 'results', 'notes', 'schedules']).optional(),
+  ev: z.string().optional(),
 })
 
 export const Route = createFileRoute('/app/hunts/$huntId')({
@@ -62,12 +65,21 @@ function HuntWorkspace() {
   const router = useRouter()
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState<{ kql: string; target: 'defender' | 'sentinel' } | null>(null)
+  // Lives above the rail so opening the inspector (which replaces the rail) never drops a draft.
+  const [note, setNote] = useState('')
 
   // Default selection: the first search that needs review, else the latest that ran, else the newest.
   const selected = proposals.find((p) => p.id === sp.q) ?? proposals.find((p) => p.status === 'proposed') ?? proposals.find((p) => p.status === 'run') ?? proposals[0]
-  const set = (patch: Partial<z.infer<typeof search>>) => navigate({ search: (prev) => ({ ...prev, ...patch }), replace: true, resetScroll: false })
+  // View changes are pushed to history so Back steps through them. Every change pins the selected
+  // search id, so a reload never re-points row/filters at a different default search.
+  const set = (patch: Partial<z.infer<typeof search>>, opts: { replace?: boolean } = {}) =>
+    navigate({ search: (prev) => ({ ...prev, q: selected?.id ?? prev.q, ...patch }), replace: opts.replace ?? false, resetScroll: false })
   const filters = decodeFilters(sp.f)
-  const summary = selected ? summaryOf(selected) : null
+  const sort = decodeSort(sp.s)
+  // A repeat-search run selected from the timeline shows its own sample in place of the original.
+  const runEvent = sp.ev ? data.evidence.find((e) => e.id === sp.ev && e.type === 'scheduled_result') : undefined
+  const summary = runEvent ? (runEvent.payload as Summary) : selected ? summaryOf(selected) : null
+  const ordered = summary?.sample ? sortRows(applyFilters(summary.sample, filters), sort) : []
   const inspecting = summary?.sample && sp.row !== undefined && summary.sample[sp.row] ? sp.row : null
 
   return (
@@ -172,7 +184,7 @@ function HuntWorkspace() {
                   type="button"
                   className="cw-qitem"
                   aria-current={p.id === selected?.id ? 'true' : undefined}
-                  onClick={() => set({ q: p.id, row: undefined, f: undefined })}
+                  onClick={() => set({ q: p.id, row: undefined, f: undefined, s: undefined, ev: undefined })}
                 >
                   <StatusTag status={p.status} />
                   <code title={p.kql}>{p.kql}</code>
@@ -192,11 +204,17 @@ function HuntWorkspace() {
 
         {selected && (
           <SearchPanel
-            key={selected.id}
+            key={`${selected.id}:${runEvent?.id ?? ''}`}
             p={selected}
+            summary={summary}
+            runAt={runEvent?.createdAt}
+            onShowOriginal={runEvent ? () => set({ ev: undefined, row: undefined, f: undefined }) : undefined}
+            ordered={ordered}
             filters={filters}
+            sort={sort}
             row={inspecting}
-            onRow={(row) => set({ row: row ?? undefined })}
+            onRow={(row) => set({ row: row ?? undefined }, { replace: sp.row !== undefined && row !== null })}
+            onSort={(next) => set({ s: encodeSort(next) }, { replace: true })}
             onFilters={(next) => set({ f: encodeFilters(next), row: undefined })}
             onError={setError}
             onDraft={(kql) => setDraft({ kql, target: selected.target })}
@@ -212,8 +230,9 @@ function HuntWorkspace() {
           p={selected}
           summary={summary}
           rowIndex={inspecting}
+          ordered={ordered}
           filters={filters}
-          onRow={(row) => set({ row: row ?? undefined })}
+          onRow={(row) => set({ row: row ?? undefined }, { replace: row !== null })}
           onFilters={(next) => set({ f: encodeFilters(next), row: undefined })}
           onDraft={(kql) => {
             setDraft({ kql, target: selected.target })
@@ -222,9 +241,15 @@ function HuntWorkspace() {
         />
       ) : (
         <aside className="cw-ws-rail" aria-label="Hunt evidence">
-          <Entities p={selected} onFilter={(col, value) => selected && set({ q: selected.id, f: encodeFilters([...filters, { col, op: 'eq', value }]), row: undefined })} />
-          <Timeline data={data} filter={sp.tl ?? 'all'} onFilter={(tl) => set({ tl: tl === 'all' ? undefined : tl })} onOpen={(q) => set({ q, row: undefined, f: undefined })} />
-          <NoteForm huntId={hunt.id} />
+          <Entities summary={summary} onFilter={(col, value) => set({ f: encodeFilters([...filters, { col, op: 'eq', value }]), row: undefined })} />
+          <Timeline
+            data={data}
+            filter={sp.tl ?? 'all'}
+            onFilter={(tl) => set({ tl: tl === 'all' ? undefined : tl }, { replace: true })}
+            onOpen={(q) => set({ q, row: undefined, f: undefined, s: undefined, ev: undefined })}
+            onOpenRun={(ev, q) => set({ q, ev, row: undefined, f: undefined, s: undefined })}
+          />
+          <NoteForm huntId={hunt.id} note={note} setNote={setNote} onError={setError} />
         </aside>
       )}
     </div>
@@ -233,17 +258,29 @@ function HuntWorkspace() {
 
 function SearchPanel({
   p,
+  summary,
+  runAt,
+  onShowOriginal,
+  ordered,
   filters,
+  sort,
   row,
   onRow,
+  onSort,
   onFilters,
   onError,
   onDraft,
 }: {
   p: Proposal
+  summary: Summary | null
+  runAt?: string
+  onShowOriginal?: () => void
+  ordered: Array<{ row: Row; index: number }>
   filters: Filter[]
+  sort: Sort
   row: number | null
   onRow: (row: number | null) => void
+  onSort: (s: Sort) => void
   onFilters: (f: Filter[]) => void
   onError: (e: string | null) => void
   onDraft: (kql: string) => void
@@ -251,15 +288,15 @@ function SearchPanel({
   const router = useRouter()
   const [kql, setKql] = useState(p.kql)
   const [busy, setBusy] = useState(false)
-  const s = summaryOf(p)
+  const s = summary
   const pending = p.status === 'proposed'
   const edited = pending && kql.trim() !== p.originalKql.trim()
-  const visible = useMemo(() => (s?.sample ? applyFilters(s.sample, filters) : []), [s, filters])
+  const visible = ordered
 
   return (
     <section className="cw-panel2" aria-labelledby="search-title">
       <div className="cw-panel2-head">
-        <h2 id="search-title">{pending ? 'Review this search' : 'Search'}</h2>
+        <h2 id="search-title">{pending ? 'Review this search' : runAt ? 'Repeat search run' : 'Search'}</h2>
         <StatusTag status={p.status} />
         <span className="cw-muted">{TARGET_LABEL[p.target]}</span>
         {s?.mode && <ModeTag mode={s.mode} />}
@@ -336,6 +373,16 @@ function SearchPanel({
         {p.status === 'rejected' && <p className="cw-muted">Rejected. It did not run.</p>}
       </div>
 
+      {runAt && (
+        <div className="cw-panel2-foot" style={{ borderTop: 0 }}>
+          <span>
+            Showing the sample from the repeat run at {fmtTime(runAt)}.{' '}
+            <button type="button" className="cw-linkbtn" onClick={onShowOriginal}>
+              Show the original run
+            </button>
+          </span>
+        </div>
+      )}
       {p.status === 'run' && s && (
         <>
           <div className="cw-panel2-foot" style={{ borderTop: 0, borderBottom: '1px solid var(--border)' }}>
@@ -384,6 +431,8 @@ function SearchPanel({
                     rows={visible}
                     selected={row}
                     onSelect={onRow}
+                    sort={sort}
+                    onSort={onSort}
                     caption={`${visible.length} of ${s.sample.length} sample rows${filters.length ? ' match the filters' : ''}`}
                   />
                 )}
@@ -400,6 +449,7 @@ function RowInspector({
   p,
   summary,
   rowIndex,
+  ordered,
   filters,
   onRow,
   onFilters,
@@ -408,13 +458,14 @@ function RowInspector({
   p: Proposal
   summary: Summary
   rowIndex: number
+  ordered: Array<{ row: Row; index: number }>
   filters: Filter[]
   onRow: (row: number | null) => void
   onFilters: (f: Filter[]) => void
   onDraft: (kql: string) => void
 }) {
   const sample = summary.sample ?? []
-  const visible = applyFilters(sample, filters).map((r) => r.index)
+  const visible = ordered.map((r) => r.index)
   const pos = visible.indexOf(rowIndex)
   const columns = summary.columns ?? Object.keys(sample[0] ?? {})
   return (
@@ -430,7 +481,7 @@ function RowInspector({
       onPrev={pos > 0 ? () => onRow(visible[pos - 1]!) : undefined}
       onNext={pos >= 0 && pos < visible.length - 1 ? () => onRow(visible[pos + 1]!) : undefined}
       onFilter={(col, op, value) => onFilters([...filters, { col, op, value }])}
-      onAddToSearch={(col, value) => onDraft(`${p.kql.replace(/\s*\|\s*take\s+\d+\s*$/i, '')}\n| where ${col} == ${kqlLiteral(value)}\n| take 100`)}
+      onAddToSearch={(col, value) => onDraft(`${p.kql.replace(/\s*\|\s*take\s+\d+\s*$/i, '')}\n| where ${kqlIdentifier(col)} == ${kqlLiteral(value)}\n| take 100`)}
       provenance={
         <dl className="cw-provenance">
           <dt>Source</dt>
@@ -453,9 +504,9 @@ function RowInspector({
   )
 }
 
-function Entities({ p, onFilter }: { p: Proposal | undefined; onFilter: (col: string, value: string) => void }) {
-  const s = p ? summaryOf(p) : null
-  const { groups, timeCol } = useMemo(() => summariseEntities(s?.columns ?? [], s?.sample ?? []), [s])
+function Entities({ summary, onFilter }: { summary: Summary | null; onFilter: (col: string, value: string) => void }) {
+  const s = summary
+  const { groups, timeCol } = useMemo(() => summariseEntities(s?.columns ?? Object.keys(s?.sample?.[0] ?? {}), s?.sample ?? []), [s])
   return (
     <section className="cw-rail-section" aria-labelledby="entities-title">
       <h2 id="entities-title">Entities in this result</h2>
@@ -512,7 +563,25 @@ const EVIDENCE_LABEL: Record<string, string> = {
   response_proposed: 'Action proposed',
 }
 
-function Timeline({ data, filter, onFilter, onOpen }: { data: Data; filter: string; onFilter: (f: 'all' | 'searches' | 'results' | 'notes' | 'schedules') => void; onOpen: (q: string) => void }) {
+function Timeline({
+  data,
+  filter,
+  onFilter,
+  onOpen,
+  onOpenRun,
+}: {
+  data: Data
+  filter: string
+  onFilter: (f: 'all' | 'searches' | 'results' | 'notes' | 'schedules') => void
+  onOpen: (q: string) => void
+  onOpenRun: (eventId: string, proposalId: string) => void
+}) {
+  // A schedule is created from one proposal, so its runs map back to that search.
+  const scheduleSource = new Map<string, string>()
+  for (const e of data.evidence) {
+    const pl = e.payload as Record<string, unknown>
+    if (e.type === 'schedule_created' && typeof pl.scheduleId === 'string' && typeof pl.proposalId === 'string') scheduleSource.set(pl.scheduleId, pl.proposalId)
+  }
   const items = [...data.evidence].reverse().filter((e) => filter === 'all' || TL_TYPES[filter]?.includes(e.type))
   return (
     <section className="cw-rail-section" aria-labelledby="timeline-title">
@@ -530,12 +599,17 @@ function Timeline({ data, filter, onFilter, onOpen }: { data: Data; filter: stri
         <ol className="cw-timeline" aria-label="Newest first">
           {items.map((e) => {
             const pl = e.payload as Record<string, unknown>
+            const runOf = e.type === 'scheduled_result' && typeof pl.scheduleId === 'string' ? scheduleSource.get(pl.scheduleId) : undefined
             const proposalId = typeof pl.proposalId === 'string' ? pl.proposalId : null
             const kind = e.type.endsWith('result') ? 'result' : e.type.endsWith('failed') ? 'failed' : e.type === 'note' ? 'note' : undefined
             const label = EVIDENCE_LABEL[e.type] ?? e.type.replace(/_/g, ' ')
             return (
               <li key={e.id} data-kind={kind}>
-                {proposalId ? (
+                {runOf && Array.isArray(pl.sample) ? (
+                  <button type="button" className="cw-tl-btn" onClick={() => onOpenRun(e.id, runOf)}>
+                    {label}
+                  </button>
+                ) : proposalId ? (
                   <button type="button" className="cw-tl-btn" onClick={() => onOpen(proposalId)}>
                     {label}
                   </button>
@@ -562,9 +636,8 @@ function Timeline({ data, filter, onFilter, onOpen }: { data: Data; filter: stri
   )
 }
 
-function NoteForm({ huntId }: { huntId: string }) {
+function NoteForm({ huntId, note, setNote, onError }: { huntId: string; note: string; setNote: (n: string) => void; onError: (e: string | null) => void }) {
   const router = useRouter()
-  const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
   return (
     <section className="cw-rail-section">
@@ -573,16 +646,22 @@ function NoteForm({ huntId }: { huntId: string }) {
         onSubmit={async (e) => {
           e.preventDefault()
           setSaving(true)
-          await addNote({ data: { huntId, note } })
-          setSaving(false)
-          setNote('')
-          await router.invalidate()
+          try {
+            await addNote({ data: { huntId, note } })
+            setNote('')
+            onError(null)
+            await router.invalidate()
+          } catch (err) {
+            onError(`Note not saved: ${err instanceof Error ? err.message : String(err)}`)
+          } finally {
+            setSaving(false)
+          }
         }}
       >
         <label>
           Add a note
           <span className="cw-help">What you found, what you ruled out, or what to check next.</span>
-          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} required />
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} required maxLength={4000} />
         </label>
         <div>
           <button className="cw-btn" data-variant="ghost" type="submit" disabled={saving || !note.trim()}>
@@ -658,7 +737,9 @@ function Schedules({ data, onError }: { data: Data; onError: (e: string | null) 
   const router = useRouter()
   const ran = data.proposals.filter((p) => p.status === 'run')
   const [every, setEvery] = useState(1440)
-  const [pick, setPick] = useState(ran[0]?.id ?? '')
+  const [picked, setPick] = useState<string | null>(null)
+  // Derived each render, so a search that ran after the page opened is selectable and submitted correctly.
+  const pick = picked && ran.some((p) => p.id === picked) ? picked : (ran[0]?.id ?? '')
   return (
     <section className="cw-panel2" aria-labelledby="sched-title">
       <div className="cw-panel2-head">

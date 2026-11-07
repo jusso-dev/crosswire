@@ -54,16 +54,19 @@ test('hunt workspace: keyboard, inspector, filters, history, theme', async ({ pa
   await page.getByRole('button', { name: 'Fields' }).click()
 
   // Pivot: show only this device. The filter is a removable chip and lives in the URL.
+  const inspectedUrl = page.url()
   await page.getByRole('button', { name: /Show only rows where DeviceName is demo-wks-002/ }).click()
   await expect(page.locator('.cw-filterchip')).toHaveCount(1)
-  await expect(page).toHaveURL(/f=DeviceName%3Ddemo-wks-002/)
+  await expect(page).toHaveURL(/f=eq%3ADeviceName%3Ddemo-wks-002/)
   await expect(page.getByText(/4 of 20 sample rows match the filters/)).toBeVisible()
 
-  // Reload keeps the filter; back returns to the unfiltered, inspected view.
+  // Reload keeps the filter; Back returns to exactly the unfiltered, inspected view.
   await page.reload()
   await expect(page.locator('.cw-filterchip')).toHaveCount(1)
   await page.goBack()
-  await expect(page).not.toHaveURL(/f=/)
+  await expect(page).toHaveURL(inspectedUrl)
+  await expect(page.getByRole('complementary', { name: 'Row 2' })).toBeVisible()
+  await expect(page.locator('.cw-filterchip')).toHaveCount(0)
 
   // Clear the filter from the chip.
   await page.goForward()
@@ -89,8 +92,14 @@ test('hunt workspace: long values and narrow width stay usable', async ({ page }
   // No horizontal page scroll: wide grids scroll inside their own container.
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   expect(overflow).toBeLessThanOrEqual(0)
-  await page.getByRole('table', { name: /sample rows/ }).locator('tbody tr').first().click()
-  await expect(page.getByRole('complementary', { name: 'Row 1' })).toBeVisible()
-  await page.getByRole('button', { name: 'Close inspector' }).click()
-  await expect(page.getByRole('complementary', { name: 'Row 1' })).toHaveCount(0)
+  // At narrow widths the inspector is a modal dialog: focus moves in, and closing returns it.
+  const firstRow = page.getByRole('table', { name: /sample rows/ }).locator('tbody tr').first()
+  await firstRow.click()
+  const dialog = page.getByRole('dialog', { name: 'Row 1' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('heading', { name: 'Row 1' })).toBeFocused()
+  await page.keyboard.press('Shift+Tab')
+  await expect(dialog.locator(':focus')).toHaveCount(1) // focus stays inside the dialog
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
 })

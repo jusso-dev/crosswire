@@ -157,6 +157,9 @@ html, body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-ui);
+}
+/* Root stays at the browser default so rem tokens resolve as documented (body 14px at 16px root). */
+body {
   font-size: var(--text-body);
   line-height: var(--leading-body);
   -webkit-font-smoothing: antialiased;

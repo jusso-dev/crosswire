@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
 /**
  * The Crosswire mark: two wires that cross at one junction node. Feeds come in on one wire,
@@ -105,40 +105,66 @@ export const GLOSSARY = {
 } as const
 
 /**
- * Inline glossary term. A real button (keyboard and screen-reader reachable) toggles a definition
- * that stays until dismissed (Esc, click outside, or the button again). Meets WCAG 1.4.13: the
- * content is dismissible, hoverable and persistent, and the button's name is its visible text.
+ * Inline glossary term. A real button toggles a definition that stays until dismissed: Escape
+ * (from anywhere), clicking outside, focus moving away, or the button again (WCAG 1.4.13). The
+ * definition is fixed-positioned and clamped to the viewport, so no panel can clip it.
  */
 export function Term({ k, children }: { k: keyof typeof GLOSSARY; children: ReactNode }) {
   const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null)
   const id = useId()
   const ref = useRef<HTMLSpanElement>(null)
+  const btn = useRef<HTMLButtonElement>(null)
+
+  useLayoutEffect(() => {
+    if (!open || !btn.current) return
+    const place = () => {
+      const r = btn.current!.getBoundingClientRect()
+      const width = Math.min(300, window.innerWidth - 16)
+      const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8))
+      const below = r.bottom + 6
+      const top = below + 120 > window.innerHeight && r.top > 140 ? Math.max(8, r.top - 6 - 120) : below
+      setPos({ left, top, width })
+    }
+    place()
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [open])
+
   useEffect(() => {
     if (!open) return
     const onDoc = (e: MouseEvent) => {
       if (!ref.current?.contains(e.target as Node)) setOpen(false)
     }
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setOpen(false)
+        if (ref.current?.contains(document.activeElement)) btn.current?.focus()
+      }
+    }
+    const onFocus = (e: FocusEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false)
+    }
     document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('focusin', onFocus)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('focusin', onFocus)
+    }
   }, [open])
+
   return (
     <span className="cw-term" ref={ref}>
-      <button
-        type="button"
-        className="cw-term-btn"
-        aria-expanded={open}
-        aria-controls={id}
-        onClick={() => setOpen(!open)}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape' && open) {
-            e.stopPropagation()
-            setOpen(false)
-          }
-        }}
-      >
+      <button ref={btn} type="button" className="cw-term-btn" aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>
         {children}
       </button>
-      <span id={id} role="note" className="cw-term-tip" hidden={!open}>
+      <span id={id} role="note" className="cw-term-tip" hidden={!open} style={pos ? { position: 'fixed', left: pos.left, top: pos.top, width: pos.width, maxWidth: 'none' } : undefined}>
         {GLOSSARY[k]}
       </span>
     </span>

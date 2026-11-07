@@ -2,6 +2,7 @@ import { Link, Outlet, createFileRoute, useNavigate, useRouter } from '@tanstack
 import { useState } from 'react'
 import { fetchThreads, newThread, removeThread } from '../fns/chat'
 import { Notice } from '../components/ui'
+import { getDisplayTimeZone } from '../components/format'
 
 /**
  * Chat layout (ChatGPT-style): conversation list on the left grouped by recency, the conversation
@@ -20,17 +21,23 @@ export const Route = createFileRoute('/app/chat')({
 
 type Thread = Awaited<ReturnType<typeof fetchThreads>>['threads'][number]
 
+/** Calendar date (YYYY-MM-DD) in the app time zone. */
+function dayOf(d: Date) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: getDisplayTimeZone(), year: 'numeric', month: '2-digit', day: '2-digit' }).format(d)
+}
+
+/** Groups by calendar day in APP_TIMEZONE: Today, the previous 7 days, Older. */
 function groupThreads(threads: Thread[]) {
-  const now = Date.now()
-  const DAY = 86_400_000
+  const today = dayOf(new Date())
+  const daysAgo = (iso: string) => (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${dayOf(new Date(iso))}T00:00:00Z`)) / 86_400_000
   const groups: Array<[string, Thread[]]> = [
     ['Today', []],
     ['Previous 7 days', []],
     ['Older', []],
   ]
   for (const t of threads) {
-    const age = now - new Date(t.updatedAt).getTime()
-    groups[age < DAY ? 0 : age < 7 * DAY ? 1 : 2]![1].push(t)
+    const d = daysAgo(t.updatedAt)
+    groups[d <= 0 ? 0 : d <= 7 ? 1 : 2]![1].push(t)
   }
   return groups.filter(([, ts]) => ts.length)
 }
@@ -41,12 +48,16 @@ function ChatLayout() {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
   const [confirm, setConfirm] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
   const start = async () => {
     setBusy(true)
+    setError(null)
     try {
       const t = await newThread({ data: {} })
       await router.invalidate()
       await navigate({ to: '/app/chat/$threadId', params: { threadId: t.id } })
+    } catch (err) {
+      setError(`Could not start a conversation: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
       setBusy(false)
     }
@@ -61,6 +72,11 @@ function ChatLayout() {
           <p className="cw-help" style={{ margin: 0 }}>
             Model: {runtime.provider}
             {runtime.model ? ` · ${runtime.model}` : ''}
+          </p>
+        )}
+        {error && (
+          <p className="cw-field-error" role="alert">
+            {error}
           </p>
         )}
         {threads.length === 0 ? (
@@ -84,10 +100,15 @@ function ChatLayout() {
                           data-size="sm"
                           autoFocus
                           onClick={async () => {
-                            await removeThread({ data: { threadId: t.id } })
-                            setConfirm(null)
-                            await router.invalidate()
-                            await navigate({ to: '/app/chat' })
+                            setError(null)
+                            try {
+                              await removeThread({ data: { threadId: t.id } })
+                              setConfirm(null)
+                              await router.invalidate()
+                              await navigate({ to: '/app/chat' })
+                            } catch (err) {
+                              setError(`Could not delete “${t.title}”: ${err instanceof Error ? err.message : String(err)}. Try again.`)
+                            }
                           }}
                         >
                           Delete<span className="cw-sr-only"> {t.title}</span>

@@ -12,7 +12,8 @@ import { Freshness } from '../components/signals'
  */
 export const Route = createFileRoute('/app/watches')({
   validateSearch: z.object({ q: z.string().optional(), entry: z.string().optional(), source: z.enum(['pwn.watch', 'cisa-kev']).optional() }),
-  loader: () => fetchWatches(),
+  loaderDeps: ({ search }) => ({ entry: search.entry }),
+  loader: ({ deps }) => fetchWatches({ data: { entryId: deps.entry } }),
   pendingComponent: () => <p className="cw-muted">Loading watches…</p>,
   errorComponent: ({ error }) => (
     <Notice tone="error" title="Could not load watches">
@@ -33,14 +34,14 @@ const SOURCE_LABEL: Record<string, string> = { 'pwn.watch': 'pwn.watch', 'cisa-k
 const sourceKey = (s: string) => s.replace(/^demo:/, '')
 
 function Watches() {
-  const { entries, hits } = Route.useLoaderData()
+  const { entries, hits, totalHits } = Route.useLoaderData()
   const sp = Route.useSearch()
   const navigate = useNavigate({ from: '/app/watches' })
   const set = (patch: Partial<typeof sp>) => navigate({ search: (prev) => ({ ...prev, ...patch }), replace: true })
   const q = (sp.q ?? '').toLowerCase()
   const shown = hits.filter(
     (h) =>
-      (!sp.entry || `${h.entryType}:${h.entryValue}` === sp.entry) &&
+      // The loader already scoped hits to the selected watch.
       (!sp.source || sourceKey(h.source) === sp.source) &&
       (!q || h.title.toLowerCase().includes(q) || (h.snippet ?? '').toLowerCase().includes(q) || h.cveIds.some((c) => c.toLowerCase().includes(q))),
   )
@@ -78,8 +79,8 @@ function Watches() {
                 </thead>
                 <tbody>
                   {entries.map((e) => {
-                    const key = `${e.type}:${e.value}`
-                    const n = hits.filter((h) => `${h.entryType}:${h.entryValue}` === key).length
+                    const key = e.id
+                    const n = e.hitCount
                     return (
                       <tr key={e.id} aria-selected={sp.entry === key}>
                         <td>
@@ -112,7 +113,7 @@ function Watches() {
 
         <section aria-labelledby="hits-title">
           <h2 id="hits-title" className="cw-h2-compact">
-            Recent hits <span className="cw-muted num">({hits.length})</span>
+            {sp.entry ? 'Hits for this watch' : 'Recent hits'} <span className="cw-muted num">({sp.entry ? hits.length : totalHits})</span>
           </h2>
           <div className="cw-tablewrap" style={{ overflow: 'visible' }}>
             <div className="cw-toolbar" style={{ borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0' }}>
@@ -129,7 +130,7 @@ function Watches() {
                 </select>
               </label>
               <span className="cw-toolbar-meta num" role="status">
-                {shown.length} of {hits.length} shown
+                {shown.length} shown{!sp.entry && totalHits > hits.length ? ` (newest ${hits.length} of ${totalHits})` : ''}
                 {filtered && (
                   <button type="button" className="cw-linkbtn" onClick={() => set({ q: undefined, entry: undefined, source: undefined })}>
                     Clear filters
@@ -139,7 +140,7 @@ function Watches() {
             </div>
             {sp.entry && (
               <p className="cw-muted" style={{ padding: 'var(--space-xs) var(--space-sm) 0', margin: 0 }}>
-                Showing hits for <span className="mono">{sp.entry.split(':').slice(1).join(':')}</span>.
+                Showing hits for <span className="mono">{entries.find((e) => e.id === sp.entry)?.value ?? 'a removed watch'}</span>.
               </p>
             )}
             <div style={{ overflowX: 'auto' }} role="region" aria-label="Recent hits table" tabIndex={0}>

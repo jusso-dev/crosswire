@@ -32,9 +32,13 @@ test('SSO stand-in -> watch hit -> hunt proposal -> dry-run approval', async ({ 
   await page.getByRole('link', { name: 'Hunts', exact: true }).click()
   await page.getByRole('link', { name: /\[DEMO\] Suspicious PowerShell/ }).click()
   await expect(page.getByText(/labelled demo rows/)).toBeVisible()
+  // The fixture already has one result, so assert a NEW one appears and the search reaches "Ran".
+  const results = page.locator('ol.cw-timeline li', { hasText: 'Search results' })
+  const before = await results.count()
   const pending = page.locator('section.cw-panel2', { hasText: 'Review this search' }).first()
   await pending.getByRole('button', { name: 'Approve and run' }).click()
-  await expect(page.locator('ol.cw-timeline')).toContainText('Search results')
+  await expect(results).toHaveCount(before + 1)
+  await expect(page.locator('.cw-qitem', { hasText: 'SecurityEvent' }).getByText('Ran')).toBeVisible()
 
   // 5. Response proposal (Responder, on behalf of this owner): approver dry-run works; approving
   //    your own request is refused (self-approval off by default).

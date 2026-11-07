@@ -52,6 +52,8 @@ function AppShell() {
   const { session } = Route.useRouteContext()
   const timeZone = getDisplayTimeZone()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
+  // The resolved location updates only after the destination's loader finishes and it renders.
+  const resolvedPath = useRouterState({ select: (s) => s.resolvedLocation?.pathname ?? s.location.pathname })
   // The hunt workspace manages its own columns and padding.
   const flush = /^\/app\/hunts\/[^/]+/.test(pathname)
   const chat = pathname.startsWith('/app/chat')
@@ -66,12 +68,19 @@ function AppShell() {
       first.current = false
       return
     }
-    const h1 = main.current?.querySelector<HTMLElement>('h1')
-    if (h1) {
-      h1.tabIndex = -1
-      h1.focus({ preventScroll: false })
-    }
-  }, [pathname])
+    // Wait a frame so the destination's heading is in the DOM. If the page already moved focus
+    // into itself (for example the chat composer), leave it there.
+    const raf = requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (active && active !== document.body && main.current?.contains(active)) return
+      const h1 = main.current?.querySelector<HTMLElement>('h1')
+      if (h1) {
+        h1.tabIndex = -1
+        h1.focus({ preventScroll: false })
+      }
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [resolvedPath])
 
   return (
     <div className="cw-shell">

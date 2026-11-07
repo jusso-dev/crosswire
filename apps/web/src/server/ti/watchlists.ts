@@ -52,9 +52,10 @@ export async function listWatches(orgId: string) {
   return getDb().select().from(watchEntries).where(and(eq(watchEntries.orgId, orgId), isNull(watchEntries.disabledAt))).orderBy(desc(watchEntries.createdAt))
 }
 
-export async function listWatchHits(orgId: string, opts: { since?: Date; limit?: number } = {}) {
+export async function listWatchHits(orgId: string, opts: { since?: Date; limit?: number; entryId?: string } = {}) {
   const conds = [eq(watchHits.orgId, orgId)]
   if (opts.since) conds.push(gte(watchHits.createdAt, opts.since))
+  if (opts.entryId) conds.push(eq(watchHits.entryId, opts.entryId))
   return getDb()
     .select({
       id: watchHits.id,
@@ -79,6 +80,12 @@ export async function countWatches(orgId: string) {
   const [r] = await getDb().select({ n: count() }).from(watchEntries).where(and(eq(watchEntries.orgId, orgId), isNull(watchEntries.disabledAt)))
   return r?.n ?? 0
 }
+/** Hit count per active watch entry, for the whole history (not just the recent list). */
+export async function countHitsByEntry(orgId: string) {
+  const rows = await getDb().select({ entryId: watchHits.entryId, n: count() }).from(watchHits).where(eq(watchHits.orgId, orgId)).groupBy(watchHits.entryId)
+  return Object.fromEntries(rows.map((r) => [r.entryId, r.n]))
+}
+
 export async function countWatchHits(orgId: string) {
   const [r] = await getDb().select({ n: count() }).from(watchHits).where(eq(watchHits.orgId, orgId))
   return r?.n ?? 0

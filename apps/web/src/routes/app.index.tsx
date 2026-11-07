@@ -358,7 +358,10 @@ function WatchHits({ d }: { d: Data }) {
         <ul className="cw-list">
           {d.recentHits.map((h) => (
             <li key={h.id}>
-              <span className="cw-badge">{h.source === 'cisa-kev' ? 'KEV' : 'pwn'}</span>
+              <span className="cw-badge" data-tone={h.source.startsWith('demo:') ? 'demo' : undefined}>
+                {h.source.replace(/^demo:/, '') === 'cisa-kev' ? 'CISA KEV' : 'pwn.watch'}
+                {h.source.startsWith('demo:') ? ' · demo' : ''}
+              </span>
               <span className="cw-list-title">{h.url ? <a href={h.url} target="_blank" rel="noreferrer noopener">{h.title}</a> : h.title}</span>
               <span className="cw-list-side">{fmtAgo(h.createdAt)}</span>
               <span className="cw-list-meta">
