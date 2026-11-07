@@ -3,6 +3,7 @@ import { getDb } from '../db/client'
 import { cveRecords, pwnIncidents, watchEntries, watchHits } from '../db/schema'
 import { logger } from '../lib/logger'
 import { truncate } from '../lib/redact'
+import { notify } from '../notify/notify'
 
 export interface TiRecord {
   source: string
@@ -97,6 +98,7 @@ export async function runMatcher(opts: { orgId?: string; records?: TiRecord[] } 
   const records = opts.records ?? (await loadRecords())
   let matched = 0
   let inserted = 0
+  const newByOrg = new Map<string, string[]>()
   for (const entry of entries) {
     for (const rec of records) {
       const snippet = matchRecord(entry, rec)
@@ -108,7 +110,16 @@ export async function runMatcher(opts: { orgId?: string; records?: TiRecord[] } 
         .onConflictDoNothing()
         .returning({ id: watchHits.id })
       inserted += res.length
+      if (res.length) newByOrg.set(entry.orgId, [...(newByOrg.get(entry.orgId) ?? []), truncate(rec.title, 120)])
     }
+  }
+  // One batched notification per org per run (#91); only for genuinely new hits.
+  for (const [orgId, titles] of newByOrg) {
+    await notify(orgId, 'watch_hit', {
+      title: `${titles.length} new watchlist hit${titles.length === 1 ? '' : 's'}`,
+      lines: [...titles.slice(0, 5), ...(titles.length > 5 ? [`…and ${titles.length - 5} more`] : [])],
+      link: '/app/watches',
+    })
   }
   const stats = { entries: entries.length, records: records.length, matched, inserted }
   logger.info('matcher run complete', { ...stats })

@@ -42,4 +42,6 @@ export interface ResponseProposalView {
   lastDryRun: JsonObject | null
   execution: JsonObject | null
   rollbackNotes: string | null
+  /** v2 (#90): set when this proposal reverses another one. */
+  rollbackOfId: string | null
 }

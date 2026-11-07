@@ -1,5 +1,6 @@
 # CI (#14): lint, typecheck, unit/integration tests, build. GitHub-hosted runners only; no secrets
-# needed, so forks run it too. Tests use PGlite (in-process Postgres); no e2e tests in CI.
+# needed, so forks run it too. Tests use PGlite (in-process Postgres) plus a Postgres service
+# container for the real-driver checks; no e2e tests in CI.
 name: CI
 
 on:
@@ -20,6 +21,18 @@ jobs:
     name: Lint, typecheck, test, build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Real Postgres for test/pg-real.test.ts: catches queries PGlite accepts but postgres-js rejects.
+    # Throwaway service container; the password is a fixed CI-only value, not a secret.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: crosswire
+          POSTGRES_PASSWORD: crosswire-ci
+          POSTGRES_DB: crosswire_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U crosswire" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -36,6 +49,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+        env:
+          PG_TEST_URL: postgres://crosswire:crosswire-ci@localhost:5432/crosswire_test
       - name: Migrations are in sync with the schema
         working-directory: apps/web
         run: |

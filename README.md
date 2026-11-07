@@ -4,7 +4,7 @@ Open-source SOC kit for Microsoft customers who already use **GitHub Copilot age
 
 The product idea builds on [bradygaster/squad](https://github.com/bradygaster/squad) and `@bradygaster/squad-sdk`: charters, compounding history, parallel fan-out, and inspectable decisions — wrapped in a **TanStack Start** control plane instead of leaving everything in a repo-only Copilot workflow.
 
-> **Status:** Phases 0–7 and the Later items are implemented; Phase 8 (production hardening and first use) is the v1 ship gate. The [milestones](https://github.com/jusso-dev/crosswire/milestones) and [issues](https://github.com/jusso-dev/crosswire/issues) are the build plan (Phases 0–8 plus Later).
+> **Status:** v1 (Phases 0–8 plus Later) is implemented; the v1 ship gate (#84) waits on a walk-through on a real Azure deploy. **v2** ([milestone](https://github.com/jusso-dev/crosswire/milestone/11)) adds live Sentinel/Defender executors with rollback-as-proposal, approved scheduled hunts, Teams/Slack notifications, parallel Lead fan-out and hunt reports. The [milestones](https://github.com/jusso-dev/crosswire/milestones) and [issues](https://github.com/jusso-dev/crosswire/issues) are the build plan (Phases 0–8 plus Later).
 
 ## Who it is for
 
@@ -21,7 +21,7 @@ The product idea builds on [bradygaster/squad](https://github.com/bradygaster/sq
 | Auth | [Better Auth](https://www.better-auth.com/) with **Entra ID OIDC** first (SAML later) |
 | Agents | Security cast: Lead, Hunter, Intel, Responder, Scribe. Squad-shaped charters and memory; hybrid runtime per [ADR 0002](docs/adr/0002-squad-sdk-embed.md) |
 | Hunting | Live Advanced Hunting / Graph and Sentinel queries, with human review of proposed KQL |
-| Response | Propose → human approve → execute (Sentinel playbooks / Logic Apps / Graph containment). Dry-run required. |
+| Response | Propose → human approve → execute (Sentinel playbooks / Logic Apps / Defender isolate). Dry-run by default; v2 adds live Microsoft executors on a separate response app and rollback as a gated proposal. |
 | Threat intel | [pwn.watch](https://pwn.watch) ingest + org watchlists (keywords, CVE, vendor, tag) and a daily digest. cve.watch is unavailable, so CISA KEV is the CVE source ([details](docs/ti/cve.watch.md)). |
 | Cloudflare Radar | **Not in v1.** Optional, flag-off IP/domain enrichment on the compare view (Later) |
 | Packaging | Docker (runs anywhere). First deploy guide targets Azure Container Apps (or App Service), Azure Database for PostgreSQL, and Key Vault |
@@ -95,7 +95,7 @@ docs/             ADRs, runbooks, auth, hunting, response, TI
 
 - Architecture: [ADRs](docs/adr/README.md) ([0001 overview](docs/adr/0001-architecture-overview.md))
 - Setup: [configuration](docs/configuration.md), [auth and Entra SSO](docs/auth.md)
-- Product areas: [agents and memory](docs/agents.md), [watchlists and TI](docs/watchlists.md), [hunting](docs/hunting.md), [gated response](docs/response.md), [Copilot agents](docs/copilot-agents.md)
+- Product areas: [agents and memory](docs/agents.md), [watchlists and TI](docs/watchlists.md), [hunting](docs/hunting.md) (incl. scheduled hunts and reports), [gated response](docs/response.md) (incl. live executors and rollback), [Teams/Slack notifications](docs/notifications.md), [Copilot agents](docs/copilot-agents.md)
 - Threat intel sources: [pwn.watch](docs/ti/pwn.watch.md), [cve.watch status and CISA KEV substitute](docs/ti/cve.watch.md)
 
 ## Deploy
@@ -133,6 +133,7 @@ Work is tracked as **epics and child issues** under these milestones:
 | 7 | [Phase 7 — Azure deploy](https://github.com/jusso-dev/crosswire/milestone/8) | Production Docker, Azure first-target, runbooks, probes, SBOM scan, optional staging |
 | 8 | [Phase 8 — Prod + first use](https://github.com/jusso-dev/crosswire/milestone/10) | Prod hardening, release, go-live checklist, first successful operator use (SSO → watch → hunt → gated dry-run) |
 | Later | [Later](https://github.com/jusso-dev/crosswire/milestone/9) | Cloudflare Radar connector, SAML SSO, [commercial notes](docs/commercial-notes.md), [MSSP backlog](docs/mssp-backlog.md) |
+| v2 | [v2 — Response depth + operator workflow](https://github.com/jusso-dev/crosswire/milestone/11) | Response connector, live Sentinel/Defender executors, rollback as proposal, scheduled hunts, Teams/Slack, parallel fan-out, hunt reports ([epic #95](https://github.com/jusso-dev/crosswire/issues/95)) |
 
 Browse all issues: [github.com/jusso-dev/crosswire/issues](https://github.com/jusso-dev/crosswire/issues)
 

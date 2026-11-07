@@ -69,6 +69,34 @@ and never logs them. Missing config raises "Hunting is not configured for this o
 Agent tools on Hunter: `propose_kql`, `get_hunt`, `list_sentinel_incidents`, `memory_search`.
 There is no `run_kql` tool; running requires a human user action (enforced server-side).
 
+## 3a. Scheduled hunts (v2, #92)
+
+An owner or approver can turn a query that **already ran** into a recurring hunt: on the hunt
+case, under the query card, pick an interval (hour, 6 hours, day, week) and click **Schedule**.
+
+- The schedule stores a **frozen copy** of the exact KQL that ran. It is never edited in place;
+  to change the query, propose and run a new one and schedule that.
+- Approval lasts at most **30 days**. When it lapses, the worker disables the schedule and records
+  `schedule_disabled` on the case; it never runs again until an approver clicks **Re-approve**.
+- Minimum interval 60 minutes. The worker checks every minute (ticks never overlap) and claims
+  each due schedule atomically with a 10-minute lease (`FOR UPDATE SKIP LOCKED`, fresh clock per
+  claim), so extra worker replicas never run a schedule twice. One enabled schedule per query.
+- Closing the hunt case disables its schedules; reopening needs a re-approval.
+- Runs go through the same `HuntingClient` (allowlist, KQL blocklist, row and timeout caps) and
+  add `scheduled_result` / `scheduled_failed` evidence with the approver's id.
+- When a run returns rows and the count changed since the last run, subscribed Teams/Slack
+  channels get a `scheduled_hunt` notification (see [notifications](notifications.md)).
+- Agents have no schedule tool. `SCHEDULED_HUNTS_ENABLED=false` stops the worker loop entirely.
+
+## 3b. Hunt report (v2, #94)
+
+**Export report (Markdown)** on any hunt case downloads a shareable report: hypothesis, origin
+watch hit, every query that ran (exact KQL, who approved it and when, row count, columns, a
+5-row × 8-column redacted sample), other proposals, schedules and recent scheduled results, linked
+response proposals (including rollbacks) and the evidence timeline. Any member of the org can
+export its hunts; exports are audited (`hunt_report_exported`). Reports are capped at 200,000
+characters. Full result sets stay in Defender / Sentinel.
+
 ## 4. Safety rails (issue #49)
 
 - **Separate client.** `HuntingClient` is the only HTTP path for hunting. It has no generic

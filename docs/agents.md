@@ -20,9 +20,12 @@ startup (`SQUAD_DIR` overrides the path; the Docker image copies them to `/app/.
    - `anthropic` / `openai`: bring your own key (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`), optional `MODEL_NAME`.
 4. Enforces `AGENT_TIMEOUT_MS`; on timeout the chat shows an error instead of hanging.
 
-**Lead (orchestrate squad):** selecting it gives Lead a `delegate` tool that runs specialists
-sequentially (non-streaming) and returns their answers; Lead then signs off one combined answer.
-Each delegation is a decision row.
+**Lead (orchestrate squad):** selecting it gives Lead two tools. `delegate` runs one specialist
+(non-streaming) and returns its answer. `delegate_parallel` (v2, #93) runs up to 4 *different*
+specialists at the same time and returns each answer or error; a failure in one does not drop the
+others, and all share the turn's abort signal and `AGENT_TIMEOUT_MS`. Lead then signs off one
+combined answer. Each delegation is a decision row. Sub-agents get only their own tool allowlist,
+which never contains an execute, approve, schedule or rollback tool.
 
 No GitHub token or Copilot entitlement is required by the control plane.
 

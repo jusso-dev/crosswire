@@ -1,22 +1,39 @@
 import { env, responseSafety } from '../env'
 import { redactValue } from '../lib/redact'
+import { getConnector } from '../hunting/broker'
 import type { ResponseActionType, ResponseTargets } from '../../shared/response'
 import type { Json } from '../../shared/json'
+import { getResponseConnector, LOGIC_APP_RESOURCE_ID, normalisePlaybookId, responseTokenBroker } from './connector'
 
 export type ExecutorMode = 'off' | 'dry-run' | 'on'
 
 export interface PlannedCall {
-  method: string
+  method: 'POST'
   url: string
   body: Json
+  /** Token audience for the response connector; absent for the Logic App trigger (SAS URL). */
+  scope?: string
+  /** The single target this call acts on, so partial failures map back to targets (#89). */
+  target?: { kind: 'device' | 'incident'; id: string }
+}
+
+export interface CallResult {
+  url: string
+  target?: PlannedCall['target']
+  ok: boolean
+  status: number | null
+  body?: Json
+  error?: string
 }
 
 export interface ExecutionOutcome {
   mode: 'dry-run' | 'live'
   executor: ResponseActionType
   calls: PlannedCall[]
-  status: 'planned' | 'succeeded' | 'failed' | 'stub'
-  response?: { status: number; body: Json }
+  /** Why execution would be refused (allowlist, caps, missing config). Empty = executable. */
+  blocked: string[]
+  status: 'planned' | 'blocked' | 'succeeded' | 'partial' | 'failed'
+  results?: CallResult[]
   error?: string
   rollbackNotes: string
   at: string
@@ -30,12 +47,39 @@ export interface ProposalForExecution {
   payload: Record<string, unknown>
 }
 
+/** Non-secret context executors plan against: workspace coordinates, tenant and playbook allowlist. */
+export interface ExecContext {
+  responseTenantId: string | null
+  /** True when the response connector has a usable secret (encrypted or env ref). */
+  responseHasCredential: boolean
+  playbookAllowlist: string[]
+  workspace: { subscriptionId: string; resourceGroup: string; workspaceName: string } | null
+}
+
+export async function loadExecContext(orgId: string): Promise<ExecContext> {
+  const [resp, hunt] = await Promise.all([getResponseConnector(orgId), getConnector(orgId)])
+  return {
+    responseTenantId: resp?.tenantId ?? null,
+    responseHasCredential: Boolean(resp && (resp.clientSecretEnc || resp.clientSecretRef)),
+    playbookAllowlist: (resp?.playbookAllowlist ?? []).map(normalisePlaybookId),
+    workspace:
+      hunt?.sentinelSubscriptionId && hunt.sentinelResourceGroup && hunt.sentinelWorkspaceName
+        ? { subscriptionId: hunt.sentinelSubscriptionId, resourceGroup: hunt.sentinelResourceGroup, workspaceName: hunt.sentinelWorkspaceName }
+        : null,
+  }
+}
+
+interface Plan {
+  calls: PlannedCall[]
+  blocked: string[]
+}
+
 export interface Executor {
   readonly type: ResponseActionType
-  plan(p: ProposalForExecution): PlannedCall[]
+  plan(p: ProposalForExecution, ctx: ExecContext): Plan
   rollbackNotes(p: ProposalForExecution): string
-  /** Perform the side effect. Only called by executeProposal for an approved proposal in `on` mode. */
-  live?(p: ProposalForExecution, calls: PlannedCall[], fetchImpl: typeof fetch): Promise<{ status: number; body: Json }>
+  /** True when `executeLive` may perform the planned calls. */
+  readonly live: boolean
 }
 
 /** Executor flags (#52). Default off; `.env.example` documents each. */
@@ -54,87 +98,156 @@ export function executorMode(type: ResponseActionType): ExecutorMode {
   }
 }
 
+// ---------- Response HTTP allowlist (#89) ----------
+/** Defender machine ids are 40 lowercase hex characters (SHA-1 of the device). */
+export const DEFENDER_MACHINE_ID = /^[0-9a-f]{40}$/
+/** Sentinel incident identifiers (the ARM resource name, normally a GUID). No dots or separators. */
+export const SENTINEL_INCIDENT_ID = /^[A-Za-z0-9-]{1,128}$/
+
+function connectorBlockers(ctx: ExecContext, blocked: string[]) {
+  if (!ctx.responseTenantId) blocked.push('Response connector is not configured.')
+  else if (!ctx.responseHasCredential) blocked.push('Response connector has no client secret or secret reference.')
+}
+export const DEFENDER_API = 'https://api.security.microsoft.com'
+export const DEFENDER_SCOPE = 'https://api.securitycenter.microsoft.com/.default'
+export const ARM_SCOPE = 'https://management.azure.com/.default'
+export const SENTINEL_API_VERSION = '2025-09-01'
+
+export const RESPONSE_ALLOWLIST: Array<{ host: string; path: RegExp; purpose: string }> = [
+  { host: 'api.security.microsoft.com', path: /^\/api\/machines\/[0-9a-f]{40}\/(isolate|unisolate)$/, purpose: 'Defender device isolate / release' },
+  {
+    host: 'management.azure.com',
+    path: /^\/subscriptions\/[0-9a-f-]{36}\/resourceGroups\/[^/]+\/providers\/Microsoft\.OperationalInsights\/workspaces\/[^/]+\/providers\/Microsoft\.SecurityInsights\/incidents\/[^/]+\/runPlaybook$/i,
+    purpose: 'Sentinel run playbook on an incident',
+  },
+]
+
+export class BlockedResponseRequestError extends Error {}
+
+/** Only POSTs to the exact response endpoints above. No generic request escape hatch. */
+export function assertAllowedResponseRequest(method: string, url: string) {
+  const u = new URL(url)
+  if (u.protocol !== 'https:') throw new BlockedResponseRequestError('Response client only allows https.')
+  if (method.toUpperCase() !== 'POST' || !RESPONSE_ALLOWLIST.some((r) => r.host === u.hostname && r.path.test(u.pathname))) {
+    throw new BlockedResponseRequestError(`Response client blocked ${method.toUpperCase()} ${u.hostname}${u.pathname}: not on the response allowlist.`)
+  }
+}
+
+function liveTargetCap(kind: string, n: number, blocked: string[]) {
+  const max = env().RESPONSE_MAX_LIVE_TARGETS
+  if (n > max) blocked.push(`${n} ${kind} exceeds RESPONSE_MAX_LIVE_TARGETS=${max}; split the proposal.`)
+}
+
+// ---------- Executors ----------
 /**
- * Logic App HTTP trigger: the live-capable executor. The URL comes only from server config
- * (RESPONSE_LOGICAPP_URL), never from the proposal, so an agent cannot redirect the call.
+ * Logic App HTTP trigger. The URL comes only from server config (RESPONSE_LOGICAPP_URL), never from
+ * the proposal, so an agent cannot redirect the call.
  */
 export const logicAppExecutor: Executor = {
   type: 'logic_app',
+  live: true,
   plan(p) {
     const url = env().RESPONSE_LOGICAPP_URL
-    return [
-      {
-        method: 'POST',
-        url: url ? redactUrl(url) : '(RESPONSE_LOGICAPP_URL not set)',
-        body: { proposalId: p.id, orgId: p.orgId, action: String(p.payload.action ?? 'contain'), targets: p.targets as Json },
-      },
-    ]
+    const blocked = url ? [] : ['RESPONSE_LOGICAPP_URL is not configured.']
+    return {
+      calls: [{ method: 'POST', url: url ? redactUrl(url) : '(RESPONSE_LOGICAPP_URL not set)', body: { proposalId: p.id, orgId: p.orgId, action: String(p.payload.action ?? 'contain'), targets: p.targets as Json } }],
+      blocked,
+    }
   },
   rollbackNotes(p) {
     return [
       `Logic App run for proposal ${p.id}.`,
       '- Open the Logic App run history in the Azure portal and find the run by proposalId.',
       '- Reverse each step the workflow performed (for example re-enable accounts or release devices from isolation).',
-      '- Crosswire does not undo actions automatically; record what you reverted on the hunt case.',
+      '- Crosswire cannot undo a Logic App run automatically; "Propose rollback" records the manual reversal as an approved action.',
     ].join('\n')
   },
-  async live(p, _calls, fetchImpl) {
-    const url = env().RESPONSE_LOGICAPP_URL
-    if (!url) throw new Error('RESPONSE_LOGICAPP_URL is not configured.')
-    const body = { proposalId: p.id, orgId: p.orgId, action: p.payload.action ?? 'contain', targets: p.targets }
-    const res = await fetchImpl(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(30_000) })
-    const text = await res.text()
-    let parsed: unknown = text
-    try {
-      parsed = JSON.parse(text)
-    } catch {
-      /* keep text */
-    }
-    if (!res.ok) throw new Error(`Logic App returned HTTP ${res.status}`)
-    return { status: res.status, body: redactValue(parsed) as Json }
-  },
 }
 
-/** Sentinel playbook: documented stub. Records the ARM call it would make. */
+/** Sentinel playbook (#89): runPlaybook on each incident with an allowlisted Logic App. */
 export const sentinelPlaybookExecutor: Executor = {
   type: 'sentinel_playbook',
-  plan(p) {
-    const incident = p.targets.incidents?.[0] ?? '{incidentId}'
-    return [
-      {
-        method: 'POST',
-        url: `https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.OperationalInsights/workspaces/{ws}/providers/Microsoft.SecurityInsights/incidents/${incident}/runPlaybook?api-version=2024-03-01`,
-        body: { logicAppsResourceId: String(p.payload.playbookResourceId ?? '{playbookResourceId}'), tenantId: '{tenantId}' },
-      },
-    ]
+  live: true,
+  plan(p, ctx) {
+    const blocked: string[] = []
+    const incidents = p.targets.incidents ?? []
+    const playbook = String(p.payload.playbookResourceId ?? '')
+    if (incidents.length === 0) blocked.push('Sentinel playbook proposals need at least one incident target.')
+    if (!LOGIC_APP_RESOURCE_ID.test(playbook)) blocked.push('payload.playbookResourceId must be a Logic App resource id.')
+    else if (!ctx.playbookAllowlist.includes(normalisePlaybookId(playbook))) blocked.push('Playbook is not on this org\'s playbook allowlist (Settings → Response connector).')
+    const badInc = incidents.filter((i) => !SENTINEL_INCIDENT_ID.test(i))
+    if (badInc.length) blocked.push(`Not Sentinel incident ids (letters, digits, hyphens): ${badInc.slice(0, 5).join(', ')}`)
+    if (!ctx.workspace) blocked.push('Sentinel workspace (subscription, resource group, workspace name) is not set on the hunting connector.')
+    connectorBlockers(ctx, blocked)
+    liveTargetCap('incidents', incidents.length, blocked)
+    const w = ctx.workspace ?? { subscriptionId: '{subscriptionId}', resourceGroup: '{resourceGroup}', workspaceName: '{workspace}' }
+    const calls: PlannedCall[] = incidents.map((inc) => ({
+      method: 'POST',
+      url:
+        `https://management.azure.com/subscriptions/${encodeURIComponent(w.subscriptionId)}/resourceGroups/${encodeURIComponent(w.resourceGroup)}` +
+        `/providers/Microsoft.OperationalInsights/workspaces/${encodeURIComponent(w.workspaceName)}/providers/Microsoft.SecurityInsights/incidents/${encodeURIComponent(inc)}` +
+        `/runPlaybook?api-version=${SENTINEL_API_VERSION}`,
+      body: { logicAppsResourceId: playbook, tenantId: ctx.responseTenantId ?? '{tenantId}' },
+      scope: ARM_SCOPE,
+      target: { kind: 'incident', id: inc },
+    }))
+    return { calls, blocked }
   },
   rollbackNotes(p) {
-    return `Sentinel playbook stub for proposal ${p.id}. When implemented: review the playbook run in Sentinel > Automation > Runs and reverse its actions manually.`
+    return [
+      `Sentinel playbook run for proposal ${p.id} (${String(p.payload.playbookResourceId ?? '')}).`,
+      '- Review each run in Sentinel → Automation → Runs (or the Logic App run history) for the incidents listed.',
+      '- Reverse each step the playbook performed. Crosswire cannot undo a playbook generically; "Propose rollback" records the reversal as an approved action.',
+    ].join('\n')
   },
 }
 
-/** Graph containment: documented stub; exact paths are allowlisted for when it is implemented. */
-export const GRAPH_CONTAINMENT_ALLOWLIST = [/^\/api\/machines\/[A-Za-z0-9]+\/isolate$/, /^\/api\/machines\/[A-Za-z0-9]+\/unisolate$/]
+function containmentAction(p: ProposalForExecution): 'isolate' | 'unisolate' {
+  return p.payload.action === 'unisolate' ? 'unisolate' : 'isolate'
+}
+
+/** Defender for Endpoint containment (#89): isolate or release each machine, one call per device. */
 export const graphContainmentExecutor: Executor = {
   type: 'graph_containment',
-  plan(p) {
-    return (p.targets.devices ?? []).map((d) => ({
+  live: true,
+  plan(p, ctx) {
+    const blocked: string[] = []
+    const devices = p.targets.devices ?? []
+    const action = containmentAction(p)
+    const isolationType = p.payload.isolationType === 'Full' ? 'Full' : 'Selective'
+    if (devices.length === 0) blocked.push('Containment proposals need at least one device target.')
+    const bad = devices.filter((d) => !DEFENDER_MACHINE_ID.test(d))
+    if (bad.length) blocked.push(`Not Defender machine ids (40 hex characters): ${bad.slice(0, 5).join(', ')}`)
+    if (p.payload.action !== undefined && p.payload.action !== 'isolate' && p.payload.action !== 'unisolate') blocked.push('payload.action must be "isolate" or "unisolate".')
+    if (p.payload.isolationType !== undefined && p.payload.isolationType !== 'Full' && p.payload.isolationType !== 'Selective') blocked.push('payload.isolationType must be "Full" or "Selective".')
+    connectorBlockers(ctx, blocked)
+    liveTargetCap('devices', devices.length, blocked)
+    const calls: PlannedCall[] = devices.map((d) => ({
       method: 'POST',
-      url: `https://api.securitycenter.microsoft.com/api/machines/${encodeURIComponent(d)}/isolate`,
-      body: { Comment: `Crosswire proposal ${p.id}`, IsolationType: 'Selective' },
+      url: `${DEFENDER_API}/api/machines/${encodeURIComponent(d)}/${action}`,
+      body: (action === 'isolate' ? { Comment: `Crosswire proposal ${p.id}`, IsolationType: isolationType } : { Comment: `Crosswire proposal ${p.id} (rollback)` }) as Json,
+      scope: DEFENDER_SCOPE,
+      target: { kind: 'device', id: d },
     }))
+    return { calls, blocked }
   },
   rollbackNotes(p) {
+    const devices = p.targets.devices ?? []
+    if (containmentAction(p) === 'unisolate') {
+      return [`Release from isolation for proposal ${p.id}.`, ...devices.map((d) => `- Re-isolate ${d} with a new proposal if the release was premature.`)].join('\n')
+    }
     return [
       `Device isolation for proposal ${p.id}.`,
-      ...(p.targets.devices ?? []).map((d) => `- Release ${d}: Defender portal > device > "Release from isolation", or POST /api/machines/{id}/unisolate.`),
+      '- "Propose rollback" creates a release (unisolate) proposal for exactly the devices that were isolated.',
+      ...devices.map((d) => `- Manual fallback for ${d}: Defender portal → device → "Release from isolation".`),
     ].join('\n')
   },
 }
 
 export const otherExecutor: Executor = {
   type: 'other',
-  plan: () => [],
+  live: false,
+  plan: () => ({ calls: [], blocked: ['Manual action: there is no executor. Perform it by hand and record what you did on the hunt case.'] }),
   rollbackNotes: (p) => `Manual action for proposal ${p.id}. No executor; follow the proposal payload by hand and record what you did.`,
 }
 
@@ -149,31 +262,80 @@ function redactUrl(url: string) {
   return url.replace(/([?&](sig|code|sv|sp)=)[^&]+/gi, '$1[REDACTED]')
 }
 
-/** Dry run (#53): compute the intended calls; never performs a request. */
-export function dryRun(p: ProposalForExecution): ExecutionOutcome {
+/** Dry run (#53): compute the intended calls and any blockers; never performs a request. */
+export function dryRun(p: ProposalForExecution, ctx: ExecContext): ExecutionOutcome {
   const ex = EXECUTORS[p.actionType]
+  const plan = ex.plan(p, ctx)
   return {
     mode: 'dry-run',
     executor: p.actionType,
-    calls: ex.plan(p).map((c) => ({ ...c, body: redactValue(c.body) as Json })),
-    status: 'planned',
+    calls: plan.calls.map((c) => ({ ...c, body: redactValue(c.body) as Json })),
+    blocked: plan.blocked,
+    status: plan.blocked.length ? 'blocked' : 'planned',
     rollbackNotes: ex.rollbackNotes(p),
     at: new Date().toISOString(),
   }
 }
 
-/** Live execution (#52). Caller must have verified approval. Respects the executor flag. */
-export async function executeLive(p: ProposalForExecution, fetchImpl: typeof fetch = fetch): Promise<ExecutionOutcome> {
+/** Throws when a proposal could never execute; used before the atomic execution claim. */
+export function assertExecutable(p: ProposalForExecution, ctx: ExecContext) {
+  const ex = EXECUTORS[p.actionType]
+  if (!ex.live) throw new Error(`${p.actionType} has no executor; perform it by hand.`)
+  const { blocked } = ex.plan(p, ctx)
+  if (blocked.length) throw new Error(`Refused before any call: ${blocked.join(' ')}`)
+}
+
+async function readBody(res: Response): Promise<Json> {
+  const text = await res.text()
+  if (!text) return null
+  try {
+    return redactValue(JSON.parse(text)) as Json
+  } catch {
+    return redactValue(text.slice(0, 2000)) as Json
+  }
+}
+
+/**
+ * Live execution (#52, #89). Caller must have verified approval and claimed the proposal. Each call
+ * is checked against the response allowlist (or is the server-configured Logic App URL), uses a
+ * token from the response connector only, and is recorded individually so partial failures are exact.
+ */
+export async function executeLive(p: ProposalForExecution, ctx: ExecContext, fetchImpl: typeof fetch = fetch): Promise<ExecutionOutcome> {
   const ex = EXECUTORS[p.actionType]
   const mode = executorMode(p.actionType)
-  const calls = ex.plan(p).map((c) => ({ ...c, body: redactValue(c.body) as Json }))
-  const base = { executor: p.actionType, calls, rollbackNotes: ex.rollbackNotes(p), at: new Date().toISOString() }
   if (mode !== 'on') throw new Error(`Executor ${p.actionType} is ${mode}; set RESPONSE_EXECUTOR_* to "on" to execute.`)
-  if (!ex.live) return { ...base, mode: 'live', status: 'stub', error: `${p.actionType} executor is a documented stub in v1; no call was made.` }
-  try {
-    const response = await ex.live(p, calls, fetchImpl)
-    return { ...base, mode: 'live', status: 'succeeded', response }
-  } catch (err) {
-    return { ...base, mode: 'live', status: 'failed', error: err instanceof Error ? err.message : String(err) }
+  const plan = ex.plan(p, ctx)
+  const base = {
+    mode: 'live' as const,
+    executor: p.actionType,
+    calls: plan.calls.map((c) => ({ ...c, body: redactValue(c.body) as Json })),
+    blocked: plan.blocked,
+    rollbackNotes: ex.rollbackNotes(p),
+    at: new Date().toISOString(),
   }
+  if (!ex.live || plan.blocked.length) return { ...base, status: 'failed', error: `Refused before any call: ${plan.blocked.join(' ')}`, results: [] }
+
+  const results: CallResult[] = []
+  for (const call of plan.calls) {
+    const shownUrl = redactUrl(call.url)
+    try {
+      let realUrl = call.url
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (p.actionType === 'logic_app') {
+        realUrl = env().RESPONSE_LOGICAPP_URL!
+      } else {
+        assertAllowedResponseRequest(call.method, call.url)
+        headers.Authorization = `Bearer ${await responseTokenBroker().acquire({ orgId: p.orgId, scope: call.scope! })}`
+      }
+      const res = await fetchImpl(realUrl, { method: call.method, headers, body: JSON.stringify(call.body), redirect: 'error', signal: AbortSignal.timeout(30_000) })
+      const body = await readBody(res)
+      results.push({ url: shownUrl, target: call.target, ok: res.ok, status: res.status, body, error: res.ok ? undefined : `HTTP ${res.status}` })
+    } catch (err) {
+      results.push({ url: shownUrl, target: call.target, ok: false, status: null, error: err instanceof Error ? err.message.slice(0, 500) : String(err) })
+    }
+  }
+  const okCount = results.filter((r) => r.ok).length
+  const status = okCount === results.length ? 'succeeded' : okCount === 0 ? 'failed' : 'partial'
+  const error = status === 'succeeded' ? undefined : results.filter((r) => !r.ok).map((r) => `${r.target?.id ?? r.url}: ${r.error}`).join('; ')
+  return { ...base, status, results, error }
 }
