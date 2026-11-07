@@ -85,7 +85,10 @@ function Digests() {
                     {d.hitCount > d.items.length && (
                       <li data-plain>
                         <span className="cw-muted">
-                          {d.hitCount - d.items.length} more not listed. <Link to="/app/watches">See all hits</Link>
+                          {d.hitCount - d.items.length} more not listed.{' '}
+                          <Link to="/app/watches" search={{ day: d.day }}>
+                            See all {d.hitCount} hits for this day
+                          </Link>
                         </span>
                       </li>
                     )}

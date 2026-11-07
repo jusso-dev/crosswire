@@ -28,6 +28,16 @@ describe('APP_TIMEZONE (default Australia/Sydney)', () => {
     expect(dayBounds('2026-11-08', 'UTC').start.toISOString()).toBe('2026-11-08T00:00:00.000Z')
   })
 
+  it('handles zones where local midnight does not exist on the change day', () => {
+    // Santiago springs forward at 00:00 on 2026-09-06 (clocks go to 01:00, UTC-3).
+    const b = dayBounds('2026-09-06', 'America/Santiago')
+    expect(appDay(b.start, 'America/Santiago')).toBe('2026-09-06')
+    expect(appDay(new Date(b.start.getTime() - 1000), 'America/Santiago')).toBe('2026-09-05')
+    expect(b.start.toISOString()).toBe('2026-09-06T04:00:00.000Z')
+    const prev = dayBounds('2026-09-05', 'America/Santiago')
+    expect(prev.end.toISOString()).toBe(b.start.toISOString())
+  })
+
   it('formats UI times in the display zone', () => {
     setDisplayTimeZone('Australia/Sydney')
     expect(fmtTime('2026-11-07T14:30:00Z')).toMatch(/8 Nov 2026.*1:30/)

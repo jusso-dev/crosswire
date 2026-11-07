@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, isNull } from 'drizzle-orm'
+import { and, count, desc, eq, gte, isNull, lt } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { watchEntries, watchHits } from '../db/schema'
 import { normaliseCveId } from './kev'
@@ -52,9 +52,10 @@ export async function listWatches(orgId: string) {
   return getDb().select().from(watchEntries).where(and(eq(watchEntries.orgId, orgId), isNull(watchEntries.disabledAt))).orderBy(desc(watchEntries.createdAt))
 }
 
-export async function listWatchHits(orgId: string, opts: { since?: Date; limit?: number; entryId?: string } = {}) {
+export async function listWatchHits(orgId: string, opts: { since?: Date; until?: Date; limit?: number; entryId?: string } = {}) {
   const conds = [eq(watchHits.orgId, orgId)]
   if (opts.since) conds.push(gte(watchHits.createdAt, opts.since))
+  if (opts.until) conds.push(lt(watchHits.createdAt, opts.until))
   if (opts.entryId) conds.push(eq(watchHits.entryId, opts.entryId))
   return getDb()
     .select({

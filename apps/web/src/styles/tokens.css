@@ -719,3 +719,4 @@ fieldset.cw-fieldgroup legend { font-size: var(--text-small); font-weight: 600; 
 ul.cw-prompts { list-style: none; padding: 0; }
 .cw-prompts button { min-height: 28px; }
 ul.cw-qlist { list-style: none; padding: 0; margin-top: 0; }
+.cw-toolchips li[data-pending] { color: var(--text-muted); border-style: dashed; }

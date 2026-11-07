@@ -6,6 +6,7 @@ import { executorMode } from '../server/response/executors'
 import { canApprove } from '../server/response/rbac'
 import { RESPONSE_ACTION_TYPES } from '../shared/response'
 import { asJson } from '../shared/json'
+import { listOrgMembers } from '../server/orgs'
 
 const run = async <T>(fn: () => Promise<T>) => {
   try {
@@ -25,8 +26,12 @@ export const fetchProposal = createServerFn({ method: 'GET' })
   .handler(async ({ context, data }) => {
     const p = await getProposal(context.session.org.id, data.id)
     if (!p) return null
-    const events = await listEvents(context.session.org.id, data.id)
+    const [events, members] = await Promise.all([listEvents(context.session.org.id, data.id), listOrgMembers(context.session.org.id)])
+    // People are shown by email (members of this org only), so approvers can see who did each step.
+    const people = Object.fromEntries(members.map((m) => [m.userId, m.email]))
     return {
+      people,
+      isOwner: context.session.org.role === 'owner',
       proposal: toView(p),
       events: events.map((e) => ({ id: e.id, event: e.event, actorType: e.actorType, actorId: e.actorId, data: asJson(e.data), createdAt: e.createdAt.toISOString() })),
       executorMode: executorMode(p.actionType),

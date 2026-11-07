@@ -10,18 +10,6 @@ import { Notice, PageHead, TableWrap } from '../components/ui'
  * Agents and decision log. Agent selection and log filters live in the URL. Memory is loaded on
  * demand for the selected agent; compaction is an approver action enforced on the server.
  */
-export const Route = createFileRoute('/app/agents')({
-  validateSearch: z.object({ agent: z.string().optional(), actor: z.string().optional(), q: z.string().optional() }),
-  loader: () => fetchActivity(),
-  pendingComponent: () => <p className="cw-muted">Loading agents…</p>,
-  errorComponent: ({ error }) => (
-    <Notice tone="error" title="Could not load agent activity">
-      {error instanceof Error ? error.message : String(error)}
-    </Notice>
-  ),
-  component: Agents,
-})
-
 const ACTION_WORDS: Record<string, string> = {
   propose_kql: 'Proposed a search',
   run_kql: 'Approved and ran a search',
@@ -33,15 +21,39 @@ const ACTION_WORDS: Record<string, string> = {
   delegate: 'Handed work to another agent',
 }
 
+export const Route = createFileRoute('/app/agents')({
+  validateSearch: z.object({ agent: z.string().optional(), actor: z.string().optional(), q: z.string().optional(), before: z.string().optional() }),
+  loaderDeps: ({ search }) => ({ q: search.q, actor: search.actor, before: search.before }),
+  // Search and paging run on the server over the whole log, not just the newest page.
+  loader: ({ deps }) => {
+    const q = deps.q?.trim().toLowerCase()
+    const actions = q ? Object.entries(ACTION_WORDS).filter(([, label]) => label.toLowerCase().includes(q)).map(([key]) => key) : undefined
+    return fetchActivity({ data: { q: deps.q || undefined, actor: deps.actor || undefined, before: deps.before || undefined, actions } })
+  },
+  pendingComponent: () => <p className="cw-muted">Loading agents…</p>,
+  errorComponent: ({ error }) => (
+    <Notice tone="error" title="Could not load agent activity">
+      {error instanceof Error ? error.message : String(error)}
+    </Notice>
+  ),
+  component: Agents,
+})
+
 function Agents() {
-  const activity = Route.useLoaderData()
+  const { rows: activity, hasMore, actors } = Route.useLoaderData()
   const sp = Route.useSearch()
   const navigate = useNavigate({ from: '/app/agents' })
   const set = (patch: Partial<typeof sp>) => navigate({ search: (prev) => ({ ...prev, ...patch }), replace: true })
   const agent: AgentKey | null = isAgentKey(sp.agent) ? sp.agent : null
-  const actors = [...new Set(activity.map((a) => a.actorKey))].sort()
-  const q = (sp.q ?? '').toLowerCase()
-  const shown = activity.filter((a) => (!sp.actor || a.actorKey === sp.actor) && (!q || a.action.includes(q) || a.inputSummary.toLowerCase().includes(q) || a.outputSummary.toLowerCase().includes(q)))
+  const shown = activity
+  const [q, setQ] = useState(sp.q ?? '')
+  // Debounce typing into the URL, which re-queries the server over the whole log.
+  useEffect(() => {
+    if ((sp.q ?? '') === q) return
+    const t = setTimeout(() => set({ q: q || undefined, before: undefined }), 300)
+    return () => clearTimeout(t)
+  }, [q]) // eslint-disable-line react-hooks/exhaustive-deps
+  const oldest = activity.at(-1)?.createdAt
 
   return (
     <>
@@ -82,32 +94,32 @@ function Agents() {
           <div className="cw-toolbar" style={{ borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0' }}>
             <label className="cw-search">
               <span className="cw-sr-only">Filter the log</span>
-              <input type="search" placeholder="Filter by action or content" value={sp.q ?? ''} onChange={(e) => set({ q: e.target.value || undefined })} />
+              <input type="search" placeholder="Search the whole log" value={q} onChange={(e) => setQ(e.target.value)} />
             </label>
             <label className="cw-inline">
               <span>Actor</span>
-              <select value={sp.actor ?? ''} onChange={(e) => set({ actor: e.target.value || undefined })}>
+              <select value={sp.actor ?? ''} onChange={(e) => set({ actor: e.target.value || undefined, before: undefined })}>
                 <option value="">Everyone</option>
                 {actors.map((a) => (
-                  <option key={a} value={a}>
-                    {isAgentKey(a) ? AGENT_LABELS[a].name : a.length > 20 ? `${a.slice(0, 8)}… (person)` : a}
+                  <option key={a.key} value={a.key}>
+                    {a.type === 'agent' && isAgentKey(a.key) ? AGENT_LABELS[a.key].name : a.label}
                   </option>
                 ))}
               </select>
             </label>
             <span className="cw-toolbar-meta num" role="status">
-              {shown.length} of {activity.length} entries
+              {shown.length} entries{sp.before ? ' (older page)' : ''}{hasMore ? ', more available' : ''}
             </span>
             <RefreshButton />
           </div>
           <div style={{ overflowX: 'auto' }} role="region" aria-label="Decision log table" tabIndex={0}>
-            {activity.length === 0 ? (
+            {shown.length === 0 ? (
               <p className="cw-empty" style={{ padding: 'var(--space-md)' }}>
-                No agent activity yet. Pick an agent in <Link to="/app/chat">chat</Link> to start.
-              </p>
-            ) : shown.length === 0 ? (
-              <p className="cw-empty" style={{ padding: 'var(--space-md)' }}>
-                No entries match.
+                {sp.q || sp.actor ? 'No entries match, across the whole log.' : (
+                  <>
+                    No agent activity yet. Pick an agent in <Link to="/app/chat">chat</Link> to start.
+                  </>
+                )}
               </p>
             ) : (
               <table className="cw-table">
@@ -127,7 +139,7 @@ function Agents() {
                         {fmtTime(a.createdAt)}
                       </td>
                       <td>
-                        {a.actorType === 'agent' && isAgentKey(a.actorKey) ? AGENT_LABELS[a.actorKey].name : a.actorType === 'user' ? 'A person' : a.actorType === 'system' ? 'Crosswire' : a.actorKey}
+                        {a.actorType === 'agent' && isAgentKey(a.actorKey) ? AGENT_LABELS[a.actorKey].name : a.actorType === 'user' ? (a.actorLabel ?? 'A person') : a.actorType === 'system' ? 'Crosswire' : a.actorKey}
                       </td>
                       <td>
                         {ACTION_WORDS[a.action] ?? a.action.replace(/_/g, ' ')}
@@ -149,6 +161,16 @@ function Agents() {
               </table>
             )}
           </div>
+          {(sp.before || hasMore) && (
+            <div className="cw-panel2-foot" style={{ justifyContent: 'space-between' }}>
+              <button type="button" className="cw-btn" data-variant="ghost" data-size="sm" disabled={!sp.before} onClick={() => set({ before: undefined })}>
+                Newest
+              </button>
+              <button type="button" className="cw-btn" data-variant="ghost" data-size="sm" disabled={!hasMore || !oldest} onClick={() => set({ before: oldest })}>
+                Older entries
+              </button>
+            </div>
+          )}
         </div>
       </section>
     </>

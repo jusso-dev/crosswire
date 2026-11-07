@@ -48,7 +48,8 @@ type Result = { url: string; ok: boolean; status: number | null; error?: string;
 type Outcome = { mode?: string; status?: string; calls?: Call[]; blocked?: string[]; results?: Result[]; error?: string; at?: string }
 
 function ProposalDetail() {
-  const { proposal: p, events, executorMode, canApprove, isRequester, rollback } = Route.useLoaderData()
+  const { proposal: p, events, executorMode, canApprove, isRequester, rollback, people, isOwner } = Route.useLoaderData()
+  const who = (type: string, id: string | null) => (type === 'agent' ? (id ?? 'agent') : type === 'user' ? ((id && people[id]) ?? 'a former member') : 'Crosswire')
   const router = useRouter()
   const navigate = Route.useNavigate()
   const dry = p.lastDryRun as Outcome | null
@@ -92,7 +93,7 @@ function ProposalDetail() {
         </div>
         <div>
           <dt>Asked by</dt>
-          <dd>{p.requesterType === 'agent' ? <span className="mono">{p.requesterId}</span> : 'an analyst'}</dd>
+          <dd>{p.requesterType === 'agent' ? <span className="mono">{p.requesterId}</span> : who('user', p.requesterId)}</dd>
         </div>
         <div>
           <dt>Created</dt>
@@ -265,6 +266,7 @@ function ProposalDetail() {
         <div className="cw-panel2-head">
           <h2 id="tl-title">Timeline</h2>
           <span className="cw-muted">Every step, oldest first.</span>
+          {isOwner ? (
           <button
             type="button"
             className="cw-btn"
@@ -287,6 +289,11 @@ function ProposalDetail() {
           >
             Download audit bundle
           </button>
+          ) : (
+            <span className="cw-muted" style={{ marginLeft: 'auto' }}>
+              Owners can download the audit bundle.
+            </span>
+          )}
         </div>
         <div className="cw-panel2-body">
           <ol className="cw-timeline">
@@ -294,7 +301,7 @@ function ProposalDetail() {
               <li key={e.id} data-kind={e.event === 'executed' ? 'result' : e.event.includes('fail') || e.event === 'rejected' ? 'failed' : undefined}>
                 <span className="cw-ev-label">{EVENT_LABEL[e.event] ?? e.event.replace(/_/g, ' ')}</span>
                 <span className="cw-tl-time">
-                  <time dateTime={e.createdAt}>{fmtTime(e.createdAt)}</time> · {e.actorType === 'agent' ? (e.actorId ?? 'agent') : e.actorType === 'user' ? 'a person' : 'Crosswire'}
+                  <time dateTime={e.createdAt}>{fmtTime(e.createdAt)}</time> · {who(e.actorType, e.actorId)}
                 </span>
                 {typeof (e.data as Record<string, unknown>).comment === 'string' && (e.data as Record<string, string>).comment && <p>“{(e.data as Record<string, string>).comment}”</p>}
                 {Object.keys(e.data).length > 0 && (
@@ -322,7 +329,8 @@ function Section({ title, children }: { title: ReactNode; children: ReactNode })
 }
 
 function Outcome({ id, title, intro, outcome }: { id: string; title: string; intro: string; outcome: Outcome }) {
-  const results = new Map((outcome.results ?? []).map((r) => [r.url, r]))
+  // Results are recorded in call order, so match by position (URLs can repeat).
+  const results = outcome.results ?? []
   return (
     <section className="cw-panel2" aria-labelledby={id}>
       <div className="cw-panel2-head">
@@ -356,7 +364,7 @@ function Outcome({ id, title, intro, outcome }: { id: string; title: string; int
               </thead>
               <tbody>
                 {outcome.calls.map((c, i) => {
-                  const r = results.get(c.url)
+                  const r = results[i]
                   return (
                     <tr key={`${c.url}-${i}`}>
                       <td className="mono">{c.target ? `${c.target.kind} ${c.target.id}` : 'all targets'}</td>

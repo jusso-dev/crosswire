@@ -16,15 +16,34 @@ function zoneOffsetMs(at: number, tz: string) {
   return Date.UTC(+parts.year!, +parts.month! - 1, +parts.day!, +parts.hour!, +parts.minute!, +parts.second!) - (at - (at % 1000))
 }
 
-/** Midnight-to-midnight bounds of a YYYY-MM-DD day in `tz` (APP_TIMEZONE by default). DST-safe. */
+/**
+ * Bounds of a YYYY-MM-DD day in `tz` (APP_TIMEZONE by default): from the first instant whose local
+ * date is that day, to the first instant of the next day. DST-safe, including zones where local
+ * midnight does not exist on the change day (the day then starts at 01:00).
+ */
 export function dayBounds(day: string, tz = env().APP_TIMEZONE) {
   const [y, m, d] = day.split('-').map(Number) as [number, number, number]
-  const midnight = (yy: number, mm: number, dd: number) => {
+  const dayStart = (yy: number, mm: number, dd: number) => {
+    const target = new Date(Date.UTC(yy, mm - 1, dd)).toISOString().slice(0, 10)
+    // Candidate: local midnight with the offset in force around then.
     const guess = Date.UTC(yy, mm - 1, dd)
-    const first = guess - zoneOffsetMs(guess, tz)
-    return new Date(guess - zoneOffsetMs(first, tz))
+    let t = guess - zoneOffsetMs(guess - zoneOffsetMs(guess, tz), tz)
+    // If that instant falls on the previous local day (midnight skipped), step forward to the change.
+    if (appDay(new Date(t), tz) < target) {
+      let lo = t
+      let hi = t + 3 * 3_600_000
+      while (hi - lo > 1000) {
+        const mid = Math.floor((lo + hi) / 2)
+        if (appDay(new Date(mid), tz) < target) lo = mid
+        else hi = mid
+      }
+      t = hi - (hi % 1000)
+    }
+    // If it is already inside the day (midnight repeated earlier), step back to its first instant.
+    while (appDay(new Date(t - 1000), tz) === target) t -= 1000
+    return new Date(t)
   }
-  return { start: midnight(y, m, d), end: midnight(y, m, d + 1) }
+  return { start: dayStart(y, m, d), end: dayStart(y, m, d + 1) }
 }
 
 /** The calendar day (YYYY-MM-DD) of `d` in `tz`. Digests are stored per APP_TIMEZONE day. */

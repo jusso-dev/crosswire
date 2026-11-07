@@ -11,9 +11,9 @@ import { Freshness } from '../components/signals'
  * back/forward and reload keep the analyst's place.
  */
 export const Route = createFileRoute('/app/watches')({
-  validateSearch: z.object({ q: z.string().optional(), entry: z.string().optional(), source: z.enum(['pwn.watch', 'cisa-kev']).optional() }),
-  loaderDeps: ({ search }) => ({ entry: search.entry }),
-  loader: ({ deps }) => fetchWatches({ data: { entryId: deps.entry } }),
+  validateSearch: z.object({ q: z.string().optional(), entry: z.string().optional(), day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), source: z.enum(['pwn.watch', 'cisa-kev']).optional() }),
+  loaderDeps: ({ search }) => ({ entry: search.entry, day: search.day }),
+  loader: ({ deps }) => fetchWatches({ data: { entryId: deps.entry, day: deps.day } }),
   pendingComponent: () => <p className="cw-muted">Loading watches…</p>,
   errorComponent: ({ error }) => (
     <Notice tone="error" title="Could not load watches">
@@ -45,7 +45,7 @@ function Watches() {
       (!sp.source || sourceKey(h.source) === sp.source) &&
       (!q || h.title.toLowerCase().includes(q) || (h.snippet ?? '').toLowerCase().includes(q) || h.cveIds.some((c) => c.toLowerCase().includes(q))),
   )
-  const filtered = Boolean(sp.q || sp.entry || sp.source)
+  const filtered = Boolean(sp.q || sp.entry || sp.source || sp.day)
 
   return (
     <>
@@ -113,7 +113,7 @@ function Watches() {
 
         <section aria-labelledby="hits-title">
           <h2 id="hits-title" className="cw-h2-compact">
-            {sp.entry ? 'Hits for this watch' : 'Recent hits'} <span className="cw-muted num">({sp.entry ? hits.length : totalHits})</span>
+            {sp.day ? `Hits on ${sp.day}` : sp.entry ? 'Hits for this watch' : 'Recent hits'} <span className="cw-muted num">({sp.entry || sp.day ? hits.length : totalHits})</span>
           </h2>
           <div className="cw-tablewrap" style={{ overflow: 'visible' }}>
             <div className="cw-toolbar" style={{ borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0' }}>
@@ -130,9 +130,9 @@ function Watches() {
                 </select>
               </label>
               <span className="cw-toolbar-meta num" role="status">
-                {shown.length} shown{!sp.entry && totalHits > hits.length ? ` (newest ${hits.length} of ${totalHits})` : ''}
+                {shown.length} shown{!sp.entry && !sp.day && totalHits > hits.length ? ` (newest ${hits.length} of ${totalHits})` : ''}
                 {filtered && (
-                  <button type="button" className="cw-linkbtn" onClick={() => set({ q: undefined, entry: undefined, source: undefined })}>
+                  <button type="button" className="cw-linkbtn" onClick={() => set({ q: undefined, entry: undefined, source: undefined, day: undefined })}>
                     Clear filters
                   </button>
                 )}

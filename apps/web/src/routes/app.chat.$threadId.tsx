@@ -61,6 +61,20 @@ const TOOL_LABEL: Record<string, string> = {
   delegate_parallel: 'Asked specialists',
 }
 
+const PENDING_LABEL: Record<string, string> = {
+  memory_search: 'Searching memory',
+  remember: 'Saving to memory',
+  search_intel: 'Searching threat intel',
+  compare_cve: 'Comparing sources',
+  list_watch_hits: 'Reading watch hits',
+  get_hunt: 'Reading a hunt',
+  propose_kql: 'Proposing a search',
+  list_sentinel_incidents: 'Reading Sentinel incidents',
+  propose_response: 'Proposing an action',
+  delegate: 'Asking a specialist',
+  delegate_parallel: 'Asking specialists',
+}
+
 function textOf(m: UIMessage) {
   return m.parts
     .filter((p) => p.type === 'text')
@@ -263,8 +277,25 @@ const MessageView = memo(function MessageView({ message, rating, streaming, fall
   const [sent, setSent] = useState<string | undefined>(rating)
   const [copied, setCopied] = useState(false)
   const text = textOf(message)
-  const liveTools = message.parts.filter((p) => p.type === 'tool-call') as Array<{ name: string; state?: string }>
-  const tools = [...liveTools.map((t) => ({ tool: t.name, error: null as string | null })), ...(meta.crosswire?.tools ?? [])]
+  // Live tool calls: pending until a result arrives; failures come from the result (or an {error} output).
+  const results = new Map(
+    (message.parts.filter((p) => p.type === 'tool-result') as Array<{ toolCallId: string; state: string; content: unknown; error?: string }>).map((r) => [r.toolCallId, r]),
+  )
+  const failed = (content: unknown) => {
+    try {
+      const v = typeof content === 'string' ? JSON.parse(content) : content
+      return v && typeof v === 'object' && 'error' in v ? String((v as { error: unknown }).error) : null
+    } catch {
+      return null
+    }
+  }
+  const liveTools = (message.parts.filter((p) => p.type === 'tool-call') as Array<{ id: string; name: string; state: string; output?: unknown }>).map((t) => {
+    const r = results.get(t.id)
+    const error = r?.state === 'error' ? (r.error ?? 'failed') : t.state === 'error' ? 'failed' : (failed(r?.content) ?? failed(t.output))
+    const done = Boolean(r && r.state !== 'streaming') || t.state === 'complete' || t.state === 'error' || t.output !== undefined
+    return { tool: t.name, error, pending: !done && !error }
+  })
+  const tools: Array<{ tool: string; error: string | null; pending?: boolean }> = liveTools.length ? liveTools : (meta.crosswire?.tools ?? [])
   const who = message.role === 'user' ? 'You' : agentName(meta.agentKey ?? fallbackAgent)
 
   if (message.role === 'user') {
@@ -280,8 +311,8 @@ const MessageView = memo(function MessageView({ message, rating, streaming, fall
       {tools.length > 0 && (
         <ul className="cw-toolchips" aria-label="Steps taken">
           {tools.map((t, i) => (
-            <li key={`${t.tool}-${i}`} data-error={t.error ? '' : undefined}>
-              <span aria-hidden>{t.error ? '✕' : '✓'}</span> {TOOL_LABEL[t.tool] ?? t.tool}
+            <li key={`${t.tool}-${i}`} data-error={t.error ? '' : undefined} data-pending={t.pending ? '' : undefined}>
+              <span aria-hidden>{t.error ? '✕' : t.pending ? '…' : '✓'}</span> {t.pending ? (PENDING_LABEL[t.tool] ?? `Running ${t.tool}`) : (TOOL_LABEL[t.tool] ?? t.tool)}
               {t.error && <span className="cw-sr-only"> (failed)</span>}
             </li>
           ))}
