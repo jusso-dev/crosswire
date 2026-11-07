@@ -30,6 +30,8 @@ COPY --from=build --chown=node:node /repo/apps/web/server.mjs ./server.mjs
 COPY --from=build --chown=node:node /repo/apps/web/telemetry.mjs ./telemetry.mjs
 COPY --from=build --chown=node:node /repo/apps/web/drizzle ./drizzle
 COPY --from=build --chown=node:node /repo/apps/web/src ./src
+# [DEMO] fixture pack for labs (loaded only when ALLOW_DEMO_FIXTURES=true; see docs/runbooks/staging.md).
+COPY --from=build --chown=node:node /repo/apps/web/test/fixtures ./fixtures
 COPY --chown=node:node .squad ./.squad
 USER node
 EXPOSE 3000
