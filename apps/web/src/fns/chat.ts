@@ -9,7 +9,12 @@ export const fetchThreads = createServerFn({ method: 'GET' })
   .middleware([authed])
   .handler(async ({ context }) => {
     const rows = await listThreads(context.session.org.id, context.session.user.id)
-    return rows.map((r) => ({ ...r, updatedAt: r.updatedAt.toISOString() }))
+    const { modelConfigured, modelDescription } = await import('../server/agents/model')
+    return {
+      threads: rows.map((r) => ({ ...r, updatedAt: r.updatedAt.toISOString() })),
+      // Non-secret status for the UI: whether chat can run, and which model it uses.
+      runtime: { configured: modelConfigured(), ...modelDescription(), isOwner: context.session.org.role === 'owner' },
+    }
   })
 
 export const newThread = createServerFn({ method: 'POST' })
