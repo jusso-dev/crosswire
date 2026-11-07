@@ -25,7 +25,10 @@ are Key Vault references (`infra/azure/modules/apps.bicep`):
 | `RESPONSE_DRY_RUN`, `RESPONSE_EXECUTOR_*` | (plain env, Bicep sets `true` / `off`) | Fail closed, see docs/response.md |
 | `CORS_ALLOWED_ORIGINS`, `RATE_LIMIT_CHAT_PER_MIN`, `TRUSTED_PROXIES` | (plain env) | HTTP hardening (#74) |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | (plain env from Bicep) | Not a secret |
-| Customer hunting secrets | any name, referenced as `env:NAME` from the connector | See docs/hunting.md |
+| Customer hunting secrets | `CROSSWIRE_HUNT_<ORG>_*`, referenced as `env:NAME` from the connector | See docs/hunting.md |
+| Customer response secrets (v2) | `CROSSWIRE_RESP_<ORG>_*`, referenced from the response connector | Separate app registration; see docs/response.md |
+| `RESPONSE_MAX_LIVE_TARGETS` | (plain env, default 10, max 50) | Devices/incidents per live proposal (v2) |
+| `SCHEDULED_HUNTS_ENABLED`, `NOTIFICATIONS_ENABLED` | (plain env, default `true`) | Kill switches for v2 scheduled hunts and webhooks |
 
 Rotation: update the Key Vault secret, then restart the revision
 (`az containerapp revision restart`). Rotating `APP_ENCRYPTION_KEY` requires re-saving connector

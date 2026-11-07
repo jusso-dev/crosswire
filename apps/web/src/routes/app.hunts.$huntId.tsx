@@ -1,6 +1,6 @@
 import { Link, createFileRoute, notFound, useRouter } from '@tanstack/react-router'
 import { useState } from 'react'
-import { addNote, approveKqlFn, fetchHunt, proposeKqlFn, rejectKqlFn, setHuntStatusFn } from '../fns/hunts'
+import { addNote, approveKqlFn, createScheduleFn, disableScheduleFn, fetchHunt, huntReportFn, proposeKqlFn, reapproveScheduleFn, rejectKqlFn, setHuntStatusFn } from '../fns/hunts'
 import { fmtTime, statusTone } from '../components/format'
 
 export const Route = createFileRoute('/app/hunts/$huntId')({
@@ -15,7 +15,7 @@ export const Route = createFileRoute('/app/hunts/$huntId')({
 type Loaded = ReturnType<typeof Route.useLoaderData>
 
 function HuntDetail() {
-  const { hunt, evidence, proposals, demoMode } = Route.useLoaderData()
+  const { hunt, evidence, proposals, demoMode, schedules, canApprove } = Route.useLoaderData()
   const router = useRouter()
   const [note, setNote] = useState('')
   const [kql, setKql] = useState('')
@@ -41,6 +41,25 @@ function HuntDetail() {
           }}
         >
           {hunt.status === 'open' ? 'Close case' : 'Reopen case'}
+        </button>{' '}
+        <button
+          className="cw-btn"
+          data-variant="ghost"
+          onClick={async () => {
+            try {
+              const r = await huntReportFn({ data: { huntId: hunt.id } })
+              const url = URL.createObjectURL(new Blob([r.markdown], { type: 'text/markdown' }))
+              const a = document.createElement('a')
+              a.href = url
+              a.download = r.filename
+              a.click()
+              URL.revokeObjectURL(url)
+            } catch (err) {
+              setError(err instanceof Error ? err.message : String(err))
+            }
+          }}
+        >
+          Export report (Markdown)
         </button>
       </p>
       {hunt.hypothesis && <p>{hunt.hypothesis}</p>}
@@ -55,8 +74,63 @@ function HuntDetail() {
       <p className="cw-muted">Proposed queries never run until a person reviews, optionally edits, and approves them. The stored query is exactly what ran.</p>
       {proposals.length === 0 && <p className="cw-empty">No proposals yet. Ask Hunter in chat, or propose one below.</p>}
       {proposals.map((p) => (
-        <ProposalCard key={p.id} p={p} onError={setError} />
+        <ProposalCard key={p.id} p={p} onError={setError} canSchedule={canApprove} />
       ))}
+
+      <h2>Scheduled runs</h2>
+      <p className="cw-muted">An approver can schedule a query that already ran. The stored query is frozen; approval lasts up to 30 days, then the schedule stops until someone re-approves it.</p>
+      {schedules.length === 0 ? (
+        <p className="cw-empty">No schedules.</p>
+      ) : (
+        <table className="cw-table">
+          <thead>
+            <tr>
+              <th>Query</th>
+              <th>Every</th>
+              <th>Status</th>
+              <th>Approval until</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {schedules.map((s) => (
+              <tr key={s.id}>
+                <td>
+                  <span className="cw-muted">{s.target}</span>
+                  <pre>{s.kql}</pre>
+                </td>
+                <td>{s.intervalMinutes} min</td>
+                <td>
+                  {s.enabled ? `enabled · next ${fmtTime(s.nextRunAt)}` : `disabled: ${s.disabledReason ?? ''}`}
+                  {s.lastRunAt && (
+                    <div className="cw-muted">
+                      last {s.lastStatus} {fmtTime(s.lastRunAt)}
+                      {s.lastRowCount !== null ? ` · ${s.lastRowCount} rows` : ''}
+                    </div>
+                  )}
+                  {s.lastError && <div className="cw-error">{s.lastError}</div>}
+                </td>
+                <td>{fmtTime(s.approvalExpiresAt)}</td>
+                <td>
+                  {canApprove && (
+                    <button
+                      className="cw-btn"
+                      data-variant="ghost"
+                      onClick={async () => {
+                        const r = s.enabled ? await disableScheduleFn({ data: { id: s.id } }) : await reapproveScheduleFn({ data: { id: s.id } })
+                        setError(r.ok ? null : r.error)
+                        await router.invalidate()
+                      }}
+                    >
+                      {s.enabled ? 'Disable' : 'Re-approve and enable'}
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
       <form
         className="cw-form"
         style={{ maxWidth: '100%' }}
@@ -162,9 +236,10 @@ function EvidenceBody({ payload }: { payload: Record<string, unknown> }) {
   return <pre>{JSON.stringify(payload, null, 2)}</pre>
 }
 
-function ProposalCard({ p, onError }: { p: Loaded['proposals'][number]; onError: (e: string | null) => void }) {
+function ProposalCard({ p, onError, canSchedule }: { p: Loaded['proposals'][number]; onError: (e: string | null) => void; canSchedule: boolean }) {
   const router = useRouter()
   const [kql, setKql] = useState(p.kql)
+  const [every, setEvery] = useState(1440)
   const [busy, setBusy] = useState(false)
   const pending = p.status === 'proposed'
   return (
@@ -190,6 +265,30 @@ function ProposalCard({ p, onError }: { p: Loaded['proposals'][number]; onError:
       )}
       {pending && kql !== p.originalKql && <p className="cw-muted">Edited from the original proposal.</p>}
       {p.error && <p className="cw-error">{p.error}</p>}
+      {p.status === 'run' && canSchedule && (
+        <div className="cw-row">
+          <label>
+            Run this exact query every
+            <select aria-label="Schedule interval" value={every} onChange={(e) => setEvery(Number(e.target.value))}>
+              <option value={60}>hour</option>
+              <option value={360}>6 hours</option>
+              <option value={1440}>day</option>
+              <option value={10080}>week</option>
+            </select>
+          </label>
+          <button
+            className="cw-btn"
+            data-variant="ghost"
+            onClick={async () => {
+              const r = await createScheduleFn({ data: { proposalId: p.id, intervalMinutes: every } })
+              onError(r.ok ? null : r.error)
+              await router.invalidate()
+            }}
+          >
+            Schedule (30-day approval)
+          </button>
+        </div>
+      )}
       {pending && (
         <div className="cw-row">
           <button

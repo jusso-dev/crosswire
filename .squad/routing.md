@@ -11,9 +11,10 @@
 ## Fan-out
 
 When the analyst picks **Lead (orchestrate squad)**, Lead plans the work and calls the
-specialists in sequence (Intel, then Hunter, then Responder if needed), then signs off a
-combined answer. Each specialist call is logged as a decision. True parallel fan-out is a
-later enhancement.
+specialists, then signs off a combined answer. Independent questions go out together with
+`delegate_parallel` (up to 4 distinct specialists, run concurrently; one failure does not drop
+the others). Dependent steps (Intel, then Hunter using Intel's answer) use `delegate` in
+sequence. Each specialist call is logged as a decision.
 
 ## Talk to one specialist
 

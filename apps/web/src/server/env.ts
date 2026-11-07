@@ -67,6 +67,8 @@ const schema = z.object({
   RESPONSE_DRY_RUN: optionalBool,
   RESPONSE_ALLOW_SELF_APPROVAL: bool(false),
   RESPONSE_PROPOSAL_TTL_HOURS: z.coerce.number().int().positive().default(24),
+  /** v2 (#89): most devices/incidents one live proposal may act on. Hard ceiling 50. */
+  RESPONSE_MAX_LIVE_TARGETS: z.coerce.number().int().positive().max(50).default(10),
 
   SAML_ENABLED: bool(false),
 
@@ -74,6 +76,10 @@ const schema = z.object({
   CLOUDFLARE_API_TOKEN: z.string().optional(),
 
   WORKER_TIMEZONE: z.string().default('UTC'),
+  /** v2 (#92): scheduled hunts. Off switch for the worker loop; schedules still need human approval. */
+  SCHEDULED_HUNTS_ENABLED: bool(true),
+  /** v2 (#91): outbound webhook notifications (Teams/Slack). Channels are configured per org. */
+  NOTIFICATIONS_ENABLED: bool(true),
 
   /** Comma-separated extra origins allowed for CORS / Better Auth trusted origins (#74). APP_URL is always allowed. */
   CORS_ALLOWED_ORIGINS: z.string().optional(),

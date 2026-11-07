@@ -10,6 +10,8 @@ import {
   timestamp,
   uniqueIndex,
 } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
+import type { AnyPgColumn } from 'drizzle-orm/pg-core'
 import { user } from './auth'
 
 const id = () =>
@@ -369,7 +371,20 @@ export const huntEvidence = pgTable(
       .notNull()
       .references(() => huntCases.id, { onDelete: 'cascade' }),
     type: text('type', {
-      enum: ['note', 'kql_proposed', 'kql_approved', 'kql_rejected', 'kql_result', 'kql_failed', 'incidents', 'response_proposed'],
+      enum: [
+        'note',
+        'kql_proposed',
+        'kql_approved',
+        'kql_rejected',
+        'kql_result',
+        'kql_failed',
+        'incidents',
+        'response_proposed',
+        'schedule_created',
+        'schedule_disabled',
+        'scheduled_result',
+        'scheduled_failed',
+      ],
     }).notNull(),
     payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
     actorType: text('actor_type', { enum: ['user', 'agent', 'system'] }).notNull(),
@@ -433,10 +448,18 @@ export const responseProposals = pgTable(
     lastDryRun: jsonb('last_dry_run').$type<Record<string, unknown>>(),
     execution: jsonb('execution').$type<Record<string, unknown>>(),
     rollbackNotes: text('rollback_notes'),
+    /** v2 (#90): this proposal reverses `rollback_of_id`. At most one rollback per original. */
+    rollbackOfId: text('rollback_of_id').references((): AnyPgColumn => responseProposals.id, { onDelete: 'set null' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index('response_proposals_org_status_idx').on(t.orgId, t.status, t.createdAt)],
+  (t) => [
+    index('response_proposals_org_status_idx').on(t.orgId, t.status, t.createdAt),
+    // One live rollback per original; a rejected/expired/failed rollback can be proposed again.
+    uniqueIndex('response_proposals_rollback_of_uq')
+      .on(t.rollbackOfId)
+      .where(sql`${t.rollbackOfId} IS NOT NULL AND ${t.status} IN ('pending', 'approved', 'executed')`),
+  ],
 )
 
 export const responseEvents = pgTable(
@@ -448,7 +471,7 @@ export const responseEvents = pgTable(
       .notNull()
       .references(() => responseProposals.id, { onDelete: 'cascade' }),
     event: text('event', {
-      enum: ['created', 'dry_run', 'approved', 'rejected', 'expired', 'execute_attempt', 'executed', 'execute_failed'],
+      enum: ['created', 'dry_run', 'approved', 'rejected', 'expired', 'execute_attempt', 'executed', 'execute_failed', 'rollback_proposed'],
     }).notNull(),
     actorType: text('actor_type', { enum: ['user', 'agent', 'system'] }).notNull(),
     actorId: text('actor_id'),
@@ -465,3 +488,74 @@ export const ssoOrgBindings = pgTable('sso_org_bindings', {
   createdBy: text('created_by').references(() => user.id, { onDelete: 'set null' }),
   createdAt: createdAt(),
 })
+
+// ---------- v2: response connector (#88) ----------
+/**
+ * Response credentials, separate from the read-only hunting connector. Only response executors
+ * mint tokens from this row; the hunting client can never use it, and response never uses hunting's.
+ */
+export const orgResponseConnectors = pgTable('org_response_connectors', {
+  id: id(),
+  orgId: orgRef().unique(),
+  tenantId: text('tenant_id').notNull(),
+  clientId: text('client_id').notNull(),
+  clientSecretEnc: text('client_secret_enc'),
+  clientSecretRef: text('client_secret_ref'),
+  /** Owner-managed allowlist of Logic App resource ids a Sentinel playbook proposal may run. */
+  playbookAllowlist: text('playbook_allowlist').array().notNull().default([]),
+  createdAt: createdAt(),
+  updatedAt: updatedAt(),
+})
+
+// ---------- v2: notifications (#91) ----------
+export const notificationKind = pgEnum('notification_kind', ['teams', 'slack'])
+
+export const orgNotificationChannels = pgTable(
+  'org_notification_channels',
+  {
+    id: id(),
+    orgId: orgRef(),
+    kind: notificationKind('kind').notNull(),
+    name: text('name').notNull(),
+    /** AES-GCM ciphertext of the webhook URL (the URL is a bearer secret). Never returned to clients. */
+    urlEnc: text('url_enc').notNull(),
+    /** Host only, for display. */
+    urlHost: text('url_host').notNull(),
+    events: text('events').array().notNull().default([]),
+    enabled: boolean('enabled').notNull().default(true),
+    lastStatus: text('last_status'),
+    lastSentAt: timestamp('last_sent_at', { withTimezone: true }),
+    createdBy: text('created_by').references(() => user.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => [index('org_notification_channels_org_idx').on(t.orgId)],
+)
+
+// ---------- v2: scheduled hunts (#92) ----------
+export const huntSchedules = pgTable(
+  'hunt_schedules',
+  {
+    id: id(),
+    orgId: orgRef(),
+    huntId: text('hunt_id')
+      .notNull()
+      .references(() => huntCases.id, { onDelete: 'cascade' }),
+    sourceProposalId: text('source_proposal_id').references(() => kqlProposals.id, { onDelete: 'set null' }),
+    target: text('target', { enum: ['defender', 'sentinel'] }).notNull(),
+    /** Frozen copy of the KQL that a human approved and ran. Never edited in place. */
+    kql: text('kql').notNull(),
+    intervalMinutes: integer('interval_minutes').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    approvedBy: text('approved_by').notNull(),
+    approvedAt: timestamp('approved_at', { withTimezone: true }).notNull(),
+    approvalExpiresAt: timestamp('approval_expires_at', { withTimezone: true }).notNull(),
+    nextRunAt: timestamp('next_run_at', { withTimezone: true }).notNull(),
+    lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+    lastStatus: text('last_status'),
+    lastRowCount: integer('last_row_count'),
+    lastError: text('last_error'),
+    disabledReason: text('disabled_reason'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('hunt_schedules_due_idx').on(t.enabled, t.nextRunAt), index('hunt_schedules_hunt_idx').on(t.huntId)],
+)

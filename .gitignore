@@ -17,3 +17,4 @@ coverage/
 # local data
 data/
 .pglite/
+e2e/test-results/

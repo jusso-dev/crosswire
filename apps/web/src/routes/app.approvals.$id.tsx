@@ -1,6 +1,6 @@
-import { createFileRoute, notFound, useRouter } from '@tanstack/react-router'
+import { Link, createFileRoute, notFound, useRouter } from '@tanstack/react-router'
 import { useState } from 'react'
-import { decideFn, dryRunFn, executeFn, exportBundleFn, fetchProposal } from '../fns/approvals'
+import { decideFn, dryRunFn, executeFn, exportBundleFn, fetchProposal, proposeRollbackFn } from '../fns/approvals'
 import { fmtTime, statusTone } from '../components/format'
 
 export const Route = createFileRoute('/app/approvals/$id')({
@@ -13,8 +13,12 @@ export const Route = createFileRoute('/app/approvals/$id')({
 })
 
 function ProposalDetail() {
-  const { proposal: p, events, executorMode, canApprove, isRequester } = Route.useLoaderData()
+  const { proposal: p, events, executorMode, canApprove, isRequester, rollback } = Route.useLoaderData()
   const router = useRouter()
+  const navigate = Route.useNavigate()
+  const exec = p.execution as { mode?: string; status?: string; results?: Array<{ ok: boolean }> } | null
+  const canRollback = canApprove && !p.rollbackOfId && (p.status === 'executed' || p.status === 'failed') && exec?.mode === 'live' && (exec.results ? exec.results.some((r) => r.ok) : exec.status === 'succeeded')
+  const rollbackOpen = rollback && (rollback.status === 'pending' || rollback.status === 'approved' || rollback.status === 'executed')
   const [comment, setComment] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -31,6 +35,23 @@ function ProposalDetail() {
   return (
     <>
       <h1>{p.title}</h1>
+      {p.rollbackOfId && (
+        <p className="cw-banner">
+          Rollback of{' '}
+          <Link to="/app/approvals/$id" params={{ id: p.rollbackOfId }}>
+            the original proposal
+          </Link>
+          . It needs its own approval by someone other than the requester.
+        </p>
+      )}
+      {rollback && (
+        <p className="cw-banner">
+          Rollback proposed:{' '}
+          <Link to="/app/approvals/$id" params={{ id: rollback.id }}>
+            {rollback.status}
+          </Link>
+        </p>
+      )}
       {p.payload.demo === true && <p className="cw-banner">Demo fixture: not a real proposal. Executors never contact a tenant for demo data in dry-run.</p>}
       <p>
         <span className="cw-badge" data-tone={statusTone(p.status)}>
@@ -117,6 +138,24 @@ function ProposalDetail() {
           <h2>Rollback notes</h2>
           <pre>{p.rollbackNotes}</pre>
         </>
+      )}
+      {canRollback && !rollbackOpen && (
+        <p>
+          <button
+            className="cw-btn"
+            data-variant="ghost"
+            disabled={busy}
+            onClick={async () => {
+              setBusy(true)
+              const r = await proposeRollbackFn({ data: { id: p.id } })
+              setBusy(false)
+              if (!r.ok) return setError(r.error)
+              await navigate({ to: '/app/approvals/$id', params: { id: r.result.id } })
+            }}
+          >
+            Propose rollback (needs approval)
+          </button>
+        </p>
       )}
 
       <h2>Timeline</h2>

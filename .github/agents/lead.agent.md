@@ -24,6 +24,7 @@ tools: ["read", "search"]
 
 ## Tools
 - `delegate` (orchestrate mode): ask a specialist and receive its answer.
+- `delegate_parallel` (orchestrate mode): ask up to 4 different specialists independent questions at once.
 - `memory_search`: read org memory.
 
 ## Running inside GitHub Copilot

@@ -120,8 +120,9 @@ describe('executors + dry run + audit (#52, #53, #54)', () => {
     for (const type of ['sentinel_playbook', 'graph_containment'] as const) {
       const s = await createProposal(t.orgId, { type: 'user', userId: t.analyst }, { ...base, actionType: type })
       const d = await dryRunProposal(t.orgId, { userId: t.approver, role: 'approver' }, s.id)
-      expect(d.status).toBe('planned')
-      expect(d.calls.length).toBeGreaterThan(0)
+      // v2: unconfigured live executors still plan their calls but report why they would be refused.
+      expect(d.status).toBe('blocked')
+      expect(d.blocked.length).toBeGreaterThan(0)
     }
   })
 
@@ -149,7 +150,7 @@ describe('executors + dry run + audit (#52, #53, #54)', () => {
     expect(bundle).toContain('rollback')
   })
 
-  it('stub executors in on mode record a stub outcome without any network call', async () => {
+  it('live Microsoft executors in on mode refuse unexecutable proposals before claiming or calling', async () => {
     const t = await team()
     process.env.RESPONSE_EXECUTOR_GRAPH = 'on'
     process.env.RESPONSE_DRY_RUN = 'false'
@@ -157,9 +158,11 @@ describe('executors + dry run + audit (#52, #53, #54)', () => {
     const p = await createProposal(t.orgId, { type: 'user', userId: t.analyst }, { ...base, actionType: 'graph_containment' })
     await decideProposal(t.orgId, { userId: t.owner, role: 'owner' }, p.id, 'approve')
     const fetchImpl = vi.fn()
-    const out = await executeProposal(t.orgId, { userId: t.owner, role: 'owner' }, p.id, fetchImpl as unknown as typeof fetch)
-    expect(out.status).toBe('stub')
+    await expect(executeProposal(t.orgId, { userId: t.owner, role: 'owner' }, p.id, fetchImpl as unknown as typeof fetch)).rejects.toThrow(/Refused before any call/)
     expect(fetchImpl).not.toHaveBeenCalled()
+    const [row] = await getDb().select().from(responseProposals).where(eq(responseProposals.id, p.id))
+    expect(row!.status).toBe('approved')
+    expect(row!.execution).toBeNull()
     delete process.env.RESPONSE_EXECUTOR_GRAPH
     delete process.env.RESPONSE_DRY_RUN
   })

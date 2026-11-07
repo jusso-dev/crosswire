@@ -5,6 +5,9 @@ import { addEvidence, approveAndRunKql, createHunt, getHunt, listHunts, proposeK
 import { getConnectorView, upsertConnector } from '../server/hunting/broker'
 import { env } from '../server/env'
 import { asJson } from '../shared/json'
+import { createSchedule, disableSchedule, listSchedules, reapproveSchedule } from '../server/hunting/schedules'
+import { huntReportMarkdown } from '../server/hunting/report'
+import { canApprove } from '../server/response/rbac'
 
 const iso = (d: Date | null) => d?.toISOString() ?? null
 
@@ -49,6 +52,22 @@ export const fetchHunt = createServerFn({ method: 'GET' })
         createdAt: p.createdAt.toISOString(),
       })),
       demoMode: env().HUNTING_DEMO_MODE && !(await getConnectorView(context.session.org.id)),
+      canApprove: canApprove(context.session.org.role),
+      schedules: (await listSchedules(context.session.org.id, data.huntId)).map((s) => ({
+        id: s.id,
+        target: s.target,
+        kql: s.kql,
+        intervalMinutes: s.intervalMinutes,
+        enabled: s.enabled,
+        approvedBy: s.approvedBy,
+        approvalExpiresAt: s.approvalExpiresAt.toISOString(),
+        nextRunAt: s.nextRunAt.toISOString(),
+        lastRunAt: iso(s.lastRunAt),
+        lastStatus: s.lastStatus,
+        lastRowCount: s.lastRowCount,
+        lastError: s.lastError,
+        disabledReason: s.disabledReason,
+      })),
     }
   })
 
@@ -130,3 +149,38 @@ export const saveConnector = createServerFn({ method: 'POST' })
     return { ok: true }
   })
 
+
+const actorOf = (s: { user: { id: string }; org: { role: 'owner' | 'approver' | 'analyst' } }) => ({ userId: s.user.id, role: s.org.role })
+const wrap = async <T>(fn: () => Promise<T>) => {
+  try {
+    return { ok: true as const, result: await fn() }
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/** Scheduled hunts (#92): owners/approvers only; server enforces it. */
+export const createScheduleFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ proposalId: z.string().min(1), intervalMinutes: z.number().int(), approvalDays: z.number().int().optional() }))
+  .handler(async ({ context, data }) => wrap(async () => ({ id: (await createSchedule(context.session.org.id, actorOf(context.session), data)).id })))
+
+export const disableScheduleFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ id: z.string().min(1) }))
+  .handler(async ({ context, data }) => wrap(() => disableSchedule(context.session.org.id, actorOf(context.session), data.id)))
+
+export const reapproveScheduleFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ id: z.string().min(1), approvalDays: z.number().int().optional() }))
+  .handler(async ({ context, data }) => wrap(() => reapproveSchedule(context.session.org.id, actorOf(context.session), data.id, data.approvalDays)))
+
+/** Hunt report (#94): any member of the org can export its hunts. */
+export const huntReportFn = createServerFn({ method: 'GET' })
+  .middleware([authed])
+  .validator(z.object({ huntId: z.string().min(1) }))
+  .handler(async ({ context, data }) => {
+    const r = await huntReportMarkdown(context.session.org.id, data.huntId, context.session.user.id)
+    if (!r) throw new Error('Hunt not found.')
+    return r
+  })

@@ -89,3 +89,6 @@ table.cw-table { width: 100%; border-collapse: collapse; font-size: var(--cw-tex
 .cw-timeline { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--cw-space-3); }
 .cw-timeline li { border-left: 2px solid var(--cw-border); padding-left: var(--cw-space-3); }
 .cw-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.cw-check { flex-direction: row; align-items: center; gap: var(--cw-space-2); color: var(--cw-text); }
+fieldset.cw-fieldset { border: 1px solid var(--cw-border); border-radius: var(--cw-radius); padding: var(--cw-space-2) var(--cw-space-3); display: flex; flex-direction: column; gap: var(--cw-space-1); }
+fieldset.cw-fieldset legend { font-size: var(--cw-text-sm); color: var(--cw-text-muted); padding: 0 var(--cw-space-1); }

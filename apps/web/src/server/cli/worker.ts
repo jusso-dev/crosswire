@@ -4,13 +4,14 @@ import { runMatcher } from '../ti/matcher'
 import { refreshTodayDigests, runDailyDigest, utcDay } from '../ti/digest'
 import { expireProposals } from '../response/proposals'
 import { expireKqlProposals } from '../hunting/hunts'
+import { runDueSchedules } from '../hunting/schedules'
 import { logger } from '../lib/logger'
 import { closeDb } from '../db/client'
 
 /**
  * Background worker (`pnpm worker`, or the `worker` service in Compose). Plain timers, no external
- * queue: hourly ingest + match (TTL cache keeps upstream polite), expiry every minute, digest once
- * per UTC day after 00:05. Safe to run one replica; jobs are idempotent if two overlap.
+ * queue: hourly ingest + match (TTL cache keeps upstream polite), expiry and due scheduled hunts
+ * every minute, digest once per UTC day after 00:05. Safe to run one replica; jobs are idempotent if two overlap.
  */
 const HOUR = 3600_000
 let lastDigestDay = ''
@@ -35,6 +36,8 @@ async function ingestCycle() {
 
 async function tick() {
   await safe('expire', async () => ({ response: await expireProposals(), kql: await expireKqlProposals() }))
+  // Approved scheduled hunts (#92); claims are atomic, so extra replicas are safe.
+  await safe('hunts:scheduled', () => runDueSchedules())
   const now = new Date()
   const day = utcDay(now)
   if (day !== lastDigestDay && now.getUTCHours() * 60 + now.getUTCMinutes() >= 5) {

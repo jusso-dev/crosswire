@@ -1,7 +1,7 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { authed } from './middleware'
-import { auditBundle, createProposal, decideProposal, dryRunProposal, executeProposal, getProposal, listEvents, listProposals, toView } from '../server/response/proposals'
+import { auditBundle, createProposal, decideProposal, dryRunProposal, executeProposal, findRollback, getProposal, listEvents, listProposals, proposeRollback, toView } from '../server/response/proposals'
 import { executorMode } from '../server/response/executors'
 import { canApprove } from '../server/response/rbac'
 import { RESPONSE_ACTION_TYPES } from '../shared/response'
@@ -32,6 +32,7 @@ export const fetchProposal = createServerFn({ method: 'GET' })
       executorMode: executorMode(p.actionType),
       canApprove: canApprove(context.session.org.role),
       isRequester: p.requestedByUserId === context.session.user.id,
+      rollback: await findRollback(context.session.org.id, data.id),
     }
   })
 
@@ -75,6 +76,18 @@ export const executeFn = createServerFn({ method: 'POST' })
   .middleware([authed])
   .validator(z.object({ id: z.string().min(1) }))
   .handler(async ({ context, data }) => run(() => executeProposal(context.session.org.id, actor(context.session), data.id)))
+
+/** Rollback as a new gated proposal (#90). Any approver may propose; a different approver decides. */
+export const proposeRollbackFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ id: z.string().min(1) }))
+  .handler(async ({ context, data }) =>
+    run(async () => {
+      if (!canApprove(context.session.org.role)) throw new Error('Only owners and approvers can propose a rollback.')
+      const r = await proposeRollback(context.session.org.id, { userId: context.session.user.id }, data.id)
+      return { id: r.id }
+    }),
+  )
 
 export const exportBundleFn = createServerFn({ method: 'GET' })
   .middleware([authed])

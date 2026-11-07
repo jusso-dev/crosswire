@@ -33,11 +33,12 @@ Shared TypeScript types: `apps/web/src/shared/response.ts`.
 
 ## Executors (issue #52)
 
-| Executor | Flag | v1 status |
+| Executor | Flag | Status (v2) |
 | --- | --- | --- |
-| Logic App HTTP trigger | `RESPONSE_EXECUTOR_LOGICAPP` | **Live-capable.** POSTs `{ proposalId, orgId, action, targets }` to `RESPONSE_LOGICAPP_URL` |
-| Sentinel playbook | `RESPONSE_EXECUTOR_SENTINEL` | Documented stub: plans the `runPlaybook` ARM call, makes no request |
-| Graph / Defender containment | `RESPONSE_EXECUTOR_GRAPH` | Documented stub: plans `machines/{id}/isolate` calls (allowlisted paths), makes no request |
+| Logic App HTTP trigger | `RESPONSE_EXECUTOR_LOGICAPP` | **Live.** POSTs `{ proposalId, orgId, action, targets }` to `RESPONSE_LOGICAPP_URL` |
+| Sentinel playbook | `RESPONSE_EXECUTOR_SENTINEL` | **Live (v2, #89).** `POST …/incidents/{id}/runPlaybook?api-version=2025-09-01` per incident, with an **allowlisted** Logic App |
+| Defender containment | `RESPONSE_EXECUTOR_GRAPH` | **Live (v2, #89).** `POST api.security.microsoft.com/api/machines/{id}/isolate` (or `unisolate`) per device |
+| Other | (none) | Manual: no executor, recorded and approved like any proposal |
 
 Flag values: `off` (default; execute refused), `dry-run` (execute records a dry run instead), `on`.
 
@@ -69,9 +70,50 @@ unexpired proposal and an approver, and claims the proposal atomically so it run
 3. Store the trigger URL (it contains a SAS `sig`) as a secret: `RESPONSE_LOGICAPP_URL`.
 4. Start with `RESPONSE_EXECUTOR_LOGICAPP=dry-run`, review dry runs, then `on`.
 
-When the Sentinel and Graph executors are implemented they will need, respectively, **Microsoft
-Sentinel Automation Contributor** (to run playbooks) and the WindowsDefenderATP
-`Machine.Isolate` application permission, on a separate app registration from hunting.
+## Live Microsoft executors (v2, #88, #89)
+
+The Sentinel and Defender executors use a **response connector**: a second Entra app
+registration per org, separate from the read-only hunting app (Settings → Response connector,
+owners only). Response tokens are minted only from it; the hunting client can never use it, and
+response can never borrow the hunting credential. Secrets are stored AES-GCM encrypted, or as
+`env:CROSSWIRE_RESP_<ORG>_<NAME>` (a Key Vault-backed container secret).
+
+Least privilege for `crosswire-response` (see [entra-setup](runbooks/entra-setup.md)):
+
+| Executor | Permission |
+| --- | --- |
+| Defender containment | WindowsDefenderATP application permission `Machine.Isolate` (admin consent) |
+| Sentinel playbook | **Microsoft Sentinel Responder** on the workspace, plus **Logic App Contributor** on each allowlisted playbook (Sentinel requires it to trigger a playbook) |
+
+Guards, all checked **before** a token is requested or the proposal is claimed:
+
+- **Playbook allowlist.** `payload.playbookResourceId` must be a Logic App resource id on the org's
+  allowlist (owners edit it under Settings). An agent cannot name an arbitrary playbook.
+- **Defender machine ids only.** Device targets must be 40-hex Defender machine ids; hostnames are refused.
+- **Target cap.** `RESPONSE_MAX_LIVE_TARGETS` (default 10, max 50) devices or incidents per proposal.
+- **Response HTTP allowlist.** Exact POST endpoints only: `api.security.microsoft.com/api/machines/{id}/isolate|unisolate`
+  and Sentinel `…/incidents/{id}/runPlaybook`. No generic request path; redirects are refused.
+- The workspace location comes from the hunting connector's Sentinel fields (not from the proposal).
+
+Each call is recorded separately (`execution.results[]`: target, ok, HTTP status, redacted body).
+If some calls fail, the proposal is `failed` with status `partial`, and rollback covers exactly
+the calls that succeeded. A dry run shows the exact calls **and** any blockers (`status: blocked`).
+
+Turning a live executor on still needs `RESPONSE_DRY_RUN=false` **and** `RESPONSE_EXECUTOR_X=on`
+(the matrix above). Walk isolate → rollback in a lab tenant before enabling either in production.
+
+## Rollback as a gated proposal (v2, #90)
+
+On an executed (or partly failed) live proposal, an approver can click **Propose rollback**. That
+creates a **new pending proposal** linked to the original (`rollback_of_id`):
+
+- Defender isolate → `unisolate` for exactly the devices that were isolated successfully.
+- Sentinel playbook / Logic App → `other` (manual) carrying the rollback notes, because a playbook
+  cannot be reversed generically. The manual reversal is still approved and audited.
+
+The rollback goes through the same approval, RBAC, self-approval ban, dry run and expiry. The
+person who proposed it cannot approve it. Only one open rollback per original; a rejected or
+expired rollback can be proposed again. Rollbacks of rollbacks are refused (propose a new action).
 
 ## Dry run (issue #53)
 
@@ -85,9 +127,9 @@ can enforce it by policy.
 
 Every step writes a `response_events` row and an `audit_events` row (`category = 'response'`):
 `created`, `dry_run`, `approved`, `rejected`, `expired`, `execute_attempt`, `executed`,
-`execute_failed`. Payloads are redacted (no tokens or SAS signatures). The proposal page shows the
-timeline, dry-run output, execution result and **rollback notes**. Crosswire does not undo actions
-automatically; rollback notes tell the operator what to reverse and where.
+`execute_failed`, `rollback_proposed`. Payloads are redacted (no tokens or SAS signatures). The proposal page shows the
+timeline, dry-run output, execution result and **rollback notes**. Crosswire never undoes an action
+on its own: reversal is a new proposal that a person approves (see above).
 
 Owners can download a JSON audit bundle per proposal.
 
@@ -95,7 +137,7 @@ Owners can download a JSON audit bundle per proposal.
 
 Responder (and Lead, when orchestrating) has the `propose_response` tool. It requires explicit
 targets and a blast radius; the tool rejects proposals without them. On success the agent links to
-`/app/approvals/<id>`. No agent has an execute, approve or dry-run tool (enforced by the tool
+`/app/approvals/<id>`. No agent has an execute, approve, dry-run, rollback or schedule tool (enforced by the tool
 registry, a lint rule, and tests).
 
 Example transcript:
