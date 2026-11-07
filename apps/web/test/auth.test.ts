@@ -102,7 +102,9 @@ describe('Better Auth (#17, #18, #20, #21, #22)', () => {
 
 describe('Entra org mapping (#19)', () => {
   it('falls back to the UPN only when Entra sends no email claim', () => {
-    expect(entraEmailFallback({ preferred_username: 'Analyst@Contoso.onmicrosoft.com' })).toEqual({ email: 'analyst@contoso.onmicrosoft.com' })
+    expect(entraEmailFallback({ preferred_username: 'Analyst@Contoso.onmicrosoft.com' })).toEqual({ email: 'analyst@contoso.onmicrosoft.com', emailVerified: false })
+    // A claims policy asserting email_verified without an email must not make the UPN "verified".
+    expect(entraEmailFallback({ preferred_username: 'a@contoso.com', email_verified: true } as never)).toEqual({ email: 'a@contoso.com', emailVerified: false })
     expect(entraEmailFallback({ email: 'real@contoso.com', preferred_username: 'other@contoso.com' })).toEqual({})
     expect(entraEmailFallback({ preferred_username: 'not-an-address' })).toEqual({})
     expect(entraEmailFallback({})).toEqual({})
