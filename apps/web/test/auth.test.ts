@@ -4,7 +4,7 @@ import { auth, resetAuthForTests } from '../src/server/auth/auth'
 import { getAppSession, requireApiSession, safeReturnTo, HttpError } from '../src/server/auth/session'
 import { getDb } from '../src/server/db/client'
 import { auditEvents, orgMemberships, orgs } from '../src/server/db/schema'
-import { placeEntraUser, resolveEntraOrg, UnknownTenantError } from '../src/server/auth/entra'
+import { entraEmailFallback, placeEntraUser, resolveEntraOrg, UnknownTenantError } from '../src/server/auth/entra'
 import { createOrg } from '../src/server/orgs'
 import { resetEnvForTests } from '../src/server/env'
 import { makeUser } from './helpers'
@@ -101,6 +101,13 @@ describe('Better Auth (#17, #18, #20, #21, #22)', () => {
 })
 
 describe('Entra org mapping (#19)', () => {
+  it('falls back to the UPN only when Entra sends no email claim', () => {
+    expect(entraEmailFallback({ preferred_username: 'Analyst@Contoso.onmicrosoft.com' })).toEqual({ email: 'analyst@contoso.onmicrosoft.com' })
+    expect(entraEmailFallback({ email: 'real@contoso.com', preferred_username: 'other@contoso.com' })).toEqual({})
+    expect(entraEmailFallback({ preferred_username: 'not-an-address' })).toEqual({})
+    expect(entraEmailFallback({})).toEqual({})
+  })
+
   it('maps a known tid into its org as analyst', async () => {
     const org = await createOrg('Contoso', { entraTenantId: '11111111-1111-1111-1111-111111111111' })
     const u = await makeUser()
