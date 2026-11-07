@@ -33,7 +33,7 @@ function fixtureRecords(read: (f: string) => string): TiRecord[] {
 export const DEMO_PREFIX = '[DEMO]'
 
 function fixturesDir() {
-  const candidates = [process.env.FIXTURES_DIR, path.resolve(process.cwd(), 'test/fixtures'), path.resolve(process.cwd(), 'apps/web/test/fixtures')].filter(Boolean) as string[]
+  const candidates = [process.env.FIXTURES_DIR, path.resolve(process.cwd(), 'fixtures'), path.resolve(process.cwd(), 'test/fixtures'), path.resolve(process.cwd(), 'apps/web/test/fixtures')].filter(Boolean) as string[]
   for (const c of candidates) {
     try {
       readFileSync(path.join(c, 'kev.json'))
