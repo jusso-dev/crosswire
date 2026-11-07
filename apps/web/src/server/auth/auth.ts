@@ -10,7 +10,7 @@ import { env } from '../env'
 import { writeAudit } from '../audit'
 import { ensurePersonalOrg, getCurrentOrg } from '../orgs'
 import { claimPendingBootstrapByEmail } from '../ops/bootstrap'
-import { UnknownTenantError, decodeJwtClaims, placeEntraUser, resolveEntraOrg } from './entra'
+import { UnknownTenantError, decodeJwtClaims, entraEmailFallback, placeEntraUser, resolveEntraOrg } from './entra'
 import { logger } from '../lib/logger'
 
 /** Map Better Auth endpoint paths to audit actions. */
@@ -77,7 +77,7 @@ function createAuth() {
                 }
                 throw err
               }
-              return {}
+              return entraEmailFallback(profile)
             },
           },
         }
