@@ -44,9 +44,14 @@ export function decodeJwtClaims(idToken: string): Record<string, unknown> {
  * Entra omits the `email` claim for users without an Exchange mailbox (common for cloud-only
  * accounts). Fall back to the sign-in name (`preferred_username`, the UPN in this tenant) when it
  * looks like an address and `email` is truly absent. Returns the fields to merge into the user.
+ *
+ * A UPN is a sign-in name, not a proven mailbox, and can be reassigned. The fallback is therefore
+ * always marked unverified (whatever `email_verified` says), so it can never implicitly link this
+ * Entra identity to an existing local account with the same address. Org placement still uses the
+ * token's tenant id, not the email.
  */
-export function entraEmailFallback(profile: { email?: unknown; preferred_username?: unknown }): { email?: string } {
+export function entraEmailFallback(profile: { email?: unknown; preferred_username?: unknown }): { email?: string; emailVerified?: boolean } {
   if (typeof profile.email === 'string' && profile.email) return {}
   const upn = typeof profile.preferred_username === 'string' ? profile.preferred_username.trim().toLowerCase() : ''
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(upn) ? { email: upn } : {}
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(upn) ? { email: upn, emailVerified: false } : {}
 }
