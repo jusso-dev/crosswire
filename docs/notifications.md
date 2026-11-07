@@ -26,7 +26,8 @@ Owners add webhook channels under **Settings → Notifications**. Each channel s
   `*.logic.azure.com`, `*.api.powerplatform.com`, `*.webhook.office.com`. https only, default port,
   no embedded credentials, redirects refused, 5 s timeout.
 - Messages carry titles, counts and deep links only: never KQL results, payloads or secrets; all
-  text is redacted and truncated.
+  text is redacted, truncated and markup-escaped, so a feed or agent-written title cannot inject
+  Slack mentions (`<!channel>`) or links into a trusted channel.
 - Delivery failures never fail the action that triggered them. They update the channel's
   "last delivery" status and write a `notification_failed` audit event.
 - At most 10 channels per org. `NOTIFICATIONS_ENABLED=false` disables all sending.

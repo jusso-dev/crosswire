@@ -77,6 +77,7 @@ export async function upsertResponseConnector(
   const existing = await getResponseConnector(orgId)
   // Keep the stored secret when the owner only edits the allowlist.
   const keepSecret = !input.clientSecret && !input.clientSecretRef && existing
+  if (!input.clientSecret && !input.clientSecretRef && !existing) throw new Error('A client secret or secret reference is required the first time.')
   const values = {
     orgId,
     tenantId: input.tenantId,

@@ -1,6 +1,6 @@
-import { and, asc, eq, lte, sql } from 'drizzle-orm'
+import { and, asc, eq, gt, lte, sql } from 'drizzle-orm'
 import { getDb } from '../db/client'
-import { huntSchedules, kqlProposals } from '../db/schema'
+import { huntCases, huntSchedules, kqlProposals } from '../db/schema'
 import { env } from '../env'
 import { recordDecision } from '../agents/decisions'
 import { logger } from '../lib/logger'
@@ -47,6 +47,12 @@ export async function createSchedule(orgId: string, actor: Actor, input: { propo
   if (!p) throw new NotFoundError('KQL proposal not found.')
   if (p.status !== 'run') throw new StateError('Only a query that a person approved and that ran successfully can be scheduled.')
   const kql = assertSafeKql(p.kql)
+  const [dup] = await getDb()
+    .select({ id: huntSchedules.id })
+    .from(huntSchedules)
+    .where(and(eq(huntSchedules.orgId, orgId), eq(huntSchedules.sourceProposalId, p.id), eq(huntSchedules.enabled, true)))
+    .limit(1)
+  if (dup) throw new StateError('This query already has an enabled schedule.')
   const now = new Date()
   const [row] = await getDb()
     .insert(huntSchedules)
@@ -112,25 +118,29 @@ export async function expireScheduleApprovals(now = new Date()) {
 }
 
 /**
- * Worker entry point. Claims each due schedule atomically by moving next_run_at forward in the same
- * UPDATE that selects it, so two worker replicas never run the same schedule twice.
+ * Worker entry point. Claims each due schedule atomically by moving next_run_at forward (a lease) in
+ * the same UPDATE that selects it with FOR UPDATE SKIP LOCKED, so two worker replicas or overlapping
+ * ticks never run the same schedule twice. Each claim uses a fresh clock so a long loop never hands
+ * out leases that are already in the past. `nowFn` exists for tests.
  */
-export async function runDueSchedules(now = new Date(), limit = 20) {
+export async function runDueSchedules(nowFn: () => Date = () => new Date(), limit = 20) {
   if (!env().SCHEDULED_HUNTS_ENABLED) return { ran: 0, expired: 0 }
-  const expired = await expireScheduleApprovals(now)
+  const expired = await expireScheduleApprovals(nowFn())
   let ran = 0
   for (let i = 0; i < limit; i++) {
+    const now = nowFn()
+    // Column-typed comparisons (eq/lte/gt) so Date params are serialised by Drizzle on every driver;
+    // bare Date params inside raw sql break postgres-js. Closed hunts never run.
+    const due = and(
+      eq(huntSchedules.enabled, true),
+      lte(huntSchedules.nextRunAt, now),
+      gt(huntSchedules.approvalExpiresAt, now),
+      sql`exists (select 1 from ${huntCases} where ${huntCases.id} = ${huntSchedules.huntId} and ${huntCases.status} = 'open')`,
+    )
     const [claimed] = await getDb()
       .update(huntSchedules)
-      // Lease: if this process dies mid-run, the schedule becomes due again after CLAIM_LEASE_MS.
       .set({ nextRunAt: new Date(now.getTime() + CLAIM_LEASE_MS), lastStatus: 'running' })
-      .where(
-        sql`${huntSchedules.id} = (
-          select ${huntSchedules.id} from ${huntSchedules}
-          where ${huntSchedules.enabled} = true and ${huntSchedules.nextRunAt} <= ${now} and ${huntSchedules.approvalExpiresAt} > ${now}
-          order by ${huntSchedules.nextRunAt} limit 1 for update skip locked
-        )`,
-      )
+      .where(sql`${huntSchedules.id} = (select ${huntSchedules.id} from ${huntSchedules} where ${due} order by ${huntSchedules.nextRunAt} limit 1 for update skip locked)`)
       .returning()
     if (!claimed) break
     await runOne(claimed, now)
@@ -139,8 +149,9 @@ export async function runDueSchedules(now = new Date(), limit = 20) {
   return { ran, expired }
 }
 
-async function runOne(s: typeof huntSchedules.$inferSelect, now: Date) {
-  const next = new Date(now.getTime() + s.intervalMinutes * 60_000)
+async function runOne(s: typeof huntSchedules.$inferSelect, claimedAt: Date) {
+  const next = new Date(claimedAt.getTime() + s.intervalMinutes * 60_000)
+  const now = claimedAt
   try {
     const kql = assertSafeKql(s.kql)
     const client = huntingClient()

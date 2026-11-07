@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, isNull, lt } from 'drizzle-orm'
+import { and, asc, count, desc, eq, inArray, isNull, lt, or } from 'drizzle-orm'
 import { z } from 'zod'
 import { getDb } from '../db/client'
 import { huntCases, responseEvents, responseProposals } from '../db/schema'
@@ -18,13 +18,18 @@ export class ProposalStateError extends Error {}
 export class ProposalNotFoundError extends Error {}
 
 const identifier = z.string().trim().min(1).max(200)
+const targetList = z
+  .array(identifier)
+  .max(50)
+  .transform((xs) => [...new Set(xs)])
+  .optional()
 
 /** Create-proposal input (#50). Blast radius is mandatory; empty summaries are refused. */
 export const proposalInput = z.object({
   title: z.string().trim().min(3).max(200),
   actionType: z.enum(RESPONSE_ACTION_TYPES),
   targets: z
-    .object({ devices: z.array(identifier).max(50).optional(), users: z.array(identifier).max(50).optional(), incidents: z.array(identifier).max(50).optional() })
+    .object({ devices: targetList, users: targetList, incidents: targetList })
     .refine((t) => (t.devices?.length ?? 0) + (t.users?.length ?? 0) + (t.incidents?.length ?? 0) > 0, 'At least one explicit target is required.'),
   blastRadius: z.object({ summary: z.string().trim().min(10, 'Blast radius summary is required (at least 10 characters).').max(1000) }),
   payload: z.record(z.string(), z.unknown()).default({}),
@@ -126,12 +131,20 @@ export async function listEvents(orgId: string, proposalId: string) {
   return getDb().select().from(responseEvents).where(and(eq(responseEvents.orgId, orgId), eq(responseEvents.proposalId, proposalId))).orderBy(asc(responseEvents.createdAt))
 }
 
-/** Expiry job (#51): pending past expires_at -> expired. */
+/**
+ * Expiry job (#51): pending past expires_at -> expired. Approved-but-never-executed proposals past
+ * their window also expire (v2), so a lapsed approval never blocks a new rollback or looks runnable.
+ */
 export async function expireProposals(now = new Date()) {
   const rows = await getDb()
     .update(responseProposals)
     .set({ status: 'expired' })
-    .where(and(eq(responseProposals.status, 'pending'), lt(responseProposals.expiresAt, now)))
+    .where(
+      and(
+        or(eq(responseProposals.status, 'pending'), and(eq(responseProposals.status, 'approved'), isNull(responseProposals.execution))),
+        lt(responseProposals.expiresAt, now),
+      ),
+    )
     .returning({ id: responseProposals.id, orgId: responseProposals.orgId })
   for (const r of rows) await event(r.orgId, r.id, 'expired', { type: 'system', id: null })
   return rows.length
@@ -186,7 +199,14 @@ export async function executeProposal(orgId: string, actor: { userId: string; ro
   const p = await getProposal(orgId, id)
   if (!p) throw new ProposalNotFoundError('Proposal not found.')
   if (p.status !== 'approved') throw new ProposalStateError(`Only approved proposals can execute (this one is ${p.status}).`)
-  if (p.expiresAt.getTime() <= Date.now()) throw new ProposalStateError('Approval window has expired; create a new proposal.')
+  if (p.expiresAt.getTime() <= Date.now()) {
+    await getDb()
+      .update(responseProposals)
+      .set({ status: 'expired' })
+      .where(and(eq(responseProposals.id, id), eq(responseProposals.status, 'approved'), isNull(responseProposals.execution)))
+    await event(orgId, id, 'expired', { type: 'system', id: null })
+    throw new ProposalStateError('Approval window has expired; create a new proposal.')
+  }
   const mode = executorMode(p.actionType)
   if (mode === 'off') throw new ProposalStateError(`The ${p.actionType} executor is off. Set RESPONSE_EXECUTOR_* to dry-run or on.`)
   if (mode === 'dry-run') return dryRunProposal(orgId, actor, id)
@@ -242,7 +262,8 @@ export async function auditBundle(orgId: string, id: string) {
 /** Targets that the original execution actually changed (#90). Pre-v2 outcomes had no per-call results. */
 function succeededTargets(p: Row): { devices: string[]; incidents: string[] } {
   const exec = p.execution as { results?: Array<{ ok: boolean; target?: { kind: string; id: string } }> } | null
-  if (!exec?.results) return { devices: p.targets.devices ?? [], incidents: p.targets.incidents ?? [] }
+  // Pre-v2 outcomes, and executors whose calls are not per target (Logic App), act on all targets.
+  if (!exec?.results || !exec.results.some((r) => r.target)) return { devices: p.targets.devices ?? [], incidents: p.targets.incidents ?? [] }
   const ok = exec.results.filter((r) => r.ok && r.target)
   return { devices: ok.filter((r) => r.target!.kind === 'device').map((r) => r.target!.id), incidents: ok.filter((r) => r.target!.kind === 'incident').map((r) => r.target!.id) }
 }

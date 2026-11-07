@@ -11,7 +11,7 @@ import { closeDb } from '../db/client'
 /**
  * Background worker (`pnpm worker`, or the `worker` service in Compose). Plain timers, no external
  * queue: hourly ingest + match (TTL cache keeps upstream polite), expiry and due scheduled hunts
- * every minute, digest once per UTC day after 00:05. Safe to run one replica; jobs are idempotent if two overlap.
+ * every minute, digest once per UTC day after 00:05. Ingest, match and digest jobs are idempotent; scheduled-hunt claims are atomic, so extra replicas are safe.
  */
 const HOUR = 3600_000
 let lastDigestDay = ''
@@ -34,7 +34,19 @@ async function ingestCycle() {
   await safe('digest:today', () => refreshTodayDigests())
 }
 
+let ticking = false
 async function tick() {
+  // setInterval does not wait: skip a tick while the previous one is still running.
+  if (ticking) return
+  ticking = true
+  try {
+    await tickBody()
+  } finally {
+    ticking = false
+  }
+}
+
+async function tickBody() {
   await safe('expire', async () => ({ response: await expireProposals(), kql: await expireKqlProposals() }))
   // Approved scheduled hunts (#92); claims are atomic, so extra replicas are safe.
   await safe('hunts:scheduled', () => runDueSchedules())

@@ -78,8 +78,10 @@ case, under the query card, pick an interval (hour, 6 hours, day, week) and clic
   to change the query, propose and run a new one and schedule that.
 - Approval lasts at most **30 days**. When it lapses, the worker disables the schedule and records
   `schedule_disabled` on the case; it never runs again until an approver clicks **Re-approve**.
-- Minimum interval 60 minutes. The worker checks every minute and claims each due schedule
-  atomically (`FOR UPDATE SKIP LOCKED`), so extra worker replicas never run a schedule twice.
+- Minimum interval 60 minutes. The worker checks every minute (ticks never overlap) and claims
+  each due schedule atomically with a 10-minute lease (`FOR UPDATE SKIP LOCKED`, fresh clock per
+  claim), so extra worker replicas never run a schedule twice. One enabled schedule per query.
+- Closing the hunt case disables its schedules; reopening needs a re-approval.
 - Runs go through the same `HuntingClient` (allowlist, KQL blocklist, row and timeout caps) and
   add `scheduled_result` / `scheduled_failed` evidence with the approver's id.
 - When a run returns rows and the count changed since the last run, subscribed Teams/Slack

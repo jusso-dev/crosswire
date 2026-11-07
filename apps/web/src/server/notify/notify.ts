@@ -60,16 +60,27 @@ export function assertWebhookUrl(kind: ChannelKind, raw: string): URL {
 
 const appLink = (path?: string) => (path ? `${env().APP_URL.replace(/\/$/, '')}${path}` : undefined)
 
-/** Build the provider payload. Every string is redacted and truncated. */
+/**
+ * Neutralise markup in untrusted text (agent-written titles, TI feed titles): Slack mrkdwn control
+ * characters (`<`, `>`, `&`) and Markdown link/emphasis syntax that Teams renders.
+ */
+export function plain(kind: ChannelKind, s: string) {
+  // eslint-disable-next-line no-control-regex -- strip control characters from untrusted text
+  const t = s.replace(/[\u0000-\u001f]/g, ' ')
+  if (kind === 'slack') return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/([*_~`])/g, '\u200b$1')
+  return t.replace(/([\\`*_[\]()<>#!|])/g, '\\$1')
+}
+
+/** Build the provider payload. Every string is redacted, truncated and markup-escaped. */
 export function buildPayload(kind: ChannelKind, msg: NotifyMessage) {
-  const title = truncate(redactString(msg.title), 200)
-  const lines = (msg.lines ?? []).slice(0, 10).map((l) => truncate(redactString(l), 300))
+  const title = plain(kind, truncate(redactString(msg.title), 200))
+  const lines = (msg.lines ?? []).slice(0, 10).map((l) => plain(kind, truncate(redactString(l), 300)))
   const url = appLink(msg.link)
   if (kind === 'slack') {
     return {
       text: title,
       blocks: [
-        { type: 'section', text: { type: 'mrkdwn', text: `*${title}*${lines.length ? `\n${lines.join('\n')}` : ''}` } },
+        { type: 'section', text: { type: 'mrkdwn', text: `*${title}*${lines.length ? `\n${lines.join('\n')}` : ''}`, verbatim: true } },
         ...(url ? [{ type: 'actions', elements: [{ type: 'button', text: { type: 'plain_text', text: 'Open in Crosswire' }, url }] }] : []),
       ],
     }

@@ -15,11 +15,11 @@ import {
   upsertResponseConnector,
 } from '../src/server/response/connector'
 import { assertAllowedResponseRequest, BlockedResponseRequestError } from '../src/server/response/executors'
-import { createProposal, decideProposal, dryRunProposal, executeProposal, findRollback, getProposal, listEvents, proposeRollback } from '../src/server/response/proposals'
-import { addChannel, assertWebhookUrl, buildPayload, deleteChannel, listChannels, notify, setNotifyFetch, testChannel, WebhookUrlError } from '../src/server/notify/notify'
+import { createProposal, decideProposal, dryRunProposal, executeProposal, expireProposals, findRollback, getProposal, listEvents, proposeRollback } from '../src/server/response/proposals'
+import { addChannel, assertWebhookUrl, buildPayload, plain, deleteChannel, listChannels, notify, setNotifyFetch, testChannel, WebhookUrlError } from '../src/server/notify/notify'
 import { runMatcher } from '../src/server/ti/matcher'
 import { addWatch } from '../src/server/ti/watchlists'
-import { approveAndRunKql, createHunt, getHunt, proposeKql } from '../src/server/hunting/hunts'
+import { approveAndRunKql, createHunt, getHunt, proposeKql, setHuntStatus } from '../src/server/hunting/hunts'
 import { createSchedule, disableSchedule, reapproveSchedule, runDueSchedules } from '../src/server/hunting/schedules'
 import { huntReportMarkdown, REPORT_MAX_CHARS } from '../src/server/hunting/report'
 import { LlmAgentRuntime, delegateParallelInput } from '../src/server/agents/runtime'
@@ -380,7 +380,7 @@ describe('scheduled hunts (#92)', () => {
     setNotifyFetch(sent as unknown as typeof fetch)
     await addChannel(t.orgId, t.owner, { kind: 'slack', name: 's', url: 'https://hooks.slack.com/services/a/b/c', events: ['scheduled_hunt'] })
 
-    const [a, b] = await Promise.all([runDueSchedules(future), runDueSchedules(future)])
+    const [a, b] = await Promise.all([runDueSchedules(() => future), runDueSchedules(() => future)])
     expect(a.ran + b.ran).toBe(1)
     const h = await getHunt(t.orgId, hunt.id)
     expect(h!.evidence.filter((e) => e.type === 'scheduled_result')).toHaveLength(1)
@@ -389,7 +389,7 @@ describe('scheduled hunts (#92)', () => {
     expect(after!.nextRunAt.getTime()).toBeGreaterThan(future.getTime())
     expect(sent).toHaveBeenCalledTimes(1)
     // Not due again until the next interval.
-    expect((await runDueSchedules(future)).ran).toBe(0)
+    expect((await runDueSchedules(() => future)).ran).toBe(0)
   })
 
   it('lapsed approval disables the schedule; it never runs again until re-approved', async () => {
@@ -397,7 +397,7 @@ describe('scheduled hunts (#92)', () => {
     await approveAndRunKql(t.orgId, t.analyst, p.id)
     const s = await createSchedule(t.orgId, { userId: t.approver, role: 'approver' }, { proposalId: p.id, intervalMinutes: 60, approvalDays: 1 })
     const later = new Date(Date.now() + 2 * 86_400_000)
-    const r = await runDueSchedules(later)
+    const r = await runDueSchedules(() => later)
     expect(r).toEqual({ ran: 0, expired: 1 })
     const [row] = await getDb().select().from(huntSchedules).where(eq(huntSchedules.id, s.id))
     expect(row!.enabled).toBe(false)
@@ -409,12 +409,12 @@ describe('scheduled hunts (#92)', () => {
     expect(re!.enabled).toBe(true)
     expect(re!.approvedBy).toBe(t.owner)
     await disableSchedule(t.orgId, { userId: t.owner, role: 'owner' }, s.id)
-    expect((await runDueSchedules(new Date(Date.now() + 2 * 3600_000))).ran).toBe(0)
+    expect((await runDueSchedules(() => new Date(Date.now() + 2 * 3600_000))).ran).toBe(0)
   })
 
   it('SCHEDULED_HUNTS_ENABLED=false stops the worker loop', async () => {
     withEnv({ SCHEDULED_HUNTS_ENABLED: 'false' })
-    expect(await runDueSchedules(new Date(Date.now() + 86_400_000))).toEqual({ ran: 0, expired: 0 })
+    expect(await runDueSchedules(() => new Date(Date.now() + 86_400_000))).toEqual({ ran: 0, expired: 0 })
   })
 
   it('agents have no schedule tool and no execute tools', () => {
@@ -483,6 +483,120 @@ describe('hunt report export (#94)', () => {
     expect(await huntReportMarkdown(other.orgId, hunt.id, other.analyst)).toBeNull()
     const audit = await getDb().select().from(auditEvents).where(eq(auditEvents.orgId, t.orgId))
     expect(audit.some((a) => a.action === 'hunt_report_exported')).toBe(true)
+  })
+})
+
+describe('council review fixes (v2)', () => {
+  it('an approved rollback that lapses expires, so a new rollback can be proposed', async () => {
+    withEnv(LIVE)
+    const t = await liveTeam()
+    const p = await approved(t, isolate([M1]))
+    await executeProposal(t.orgId, { userId: t.approver, role: 'approver' }, p.id, vi.fn(async () => Response.json({}, { status: 201 })) as unknown as typeof fetch)
+    const rb = await proposeRollback(t.orgId, { userId: t.approver }, p.id)
+    await decideProposal(t.orgId, { userId: t.owner, role: 'owner' }, rb.id, 'approve')
+    expect(await expireProposals(new Date(Date.now() + 48 * 3600_000))).toBeGreaterThanOrEqual(1)
+    expect((await getProposal(t.orgId, rb.id))!.status).toBe('expired')
+    const again = await proposeRollback(t.orgId, { userId: t.approver }, p.id)
+    expect(again.targets.devices).toEqual([M1])
+  })
+
+  it('execute on an expired approval marks it expired', async () => {
+    withEnv(LIVE)
+    const t = await liveTeam()
+    const p = await approved(t, isolate([M1]))
+    await getDb().update(responseProposals).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(responseProposals.id, p.id))
+    await expect(executeProposal(t.orgId, { userId: t.approver, role: 'approver' }, p.id, vi.fn() as unknown as typeof fetch)).rejects.toThrow(/expired/)
+    expect((await getProposal(t.orgId, p.id))!.status).toBe('expired')
+  })
+
+  it('Logic App rollback keeps the original device and incident targets', async () => {
+    withEnv({ ...LIVE, RESPONSE_EXECUTOR_LOGICAPP: 'on', RESPONSE_LOGICAPP_URL: 'https://mock.logic.example/invoke?sig=s3cret' })
+    const t = await liveTeam()
+    const p = await approved(t, { ...isolate(['host-1']), actionType: 'logic_app' })
+    await executeProposal(t.orgId, { userId: t.approver, role: 'approver' }, p.id, vi.fn(async () => Response.json({}, { status: 202 })) as unknown as typeof fetch)
+    const rb = await proposeRollback(t.orgId, { userId: t.approver }, p.id)
+    expect(rb.actionType).toBe('other')
+    expect(rb.targets.devices).toEqual(['host-1'])
+    delete process.env.RESPONSE_EXECUTOR_LOGICAPP
+    delete process.env.RESPONSE_LOGICAPP_URL
+  })
+
+  it('duplicate targets are collapsed, so nothing runs twice', async () => {
+    withEnv(LIVE)
+    const t = await liveTeam()
+    const p = await approved(t, isolate([M1, M1]))
+    expect(p.targets.devices).toEqual([M1])
+    const f = vi.fn(async () => Response.json({}, { status: 201 }))
+    await executeProposal(t.orgId, { userId: t.approver, role: 'approver' }, p.id, f as unknown as typeof fetch)
+    expect(f).toHaveBeenCalledTimes(1)
+  })
+
+  it('bad incident ids, unknown containment actions and secretless connectors are blocked before the claim', async () => {
+    withEnv(LIVE)
+    const t = await liveTeam()
+    const inc = await approved(t, { title: 'Bad incident', actionType: 'sentinel_playbook', targets: { incidents: ['ok-1', '..'] }, blastRadius: { summary: 'Path trick in the incident id.' }, payload: { playbookResourceId: PLAYBOOK } })
+    const f = vi.fn()
+    await expect(executeProposal(t.orgId, { userId: t.approver, role: 'approver' }, inc.id, f as unknown as typeof fetch)).rejects.toThrow(/incident ids/)
+    const rel = await approved(t, { ...isolate([M1]), payload: { action: 'release' } })
+    await expect(executeProposal(t.orgId, { userId: t.approver, role: 'approver' }, rel.id, f as unknown as typeof fetch)).rejects.toThrow(/isolate" or "unisolate/)
+    expect(f).not.toHaveBeenCalled()
+    expect((await getProposal(t.orgId, inc.id))!.execution).toBeNull()
+
+    const bare = await team()
+    await expect(upsertResponseConnector(bare.orgId, bare.owner, { tenantId: TENANT, clientId: RESP_CLIENT })).rejects.toThrow(/required the first time/)
+  })
+
+  it('notification text cannot inject Slack links/mentions or Teams markdown links', () => {
+    expect(plain('slack', '<!channel> <https://evil|Approve>')).not.toMatch(/<[!h]/)
+    expect(plain('teams', '[Approve](https://evil)')).toBe('\\[Approve\\]\\(https://evil\\)')
+    const body = JSON.stringify(buildPayload('slack', { title: '<https://evil|click>' }))
+    expect(body).not.toContain('<https://evil')
+  })
+
+  it('closing a hunt disables its schedules; double scheduling the same query is refused', async () => {
+    await getDb().update(huntSchedules).set({ enabled: false })
+    const t = await team()
+    const hunt = await createHunt(t.orgId, t.analyst, { title: 'Close me' })
+    const p = await proposeKql(t.orgId, { type: 'user', id: t.analyst }, { huntId: hunt.id, target: 'defender', kql: 'DeviceInfo | take 1' })
+    await approveAndRunKql(t.orgId, t.analyst, p.id)
+    const s = await createSchedule(t.orgId, { userId: t.approver, role: 'approver' }, { proposalId: p.id, intervalMinutes: 60 })
+    await expect(createSchedule(t.orgId, { userId: t.approver, role: 'approver' }, { proposalId: p.id, intervalMinutes: 60 })).rejects.toThrow(/already has an enabled schedule/)
+    await setHuntStatus(t.orgId, hunt.id, 'closed')
+    const [row] = await getDb().select().from(huntSchedules).where(eq(huntSchedules.id, s.id))
+    expect(row!.enabled).toBe(false)
+    expect(row!.disabledReason).toBe('hunt closed')
+    expect((await runDueSchedules(() => new Date(Date.now() + 2 * 3600_000))).ran).toBe(0)
+  })
+
+  it('each claim uses a fresh clock, so a long loop never hands out an already-expired lease', async () => {
+    await getDb().update(huntSchedules).set({ enabled: false })
+    const t = await team()
+    const hunt = await createHunt(t.orgId, t.analyst, { title: 'Two schedules' })
+    const ids: string[] = []
+    for (const kql of ['DeviceInfo | take 2', 'DeviceInfo | take 3']) {
+      const p = await proposeKql(t.orgId, { type: 'user', id: t.analyst }, { huntId: hunt.id, target: 'defender', kql })
+      await approveAndRunKql(t.orgId, t.analyst, p.id)
+      ids.push((await createSchedule(t.orgId, { userId: t.approver, role: 'approver' }, { proposalId: p.id, intervalMinutes: 60 })).id)
+    }
+    let clock = Date.now() + 61 * 60_000
+    // Every read of the clock moves it 20 minutes on, like a slow loop.
+    const r = await runDueSchedules(() => new Date((clock += 20 * 60_000)))
+    expect(r.ran).toBe(2)
+    const rows = await getDb().select().from(huntSchedules).where(eq(huntSchedules.huntId, hunt.id))
+    for (const row of rows) expect(row.lastRunAt!.getTime()).toBeGreaterThan(Date.now() + 61 * 60_000)
+    const runs = rows.map((x) => x.lastRunAt!.getTime())
+    expect(new Set(runs).size).toBe(2)
+  })
+
+  it('hunt report escapes markdown and keeps fences intact', async () => {
+    const t = await team()
+    const hunt = await createHunt(t.orgId, t.analyst, { title: '[click](https://evil) <img src=x>' , hypothesis: '<script>x</script> [a](b)' })
+    const p = await proposeKql(t.orgId, { type: 'user', id: t.analyst }, { huntId: hunt.id, target: 'defender', kql: 'DeviceInfo | where x == "````" | take 1' })
+    await approveAndRunKql(t.orgId, t.analyst, p.id)
+    const r = (await huntReportMarkdown(t.orgId, hunt.id, t.analyst))!.markdown
+    expect(r).not.toContain('[click](https://evil)')
+    expect(r).not.toMatch(/<script>|<img/)
+    expect(r).toContain('`````kql')
   })
 })
 

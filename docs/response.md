@@ -90,6 +90,9 @@ Guards, all checked **before** a token is requested or the proposal is claimed:
 - **Playbook allowlist.** `payload.playbookResourceId` must be a Logic App resource id on the org's
   allowlist (owners edit it under Settings). An agent cannot name an arbitrary playbook.
 - **Defender machine ids only.** Device targets must be 40-hex Defender machine ids; hostnames are refused.
+  Incident targets must be plain ids (letters, digits, hyphens). `payload.action` must be `isolate`
+  or `unisolate`; duplicate targets are collapsed.
+- **Credential present.** The response connector must have a secret or secret reference.
 - **Target cap.** `RESPONSE_MAX_LIVE_TARGETS` (default 10, max 50) devices or incidents per proposal.
 - **Response HTTP allowlist.** Exact POST endpoints only: `api.security.microsoft.com/api/machines/{id}/isolate|unisolate`
   and Sentinel `…/incidents/{id}/runPlaybook`. No generic request path; redirects are refused.
@@ -111,7 +114,8 @@ creates a **new pending proposal** linked to the original (`rollback_of_id`):
 - Sentinel playbook / Logic App → `other` (manual) carrying the rollback notes, because a playbook
   cannot be reversed generically. The manual reversal is still approved and audited.
 
-The rollback goes through the same approval, RBAC, self-approval ban, dry run and expiry. The
+The rollback goes through the same approval, RBAC, self-approval ban, dry run and expiry
+(approved proposals that are not executed in time also expire, v2). The
 person who proposed it cannot approve it. Only one open rollback per original; a rejected or
 expired rollback can be proposed again. Rollbacks of rollbacks are refused (propose a new action).
 

@@ -50,6 +50,8 @@ export interface ProposalForExecution {
 /** Non-secret context executors plan against: workspace coordinates, tenant and playbook allowlist. */
 export interface ExecContext {
   responseTenantId: string | null
+  /** True when the response connector has a usable secret (encrypted or env ref). */
+  responseHasCredential: boolean
   playbookAllowlist: string[]
   workspace: { subscriptionId: string; resourceGroup: string; workspaceName: string } | null
 }
@@ -58,6 +60,7 @@ export async function loadExecContext(orgId: string): Promise<ExecContext> {
   const [resp, hunt] = await Promise.all([getResponseConnector(orgId), getConnector(orgId)])
   return {
     responseTenantId: resp?.tenantId ?? null,
+    responseHasCredential: Boolean(resp && (resp.clientSecretEnc || resp.clientSecretRef)),
     playbookAllowlist: (resp?.playbookAllowlist ?? []).map(normalisePlaybookId),
     workspace:
       hunt?.sentinelSubscriptionId && hunt.sentinelResourceGroup && hunt.sentinelWorkspaceName
@@ -98,6 +101,13 @@ export function executorMode(type: ResponseActionType): ExecutorMode {
 // ---------- Response HTTP allowlist (#89) ----------
 /** Defender machine ids are 40 lowercase hex characters (SHA-1 of the device). */
 export const DEFENDER_MACHINE_ID = /^[0-9a-f]{40}$/
+/** Sentinel incident identifiers (the ARM resource name, normally a GUID). No dots or separators. */
+export const SENTINEL_INCIDENT_ID = /^[A-Za-z0-9-]{1,128}$/
+
+function connectorBlockers(ctx: ExecContext, blocked: string[]) {
+  if (!ctx.responseTenantId) blocked.push('Response connector is not configured.')
+  else if (!ctx.responseHasCredential) blocked.push('Response connector has no client secret or secret reference.')
+}
 export const DEFENDER_API = 'https://api.security.microsoft.com'
 export const DEFENDER_SCOPE = 'https://api.securitycenter.microsoft.com/.default'
 export const ARM_SCOPE = 'https://management.azure.com/.default'
@@ -165,8 +175,10 @@ export const sentinelPlaybookExecutor: Executor = {
     if (incidents.length === 0) blocked.push('Sentinel playbook proposals need at least one incident target.')
     if (!LOGIC_APP_RESOURCE_ID.test(playbook)) blocked.push('payload.playbookResourceId must be a Logic App resource id.')
     else if (!ctx.playbookAllowlist.includes(normalisePlaybookId(playbook))) blocked.push('Playbook is not on this org\'s playbook allowlist (Settings → Response connector).')
+    const badInc = incidents.filter((i) => !SENTINEL_INCIDENT_ID.test(i))
+    if (badInc.length) blocked.push(`Not Sentinel incident ids (letters, digits, hyphens): ${badInc.slice(0, 5).join(', ')}`)
     if (!ctx.workspace) blocked.push('Sentinel workspace (subscription, resource group, workspace name) is not set on the hunting connector.')
-    if (!ctx.responseTenantId) blocked.push('Response connector is not configured.')
+    connectorBlockers(ctx, blocked)
     liveTargetCap('incidents', incidents.length, blocked)
     const w = ctx.workspace ?? { subscriptionId: '{subscriptionId}', resourceGroup: '{resourceGroup}', workspaceName: '{workspace}' }
     const calls: PlannedCall[] = incidents.map((inc) => ({
@@ -206,7 +218,9 @@ export const graphContainmentExecutor: Executor = {
     if (devices.length === 0) blocked.push('Containment proposals need at least one device target.')
     const bad = devices.filter((d) => !DEFENDER_MACHINE_ID.test(d))
     if (bad.length) blocked.push(`Not Defender machine ids (40 hex characters): ${bad.slice(0, 5).join(', ')}`)
-    if (!ctx.responseTenantId) blocked.push('Response connector is not configured.')
+    if (p.payload.action !== undefined && p.payload.action !== 'isolate' && p.payload.action !== 'unisolate') blocked.push('payload.action must be "isolate" or "unisolate".')
+    if (p.payload.isolationType !== undefined && p.payload.isolationType !== 'Full' && p.payload.isolationType !== 'Selective') blocked.push('payload.isolationType must be "Full" or "Selective".')
+    connectorBlockers(ctx, blocked)
     liveTargetCap('devices', devices.length, blocked)
     const calls: PlannedCall[] = devices.map((d) => ({
       method: 'POST',

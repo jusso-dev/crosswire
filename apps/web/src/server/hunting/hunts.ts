@@ -1,6 +1,6 @@
 import { and, asc, count, desc, eq, lt } from 'drizzle-orm'
 import { getDb } from '../db/client'
-import { huntCases, huntEvidence, kqlProposals } from '../db/schema'
+import { huntCases, huntEvidence, huntSchedules, kqlProposals } from '../db/schema'
 import { env } from '../env'
 import { recordDecision } from '../agents/decisions'
 import { assertSafeKql } from './safety'
@@ -42,6 +42,13 @@ export async function getHunt(orgId: string, huntId: string) {
 
 export async function setHuntStatus(orgId: string, huntId: string, status: 'open' | 'closed') {
   await getDb().update(huntCases).set({ status }).where(and(eq(huntCases.orgId, orgId), eq(huntCases.id, huntId)))
+  if (status === 'closed') {
+    // Closing a case stops its scheduled hunts (#92); reopening needs a human to re-approve them.
+    await getDb()
+      .update(huntSchedules)
+      .set({ enabled: false, disabledReason: 'hunt closed' })
+      .where(and(eq(huntSchedules.orgId, orgId), eq(huntSchedules.huntId, huntId), eq(huntSchedules.enabled, true)))
+  }
 }
 
 export async function addEvidence(orgId: string, huntId: string, type: (typeof huntEvidence.$inferInsert)['type'], payload: Record<string, unknown>, actor: Actor | { type: 'system'; id: null }) {
