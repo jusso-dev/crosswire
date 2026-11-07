@@ -5,7 +5,7 @@ describe('env config (#13)', () => {
   it('loads development defaults from an empty env', () => {
     const e = parseEnv({ NODE_ENV: 'development' })
     expect(e.PORT).toBe(3000)
-    expect(e.MODEL_PROVIDER).toBe('stub')
+    expect(e.MODEL_PROVIDER).toBe('off')
     expect(e.RESPONSE_EXECUTOR_SENTINEL).toBe('off')
     expect(e.RESPONSE_EXECUTOR_LOGICAPP).toBe('off')
     expect(e.RESPONSE_EXECUTOR_GRAPH).toBe('off')

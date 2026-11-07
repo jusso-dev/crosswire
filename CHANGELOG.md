@@ -5,6 +5,26 @@ Versioning: [Semantic Versioning](https://semver.org/) — see [docs/releasing.m
 
 ## [Unreleased]
 
+### Added
+
+- Analyst workspace redesign: semantic light and dark themes, hunt workspace with a result grid, row inspector (fields, raw JSON, provenance), entities from the sample and an evidence timeline. View state (search, row, filters, timeline) lives in the URL. See `design.md`.
+- Home control panel: feed status, emerging threats, watch hits by day, newly exploited flaws, hunts, decisions waiting and agent activity.
+- ChatGPT-style chat: streamed markdown replies, tool steps, stop, copy, rating, conversation list by recency.
+- Chat model on Azure OpenAI with Entra ID sign-in (no stored key), or any OpenAI-compatible endpoint (ADR 0004, docs/chat-model.md). `pnpm model:check` makes one real model call for smoke tests.
+- `APP_TIMEZONE` (default `Australia/Sydney`) for displayed times and the daily digest day.
+- WCAG 2.2 AA: automated axe scan of every page in both themes (`e2e/tests/a11y.spec.ts`), skip link, focus management, 24 px targets, 3:1 control borders.
+- Bicep: `entraClientId`/`entraTenantId`, `appTimeZone`, and Azure OpenAI parameters with an optional Cognitive Services OpenAI User role assignment.
+
+### Changed
+
+- Chat needs a configured model; the labelled stub model and the direct Anthropic/OpenAI adapters are removed. `MODEL_PROVIDER` is now `off | azure | openai-compatible`.
+- Digests are built per `APP_TIMEZONE` calendar day instead of per UTC day.
+
+### Fixed
+
+- Alert rules failed on a new Log Analytics workspace (`skipQueryValidation`).
+- Redeploying Bicep no longer drops the Entra SSO settings.
+
 ## [0.2.0] - 2026-11-07
 
 ### Added

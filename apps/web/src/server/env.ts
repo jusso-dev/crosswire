@@ -19,6 +19,18 @@ const schema = z.object({
   APP_URL: z.url().default('http://localhost:3000'),
   DATABASE_URL: z.string().min(1).default('postgres://crosswire:crosswire-local-dev@localhost:5432/crosswire'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  /** IANA zone for displayed times and the daily digest day. Storage stays UTC. */
+  APP_TIMEZONE: z
+    .string()
+    .default('Australia/Sydney')
+    .refine((tz) => {
+      try {
+        new Intl.DateTimeFormat('en-AU', { timeZone: tz })
+        return true
+      } catch {
+        return false
+      }
+    }, 'must be an IANA time zone such as Australia/Sydney'),
 
   BETTER_AUTH_SECRET: z.string().min(32).default('dev-only-insecure-secret-change-me-0000'),
   AUTH_EMAIL_PASSWORD: bool(true),
@@ -36,11 +48,27 @@ const schema = z.object({
   SMTP_PASSWORD: z.string().optional(),
   SMTP_FROM: z.string().default('Crosswire <crosswire@localhost>'),
 
-  MODEL_PROVIDER: z.enum(['stub', 'anthropic', 'openai']).default('stub'),
-  MODEL_NAME: z.string().optional(),
-  ANTHROPIC_API_KEY: z.string().optional(),
+  /**
+   * Chat model (ADR 0004). Crosswire hosts the agents; the model only answers.
+   * `azure`: Azure OpenAI, keyless via Entra (managed identity) unless AZURE_OPENAI_API_KEY is set.
+   * `openai-compatible`: any OpenAI-compatible endpoint. `off`: chat shows a setup message.
+   */
+  MODEL_PROVIDER: z.enum(['off', 'azure', 'openai-compatible']).default('off'),
+  /** Resource endpoint, for example https://contoso-ai.openai.azure.com */
+  AZURE_OPENAI_ENDPOINT: z.url().optional(),
+  /** Deployment name of the chat model in that resource. */
+  AZURE_OPENAI_DEPLOYMENT: z.string().optional(),
+  /** Optional. Leave unset to use Entra ID (recommended). */
+  AZURE_OPENAI_API_KEY: z.string().optional(),
+  /** Optional; the v1 API needs none. */
+  AZURE_OPENAI_API_VERSION: z.string().optional(),
+  /** Optional: client ID of a user-assigned managed identity for DefaultAzureCredential. */
+  AZURE_CLIENT_ID: z.string().optional(),
+  OPENAI_BASE_URL: z.url().optional(),
+  OPENAI_MODEL: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
-  AGENT_TIMEOUT_MS: z.coerce.number().int().positive().default(60_000),
+  OPENAI_API: z.enum(['chat-completions', 'responses']).default('chat-completions'),
+  AGENT_TIMEOUT_MS: z.coerce.number().int().positive().default(90_000),
 
   TI_CACHE_TTL_SECONDS: z.coerce.number().int().min(3600).default(3600),
   TI_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),

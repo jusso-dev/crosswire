@@ -6,17 +6,33 @@ import { listOrgOwnerEmails } from '../orgs'
 import { sendMail } from '../mail'
 import { logger } from '../lib/logger'
 
-/** UTC day boundaries for a YYYY-MM-DD string. Digests are stored per UTC day. */
-export function dayBounds(day: string) {
-  const start = new Date(`${day}T00:00:00.000Z`)
-  return { start, end: new Date(start.getTime() + 86_400_000) }
+/** Offset (ms) of `tz` from UTC at instant `at`: wall-clock time minus UTC. */
+function zoneOffsetMs(at: number, tz: string) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      .formatToParts(new Date(at))
+      .map((p) => [p.type, p.value]),
+  )
+  return Date.UTC(+parts.year!, +parts.month! - 1, +parts.day!, +parts.hour!, +parts.minute!, +parts.second!) - (at - (at % 1000))
 }
 
-export function utcDay(d = new Date()) {
-  return d.toISOString().slice(0, 10)
+/** Midnight-to-midnight bounds of a YYYY-MM-DD day in `tz` (APP_TIMEZONE by default). DST-safe. */
+export function dayBounds(day: string, tz = env().APP_TIMEZONE) {
+  const [y, m, d] = day.split('-').map(Number) as [number, number, number]
+  const midnight = (yy: number, mm: number, dd: number) => {
+    const guess = Date.UTC(yy, mm - 1, dd)
+    const first = guess - zoneOffsetMs(guess, tz)
+    return new Date(guess - zoneOffsetMs(first, tz))
+  }
+  return { start: midnight(y, m, d), end: midnight(y, m, d + 1) }
 }
 
-/** Build (or rebuild) one org's digest for a UTC day (#40). Empty days produce a quiet digest. */
+/** The calendar day (YYYY-MM-DD) of `d` in `tz`. Digests are stored per APP_TIMEZONE day. */
+export function appDay(d = new Date(), tz = env().APP_TIMEZONE) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d)
+}
+
+/** Build (or rebuild) one org's digest for an APP_TIMEZONE day (#40). Empty days produce a quiet digest. */
 export async function buildDigest(orgId: string, day: string) {
   const db = getDb()
   const { start, end } = dayBounds(day)
@@ -38,7 +54,7 @@ export function renderDigestEmail(orgName: string, digest: { day: string; hitCou
   const appUrl = env().APP_URL.replace(/\/$/, '')
   const subject = `Crosswire daily digest ${digest.day}: ${digest.hitCount} watch hit${digest.hitCount === 1 ? '' : 's'}`
   const lines = [
-    `Daily watch digest for ${orgName} (${digest.day}, UTC).`,
+    `Daily watch digest for ${orgName} (${digest.day}, ${env().APP_TIMEZONE}).`,
     '',
     digest.hitCount === 0 ? 'No new watch hits today.' : `${digest.hitCount} new watch hit(s):`,
     ...digest.items.slice(0, 20).map((i) => `- ${i.title} (${i.source}, matched "${i.entry}")`),
@@ -55,7 +71,7 @@ export function renderDigestEmail(orgName: string, digest: { day: string; hitCou
  * Idempotent: `emailed_at` guards against double-sending for the same org-day.
  * Recipients always come from that org's own membership, never from global config.
  */
-export async function runDailyDigest(day = utcDay()) {
+export async function runDailyDigest(day = appDay()) {
   const db = getDb()
   const all = await db.select({ id: orgs.id, name: orgs.name }).from(orgs)
   let built = 0
@@ -90,7 +106,7 @@ export async function runDailyDigest(day = utcDay()) {
 }
 
 /** Refresh today's in-app digest for every org (no email). Lets the UI show today's hits. */
-export async function refreshTodayDigests(day = utcDay()) {
+export async function refreshTodayDigests(day = appDay()) {
   const all = await getDb().select({ id: orgs.id }).from(orgs)
   for (const org of all) await buildDigest(org.id, day)
   return { day, orgs: all.length }

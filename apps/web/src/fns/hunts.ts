@@ -15,7 +15,7 @@ export const fetchHunts = createServerFn({ method: 'GET' })
   .middleware([authed])
   .handler(async ({ context }) => {
     const rows = await listHunts(context.session.org.id)
-    return rows.map((h) => ({ id: h.id, title: h.title, status: h.status, hypothesis: h.hypothesis, updatedAt: h.updatedAt.toISOString() }))
+    return rows.map((h) => ({ id: h.id, title: h.title, status: h.status, hypothesis: h.hypothesis, fromHit: Boolean(h.watchHitId), createdAt: h.createdAt.toISOString(), updatedAt: h.updatedAt.toISOString() }))
   })
 
 export const createHuntFn = createServerFn({ method: 'POST' })
@@ -51,6 +51,8 @@ export const fetchHunt = createServerFn({ method: 'GET' })
         error: p.error,
         createdAt: p.createdAt.toISOString(),
       })),
+      origin: h.origin ? { ...h.origin, createdAt: h.origin.createdAt.toISOString() } : null,
+      role: context.session.org.role,
       demoMode: env().HUNTING_DEMO_MODE && !(await getConnectorView(context.session.org.id)),
       canApprove: canApprove(context.session.org.role),
       schedules: (await listSchedules(context.session.org.id, data.huntId)).map((s) => ({

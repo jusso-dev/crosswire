@@ -1,6 +1,6 @@
 import { and, asc, count, desc, eq, lt } from 'drizzle-orm'
 import { getDb } from '../db/client'
-import { huntCases, huntEvidence, huntSchedules, kqlProposals } from '../db/schema'
+import { huntCases, huntEvidence, huntSchedules, kqlProposals, watchHits } from '../db/schema'
 import { env } from '../env'
 import { recordDecision } from '../agents/decisions'
 import { assertSafeKql } from './safety'
@@ -37,7 +37,15 @@ export async function getHunt(orgId: string, huntId: string) {
   if (!hunt) return null
   const evidence = await db.select().from(huntEvidence).where(and(eq(huntEvidence.orgId, orgId), eq(huntEvidence.huntId, huntId))).orderBy(asc(huntEvidence.createdAt))
   const proposals = await db.select().from(kqlProposals).where(and(eq(kqlProposals.orgId, orgId), eq(kqlProposals.huntId, huntId))).orderBy(desc(kqlProposals.createdAt))
-  return { hunt, evidence, proposals }
+  // The watch hit this hunt started from (org-scoped, so a hit id from another org never resolves).
+  const [origin] = hunt.watchHitId
+    ? await db
+        .select({ id: watchHits.id, title: watchHits.title, url: watchHits.url, source: watchHits.source, cveIds: watchHits.cveIds, createdAt: watchHits.createdAt })
+        .from(watchHits)
+        .where(and(eq(watchHits.orgId, orgId), eq(watchHits.id, hunt.watchHitId)))
+        .limit(1)
+    : []
+  return { hunt, evidence, proposals, origin: origin ?? null }
 }
 
 export async function setHuntStatus(orgId: string, huntId: string, status: 'open' | 'closed') {
