@@ -4,7 +4,20 @@
 import http from 'node:http'
 
 const PORT = Number(process.env.MOCK_MODEL_PORT ?? 18099)
-const DELAY = Number(process.env.MOCK_MODEL_DELAY_MS ?? 60)
+const DELAY = Number(process.env.MOCK_MODEL_DELAY_MS ?? 20)
+// Handshake: after GATE_AFTER words the stream pauses until POST /__release (or a 20 s safety
+// timeout), so a test can observe the partial reply deterministically on any runner speed.
+const GATE_AFTER = Number(process.env.MOCK_MODEL_GATE_AFTER ?? 6)
+let release = null
+const waitForRelease = () =>
+  new Promise((resolve) => {
+    const t = setTimeout(resolve, 20_000)
+    release = () => {
+      clearTimeout(t)
+      release = null
+      resolve()
+    }
+  })
 export const ANSWER = `Here is what I found for **Fortinet**:
 
 1. **CVE-2026-24858**: FortiOS SSL-VPN heap overflow, *actively exploited*.
@@ -19,6 +32,11 @@ Next step: open a hunt and let Hunter propose a search such as \`DeviceNetworkEv
 
 http
   .createServer((req, res) => {
+    if (req.url === '/__release' && req.method === 'POST') {
+      const had = Boolean(release)
+      release?.()
+      return res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ released: had }))
+    }
     let raw = ''
     req.on('data', (c) => (raw += c))
     req.on('end', async () => {
@@ -36,8 +54,10 @@ http
         // finished at this point, so watch the response's close event, not req.destroyed.
         let gone = false
         res.on('close', () => (gone = true))
-        for (const w of ANSWER.match(/\S+\s*/g)) {
+        const words = ANSWER.match(/\S+\s*/g)
+        for (const [i, w] of words.entries()) {
           if (gone) break
+          if (i === GATE_AFTER) await waitForRelease()
           send({ delta: { content: w }, finish_reason: null })
           await new Promise((r) => setTimeout(r, DELAY))
         }

@@ -92,14 +92,39 @@ test('hunt workspace: long values and narrow width stay usable', async ({ page }
   // No horizontal page scroll: wide grids scroll inside their own container.
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
   expect(overflow).toBeLessThanOrEqual(0)
-  // At narrow widths the inspector is a modal dialog: focus moves in, and closing returns it.
-  const firstRow = page.getByRole('table', { name: /sample rows/ }).locator('tbody tr').first()
-  await firstRow.click()
+  // At narrow widths the inspector is a modal dialog: focus moves in, cannot leave, and returns on close.
+  const grid = page.getByRole('table', { name: /sample rows/ })
+  await grid.locator('tbody tr').first().click()
   const dialog = page.getByRole('dialog', { name: 'Row 1' })
   await expect(dialog).toBeVisible()
   await expect(dialog.getByRole('heading', { name: 'Row 1' })).toBeFocused()
-  await page.keyboard.press('Shift+Tab')
-  await expect(dialog.locator(':focus')).toHaveCount(1) // focus stays inside the dialog
+  for (const key of ['Shift+Tab', 'Tab', 'Tab', 'Tab']) {
+    await page.keyboard.press(key)
+    await expect(dialog.locator(':focus')).toHaveCount(1) // focus stays inside the dialog
+  }
+  // Step to the next row, then close: focus lands on the row that was showing.
+  await dialog.getByRole('button', { name: 'Next row' }).click()
+  await expect(page.getByRole('dialog', { name: 'Row 2' })).toBeVisible()
   await page.keyboard.press('Escape')
-  await expect(dialog).toHaveCount(0)
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(grid.locator('tbody tr[data-index="1"]')).toBeFocused()
+})
+
+test('hunt workspace: at 1000px the inspector overlay keeps focus and the background inert', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 800 })
+  await signUpWithDemo(page, `ws-mid-${stamp}@example.test`)
+  await page.locator('.cw-qitem', { hasText: 'Ran' }).first().click()
+  const grid = page.getByRole('table', { name: /sample rows/ })
+  await grid.locator('tbody tr').first().click()
+  const dialog = page.getByRole('dialog', { name: 'Row 1' })
+  await expect(dialog.getByRole('heading', { name: 'Row 1' })).toBeFocused()
+  for (let i = 0; i < 12; i++) {
+    await page.keyboard.press('Tab')
+    await expect(dialog.locator(':focus')).toHaveCount(1)
+  }
+  // The exposed background does not take focus or clicks while the overlay is open.
+  await expect(page.locator('.cw-ws-main')).toHaveAttribute('inert', '')
+  await dialog.getByRole('button', { name: 'Close inspector' }).click()
+  await expect(page.locator('.cw-ws-main')).not.toHaveAttribute('inert', '')
+  await expect(grid.locator('tbody tr[data-index="0"]')).toBeFocused()
 })

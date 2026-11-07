@@ -476,7 +476,9 @@ function RowInspector({
       columns={columns}
       onClose={() => {
         onRow(null)
-        requestAnimationFrame(() => document.querySelector<HTMLElement>(`tr[data-index="${rowIndex}"]`)?.focus())
+        // Return focus to the row the analyst was last on (the one now shown), after the inert
+        // background is released and the grid has re-rendered.
+        requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector<HTMLElement>(`tr[data-index="${rowIndex}"]`)?.focus()))
       }}
       onPrev={pos > 0 ? () => onRow(visible[pos - 1]!) : undefined}
       onNext={pos >= 0 && pos < visible.length - 1 ? () => onRow(visible[pos + 1]!) : undefined}

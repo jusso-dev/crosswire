@@ -288,11 +288,18 @@ export function Inspector({
     mq.addEventListener('change', on)
     return () => mq.removeEventListener('change', on)
   }, [])
+  // While it is an overlay, everything else on the page is inert (no clicks, no focus), so focus
+  // cannot reach covered controls at any width. Closing focus is handled by the caller (the row).
   useEffect(() => {
     if (!overlay) return
-    const opener = document.activeElement as HTMLElement | null
+    const others = [...document.body.children].filter((el): el is HTMLElement => el instanceof HTMLElement && !el.contains(ref.current))
+    const shell = ref.current?.closest('.cw-workspace')
+    const siblings = shell ? [...shell.children].filter((el): el is HTMLElement => el instanceof HTMLElement && el !== ref.current) : []
+    const outer = ref.current ? ancestorsSiblings(ref.current, shell as HTMLElement | null) : []
+    const targets = [...others, ...siblings, ...outer]
+    targets.forEach((el) => el.setAttribute('inert', ''))
     ref.current?.querySelector<HTMLElement>('h2')?.focus()
-    return () => opener?.focus?.()
+    return () => targets.forEach((el) => el.removeAttribute('inert'))
   }, [overlay])
   const trap = (e: KeyboardEvent<HTMLElement>) => {
     if (!overlay || e.key !== 'Tab' || !ref.current) return
@@ -454,4 +461,15 @@ export function summariseEntities(columns: string[], rows: Row[]) {
     }
   }
   return { groups, timeCol }
+}
+
+/** Siblings of every ancestor between `el` and the document body, except the chain itself. */
+function ancestorsSiblings(el: HTMLElement, stopAt: HTMLElement | null) {
+  const out: HTMLElement[] = []
+  let node: HTMLElement | null = stopAt ?? el
+  while (node && node.parentElement && node !== document.body) {
+    for (const sib of node.parentElement.children) if (sib !== node && sib instanceof HTMLElement && !sib.contains(el)) out.push(sib)
+    node = node.parentElement
+  }
+  return out
 }

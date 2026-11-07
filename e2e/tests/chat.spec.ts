@@ -8,7 +8,9 @@ import { expect, test } from '@playwright/test'
  */
 const stamp = Date.now()
 
-test('chat streams a markdown reply, shows tool steps, persists, and supports stop and keyboard', async ({ page }) => {
+const MOCK = process.env.MOCK_MODEL_URL ?? 'http://127.0.0.1:18099'
+
+test('chat streams a markdown reply, shows tool steps, persists, and supports stop and keyboard', async ({ page, request }) => {
   test.setTimeout(120_000)
   await page.setViewportSize({ width: 1280, height: 860 })
   await page.goto('/sign-in')
@@ -28,9 +30,10 @@ test('chat streams a markdown reply, shows tool steps, persists, and supports st
   await input.fill('What is new for Fortinet?')
   await page.keyboard.press('Enter')
   const reply = page.locator('.cw-turn[data-role="assistant"]').last()
-  // Streaming: the first words are on screen while the reply is still marked as streaming.
+  // Streaming: the mock pauses mid-answer until released, so the partial text is observable on any runner.
   await expect(reply.locator('.cw-md[data-streaming]')).toContainText('Here is what I found', { timeout: 30_000 })
   await expect(reply.locator('.cw-md[data-streaming]')).not.toContainText('Next step')
+  expect((await (await request.post(`${MOCK}/__release`)).json()).released).toBe(true)
   // Finished: the full fixed answer rendered as markdown, including its table.
   await expect(reply.locator('.cw-md[data-streaming]')).toHaveCount(0, { timeout: 30_000 })
   await expect(reply.getByRole('table')).toBeVisible()
@@ -46,10 +49,11 @@ test('chat streams a markdown reply, shows tool steps, persists, and supports st
   await expect(page.getByRole('heading', { level: 1, name: 'What is new for Fortinet?' })).toBeVisible()
   await expect(page.locator('.cw-turn[data-role="assistant"]')).toHaveCount(1)
 
-  // Stop: start a reply and stop it mid-stream.
+  // Stop: start a reply (it pauses at the gate) and stop it mid-stream.
   await page.getByRole('textbox', { name: /Message to Intel/ }).fill('Tell me again')
   await page.getByRole('button', { name: 'Send' }).click()
   await page.getByRole('button', { name: 'Stop reply' }).click()
+  await request.post(`${MOCK}/__release`)
   await expect(page.getByRole('button', { name: 'Send' })).toBeVisible({ timeout: 15_000 })
 
   // Shift+Enter adds a new line instead of sending.
