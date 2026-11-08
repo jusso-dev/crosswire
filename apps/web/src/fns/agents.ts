@@ -2,6 +2,7 @@ import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { authed } from './middleware'
 import { decisionActors, searchDecisions } from '../server/agents/decisions'
+import { listRecentRuns, readRunReplay } from '../server/agents/runs'
 import { listOrgMembers } from '../server/orgs'
 import { compactMemory, exportHistoryMarkdown, getMemory, listMemoryEntries } from '../server/agents/memory'
 import { AGENT_KEYS } from '../shared/agents'
@@ -16,10 +17,11 @@ export const fetchActivity = createServerFn({ method: 'GET' })
   )
   .handler(async ({ context, data }) => {
     const orgId = context.session.org.id
-    const [page, actors, members] = await Promise.all([
+    const [page, actors, members, recent] = await Promise.all([
       searchDecisions(orgId, { q: data?.q, actor: data?.actor, actions: data?.actions, before: data?.before ? new Date(data.before) : undefined, limit: 100 }),
       decisionActors(orgId),
       listOrgMembers(orgId),
+      listRecentRuns(orgId),
     ])
     // Human actors are user ids; show their email (members of this org only).
     const emails = Object.fromEntries(members.map((m) => [m.userId, m.email]))
@@ -27,8 +29,15 @@ export const fetchActivity = createServerFn({ method: 'GET' })
       rows: page.rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString(), actorLabel: r.actorType === 'user' ? (emails[r.actorKey] ?? 'a former member') : null })),
       hasMore: page.hasMore,
       actors: actors.map((a) => ({ key: a.actorKey, type: a.actorType, label: a.actorType === 'user' ? (emails[a.actorKey] ?? 'a former member') : a.actorKey })),
+      recentRuns: recent.map((run) => ({ id: run.id, agentKey: run.agentKey, status: run.status, startedAt: run.startedAt.toISOString() })),
     }
   })
+
+/** Full redacted replay for one run in the signed-in organisation. Another organisation gets null. */
+export const fetchRunReplay = createServerFn({ method: 'GET' })
+  .middleware([authed])
+  .validator(z.object({ runId: z.uuid() }))
+  .handler(async ({ context, data }) => readRunReplay(context.session.org.id, data.runId))
 
 export const fetchMemory = createServerFn({ method: 'GET' })
   .middleware([authed])

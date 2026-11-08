@@ -6,12 +6,9 @@ import { LocalMemoryStore } from '@bradygaster/squad-sdk/memory'
 import { CostTracker } from '@bradygaster/squad-sdk/runtime/cost-tracker'
 import { InMemoryStorageProvider } from '@bradygaster/squad-sdk/storage'
 import {
+  CONTEXT_WARNING_THRESHOLD,
   SQUAD_SDK_PIN,
-  SDK_USAGE_LEDGER_DEFAULT,
-  SDK_USAGE_LEDGER_PATH,
-  InMemoryStorageProvider as BoundaryStorage,
   installedSquadSdkVersion,
-  loadUnexportedSquadRuntime,
   newCostTracker,
   squadSdkPackageHasBackendExport,
   writeWithSquad,
@@ -31,12 +28,16 @@ function importSpecifiers(source: string) {
 }
 
 function walkTs(dir: string, acc: string[] = []) {
+  return walkSource(dir, acc, false)
+}
+
+function walkSource(dir: string, acc: string[] = [], tsx = true) {
   for (const name of readdirSync(dir)) {
     if (name === 'node_modules' || name === 'dist') continue
     const file = path.join(dir, name)
     const stat = statSync(file)
-    if (stat.isDirectory()) walkTs(file, acc)
-    else if (name.endsWith('.ts')) acc.push(file)
+    if (stat.isDirectory()) walkSource(file, acc, tsx)
+    else if (name.endsWith('.ts') || (tsx && name.endsWith('.tsx'))) acc.push(file)
   }
   return acc
 }
@@ -85,22 +86,26 @@ describe('Squad SDK 1.1.0 runtime boundary', () => {
     expect(squadSdkPackageHasBackendExport()).toBe(false)
   })
 
-  it('loads UsageLedger and ContextUtilizationTracker from the installed dist, not a package export', async () => {
-    const runtime = await loadUnexportedSquadRuntime()
-    expect(runtime.USAGE_LEDGER_PATH).toBe(SDK_USAGE_LEDGER_DEFAULT)
-    expect(SDK_USAGE_LEDGER_PATH).toBe('memory/usage.jsonl')
-    const ledger = new runtime.UsageLedger(new BoundaryStorage(), SDK_USAGE_LEDGER_PATH)
-    await ledger.append({ type: 'usage', sessionId: 's', model: 'customer-model', inputTokens: 4, outputTokens: 2, estimatedCost: 0, timestamp: new Date() })
-    const read = await ledger.read()
-    expect(read.records[0]?.inputTokens).toBe(4)
-    const tracker = new runtime.ContextUtilizationTracker({ resolveContextWindow: () => 100 })
-    const snapshot = tracker.recordEstimated({ sessionId: 's', model: 'customer-model', inputTokens: 90, outputTokens: 0 })
-    expect(snapshot?.warning).toBe(true)
-    expect(snapshot?.utilization).toBe(0.9)
+  it('keeps the supported export boundary and does not file-URL import unexported runtime files', () => {
+    const boundary = readFileSync(path.join(webRoot, 'src/server/agents/squad-sdk.ts'), 'utf8')
+    expect(boundary).not.toContain('usage-ledger.js')
+    expect(boundary).not.toContain('context-utilization.js')
+    expect(boundary).not.toMatch(/from '@bradygaster\/squad-sdk\/client'/)
+    const costTrackerUrl = import.meta.resolve('@bradygaster/squad-sdk/runtime/cost-tracker')
+    const pkg = JSON.parse(readFileSync(new URL('../../package.json', costTrackerUrl), 'utf8')) as { exports?: Record<string, unknown> }
+    expect(pkg.exports?.['./runtime/usage-ledger']).toBeUndefined()
+    expect(pkg.exports?.['./runtime/context-utilization']).toBeUndefined()
+    expect(pkg.exports?.['./runtime/cost-tracker']).toBeTruthy()
+    const usageSource = readFileSync(new URL('./usage-ledger.js', costTrackerUrl), 'utf8')
+    expect(usageSource).toContain("USAGE_LEDGER_PATH = 'log/usage.jsonl'")
+    const contextSource = readFileSync(new URL('./context-utilization.js', costTrackerUrl), 'utf8')
+    expect(contextSource).toContain('DEFAULT_CONTEXT_WARNING_THRESHOLD = 0.8')
+    expect(CONTEXT_WARNING_THRESHOLD).toBe(0.8)
   })
 
   it('does not import Copilot, the Squad client, or a backend from the SOC graph', () => {
-    const forbidden = [/@github\/copilot-sdk/, /@bradygaster\/squad-sdk\/client/, /@bradygaster\/squad-sdk\/backend/, /HarnessAdapter/]
+    const forbidden = [/@github\/copilot-sdk/, /@bradygaster\/squad-sdk\/client/, /@bradygaster\/squad-sdk\/backend/, /HarnessAdapter/, /usage-ledger\.js/, /context-utilization\.js/]
+    const sdkRelative = [/^\.\/client(?:\.js)?$/, /^\.\/backend(?:\.js)?$/]
     const sourceFiles = [...walkTs(path.join(webRoot, 'src/server/agents')), path.join(webRoot, 'src/server/chat/handler.ts'), path.join(webRoot, 'src/server/chat/threads.ts'), path.join(webRoot, 'src/server/cli/worker.ts')]
     for (const file of sourceFiles) {
       const specifiers = importSpecifiers(readFileSync(file, 'utf8'))
@@ -115,8 +120,8 @@ describe('Squad SDK 1.1.0 runtime boundary', () => {
     expect(boundary).toContain("from '@bradygaster/squad-sdk/memory'")
     expect(boundary).toContain("from '@bradygaster/squad-sdk/storage'")
     expect(boundary).toContain("from '@bradygaster/squad-sdk/runtime/cost-tracker'")
-    expect(boundary).toContain('usage-ledger.js')
-    expect(boundary).toContain('context-utilization.js')
+    expect(boundary).not.toContain('usage-ledger.js')
+    expect(boundary).not.toContain('context-utilization.js')
 
     const starts = [
       import.meta.resolve('@bradygaster/squad-sdk/builders'),
@@ -132,11 +137,19 @@ describe('Squad SDK 1.1.0 runtime boundary', () => {
       seen.add(file)
       const source = readFileSync(new URL(file), 'utf8')
       for (const spec of importSpecifiers(source)) {
-        for (const pattern of forbidden) expect(spec, file).not.toMatch(pattern)
+        for (const pattern of [...forbidden, ...sdkRelative]) expect(spec, file).not.toMatch(pattern)
         if (spec.startsWith('.')) queue.push(new URL(spec, file).href)
       }
     }
     expect([...seen].every((file) => file.includes('/@bradygaster/squad-sdk/'))).toBe(true)
     expect(seen.size).toBeGreaterThan(4)
+
+    const production = walkSource(path.join(webRoot, 'src'))
+    expect(production.length).toBeGreaterThan(10)
+    for (const file of production) {
+      for (const spec of importSpecifiers(readFileSync(file, 'utf8'))) {
+        for (const pattern of [...forbidden, /squad-sdk-client-boundary/]) expect(spec, `${file} imports ${spec}`).not.toMatch(pattern)
+      }
+    }
   })
 })

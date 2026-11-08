@@ -611,6 +611,10 @@ export const agentRuns = pgTable(
     memorySha256: text('memory_sha256'),
     sdkVersion: text('sdk_version'),
     cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
+    /** Set only after acquireSlot succeeds for this row. Reconcile must not decrement a run that never held a slot. */
+    slotHeld: boolean('slot_held').notNull().default(false),
+    /** Set when this row's slot is returned. A second release, including one from another process, does not decrement again. */
+    slotReleased: boolean('slot_released').notNull().default(false),
     error: text('error'),
     startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
     finishedAt: timestamp('finished_at', { withTimezone: true }),

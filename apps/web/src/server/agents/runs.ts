@@ -1,8 +1,10 @@
-import { and, eq, lt, sql } from 'drizzle-orm'
+import { and, desc, eq, lt, or, sql } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { agentRunEvents, agentRunOutputs, agentRuns } from '../db/schema'
 import { env } from '../env'
+import { redactValue } from '../lib/redact'
 import { canonicalJson, sha256 } from './canonical'
+import { releaseRunSlot } from './budgets'
 import { SQUAD_SDK_PIN } from './squad-sdk'
 
 export type RunStatus = 'running' | 'completed' | 'failed' | 'interrupted'
@@ -59,10 +61,15 @@ export async function appendRunEvent(runId: string, orgId: string, kind: string,
   })
 }
 
-/** Full protected result. This is the replay record. It is not cut to 1000 characters. */
+/**
+ * Full protected result. This is the replay record. It is not cut to 1000 characters.
+ * Secrets are redacted. Samples stay until the sample retention job clears them.
+ * RUN_LEDGER=legacy skips this write, so that mode has no replay row.
+ */
 export async function recordRunOutput(runId: string, orgId: string, kind: string, value: unknown) {
   if (!ledgerEnforced()) return null
-  const body = typeof value === 'string' ? value : canonicalJson(value)
+  const redacted = redactValue(value)
+  const body = typeof redacted === 'string' ? redacted : canonicalJson(redacted)
   const [row] = await getDb()
     .insert(agentRunOutputs)
     .values({ orgId, runId, kind, body, contentSha256: sha256(body) })
@@ -83,6 +90,29 @@ export async function listRunOutputs(orgId: string, runId: string) {
   return getDb().select().from(agentRunOutputs).where(and(eq(agentRunOutputs.orgId, orgId), eq(agentRunOutputs.runId, runId)))
 }
 
+export async function listRecentRuns(orgId: string, limit = 20) {
+  return getDb()
+    .select({ id: agentRuns.id, agentKey: agentRuns.agentKey, status: agentRuns.status, startedAt: agentRuns.startedAt })
+    .from(agentRuns)
+    .where(eq(agentRuns.orgId, orgId))
+    .orderBy(desc(agentRuns.startedAt))
+    .limit(Math.min(Math.max(limit, 1), 50))
+}
+
+/** Full redacted replay for one run. Null when the run is not in this organisation. */
+export async function readRunReplay(orgId: string, runId: string) {
+  const run = await getRun(orgId, runId)
+  if (!run) return null
+  const outputs = await listRunOutputs(orgId, runId)
+  return {
+    id: run.id,
+    agentKey: run.agentKey,
+    status: run.status,
+    startedAt: run.startedAt.toISOString(),
+    outputs: outputs.map((row) => ({ id: row.id, kind: row.kind, body: row.body })),
+  }
+}
+
 /** Terminal transition only from running, so a second finish is a no-op. */
 export async function finishRun(orgId: string, runId: string, status: Exclude<RunStatus, 'running'>, error?: string | null) {
   if (!ledgerEnforced()) return null
@@ -97,16 +127,18 @@ export async function finishRun(orgId: string, runId: string, status: Exclude<Ru
 
 export async function requestRunCancel(orgId: string, runId: string) {
   if (!ledgerEnforced()) return
-  await getDb()
+  const [row] = await getDb()
     .update(agentRuns)
     .set({ cancelRequestedAt: new Date() })
-    .where(and(eq(agentRuns.orgId, orgId), eq(agentRuns.id, runId), eq(agentRuns.status, 'running')))
-  await appendRunEvent(runId, orgId, 'cancel_requested', {})
+    .where(and(eq(agentRuns.orgId, orgId), eq(agentRuns.id, runId), or(eq(agentRuns.status, 'running'), and(eq(agentRuns.status, 'interrupted'), sql`${agentRuns.cancelRequestedAt} is null`))))
+    .returning({ id: agentRuns.id })
+  if (row) await appendRunEvent(runId, orgId, 'cancel_requested', {})
 }
 
 /**
- * Mark timed-out or cancelled running rows interrupted, then set each org's inflight count
- * from the runs that are still running. A crashed process does not leave a slot taken forever.
+ * Mark timed-out or cancelled running rows interrupted, then return the slot each of those
+ * rows actually held. This does not rewrite any org's inflight count from the rows still running.
+ * A run that never acquired a slot does not decrement. A second reconcile finds the claim already taken.
  */
 export async function reconcileStaleRuns(now = new Date()) {
   if (!ledgerEnforced()) return { interrupted: 0 }
@@ -121,12 +153,9 @@ export async function reconcileStaleRuns(now = new Date()) {
     .set({ status: 'interrupted', finishedAt: now, error: 'reconciled after cancellation' })
     .where(and(eq(agentRuns.status, 'running'), sql`${agentRuns.cancelRequestedAt} is not null`))
     .returning({ id: agentRuns.id, orgId: agentRuns.orgId })
-  for (const row of [...stale, ...cancelled]) await appendRunEvent(row.id, row.orgId, 'interrupted', { reason: 'reconcile' })
-  await getDb().execute(sql`
-    update agent_capacity c
-    set inflight = (
-      select count(*)::int from agent_runs r where r.org_id = c.org_id and r.status = 'running'
-    )
-  `)
+  for (const row of [...stale, ...cancelled]) {
+    await appendRunEvent(row.id, row.orgId, 'interrupted', { reason: 'reconcile' })
+    await releaseRunSlot(row.orgId, row.id)
+  }
   return { interrupted: stale.length + cancelled.length }
 }

@@ -14,8 +14,18 @@ export interface DecisionInput {
   huntId?: string | null
 }
 
-const summarise = (value: unknown) =>
-  value === undefined ? '' : truncate(redactString(typeof value === 'string' ? value : JSON.stringify(value)), 1000)
+/** Characters of decision text kept before the truncation marker. The stored summary is longer than this when the marker is appended. */
+export const DECISION_SUMMARY_LIMIT = 1000
+
+/**
+ * Redacted decision-log text. At most 1000 characters of content, then `… [truncated N chars]`
+ * when the source is longer. N is the number of characters removed. The run output is the replay.
+ */
+export function decisionSummary(value: unknown): string {
+  if (value === undefined) return ''
+  const text = redactString(typeof value === 'string' ? value : JSON.stringify(value))
+  return truncate(text, DECISION_SUMMARY_LIMIT)
+}
 
 /** Append a decision row (#33). Inputs and outputs are redacted and truncated. */
 export async function recordDecision(d: DecisionInput) {
@@ -26,8 +36,8 @@ export async function recordDecision(d: DecisionInput) {
       actorType: d.actorType,
       actorKey: d.actorKey,
       action: d.action,
-      inputSummary: summarise(d.input),
-      outputSummary: summarise(d.output),
+      inputSummary: decisionSummary(d.input),
+      outputSummary: decisionSummary(d.output),
       threadId: d.threadId ?? null,
       huntId: d.huntId ?? null,
     })

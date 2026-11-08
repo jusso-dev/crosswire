@@ -68,8 +68,14 @@ export async function handleChat(request: Request): Promise<Response> {
   request.signal.addEventListener('abort', () => {
     abortController.abort()
     if (handle?.runId) void cancelAgentRun(org.id, handle.runId)
+    void handle?.release?.()
   })
   handle = await agentRuntime().run({ orgId: org.id, userId: user.id, selection, threadId, messages: history, abortController })
+  if (request.signal.aborted) {
+    abortController.abort()
+    if (handle.runId) await cancelAgentRun(org.id, handle.runId)
+    await handle.release?.()
+  }
   const active = handle
   const agentKey = selectionAgent(selection)
 
@@ -87,6 +93,7 @@ export async function handleChat(request: Request): Promise<Response> {
       interrupted = abortController.signal.aborted
       if (active.runId) {
         try {
+          if (interrupted) await cancelAgentRun(org.id, active.runId)
           if (reply) await recordRunOutput(active.runId, org.id, 'assistant', reply)
           const status = interrupted ? 'interrupted' : error ? 'failed' : 'completed'
           await finishRun(org.id, active.runId, status, error)

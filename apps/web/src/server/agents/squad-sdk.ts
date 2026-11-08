@@ -1,5 +1,4 @@
 import { readFileSync } from 'node:fs'
-import { pathToFileURL } from 'node:url'
 import {
   BuilderValidationError,
   defineAgent,
@@ -26,10 +25,11 @@ import { CostTracker } from '@bradygaster/squad-sdk/runtime/cost-tracker'
  * SOC turns stay on LlmAgentRuntime. This module calls the stable library. It does not import
  * `@bradygaster/squad-sdk/client`, `@bradygaster/squad-sdk/backend`, or `@github/copilot-sdk`.
  *
- * 1.1.0 publishes UsageLedger and ContextUtilizationTracker under dist/runtime, but the package
- * exports map does not list those subpaths (verified against the installed 1.1.0 package.json).
- * They are loaded by file URL next to the public `runtime/cost-tracker` module. That is still
- * 1.1.0. It is not the 2.0.0-preview.3 HarnessAdapter surface, which this package does not ship.
+ * 1.1.0 has UsageLedger and ContextUtilizationTracker in dist/runtime, and the exports map does
+ * not list them. This module does not file-URL import those files. Tenant usage stays in Postgres.
+ * Context refusal is Crosswire's, at the same 0.8 threshold the installed tracker documents.
+ * CostTracker, which is an export, records a dollar figure only when the operator set a rate.
+ * SquadClient is not constructed here. SOC turns stay on LlmAgentRuntime.
  *
  * LocalMemoryStore is backed only by InMemoryStorageProvider. FSStorageProvider and
  * SQLiteStorageProvider are never constructed. Importing `@bradygaster/squad-sdk/storage` does
@@ -40,21 +40,8 @@ import { CostTracker } from '@bradygaster/squad-sdk/runtime/cost-tracker'
  * Production calls classify(). write() is for the acceptance test and for refuse-path checks.
  */
 export const SQUAD_SDK_PIN = '1.1.0'
-/** Default path inside UsageLedger. Crosswire never passes this path. */
-export const SDK_USAGE_LEDGER_DEFAULT = 'log/usage.jsonl'
-export const SDK_USAGE_LEDGER_PATH = 'memory/usage.jsonl'
-
-export interface SquadUsageEvent {
-  type: 'usage'
-  sessionId: string
-  turnId?: string
-  agentName?: string
-  model: string
-  inputTokens: number
-  outputTokens: number
-  estimatedCost: number
-  timestamp: Date
-}
+/** Same default the installed 1.1.0 ContextUtilizationTracker documents. Crosswire blocks at this ratio. */
+export const CONTEXT_WARNING_THRESHOLD = 0.8
 
 export interface SquadContextSnapshot {
   sessionId: string
@@ -63,26 +50,8 @@ export interface SquadContextSnapshot {
   utilization: number
   warningThreshold: number
   warning: boolean
-  source: 'runtime' | 'estimated'
+  source: 'estimated'
 }
-
-interface UsageLedgerLike {
-  append(event: SquadUsageEvent): Promise<void>
-  read(): Promise<{ records: Array<{ inputTokens: number; outputTokens: number; estimatedCost: number }> }>
-}
-
-interface ContextTrackerLike {
-  recordEstimated(sample: { sessionId: string; agentName?: string; model: string; inputTokens: number; outputTokens: number }): SquadContextSnapshot | undefined
-  getLatest(sessionId: string): SquadContextSnapshot | undefined
-}
-
-interface UnexportedRuntime {
-  UsageLedger: new (storage: InMemoryStorageProvider, ledgerPath?: string) => UsageLedgerLike
-  ContextUtilizationTracker: new (options?: { warningThreshold?: number; resolveContextWindow?: (model: string) => number | undefined }) => ContextTrackerLike
-  USAGE_LEDGER_PATH: string
-}
-
-let unexported: Promise<UnexportedRuntime> | undefined
 
 export function installedSquadSdkVersion(): string {
   const costTrackerUrl = import.meta.resolve('@bradygaster/squad-sdk/runtime/cost-tracker')
@@ -100,28 +69,6 @@ export function squadSdkPackageHasBackendExport(): boolean {
   return Object.keys(pkg.exports ?? {}).some((key) => key === './backend' || key.startsWith('./backend/'))
 }
 
-export async function loadUnexportedSquadRuntime(): Promise<UnexportedRuntime> {
-  installedSquadSdkVersion()
-  unexported ??= (async () => {
-    const costTrackerUrl = import.meta.resolve('@bradygaster/squad-sdk/runtime/cost-tracker')
-    const runtimeDir = new URL('./', costTrackerUrl)
-    const usage = (await import(new URL('usage-ledger.js', runtimeDir).href)) as {
-      UsageLedger: UnexportedRuntime['UsageLedger']
-      USAGE_LEDGER_PATH: string
-    }
-    const context = (await import(new URL('context-utilization.js', runtimeDir).href)) as {
-      ContextUtilizationTracker: UnexportedRuntime['ContextUtilizationTracker']
-    }
-    if (usage.USAGE_LEDGER_PATH !== SDK_USAGE_LEDGER_DEFAULT) {
-      throw new Error(`UsageLedger default path is ${usage.USAGE_LEDGER_PATH}, not ${SDK_USAGE_LEDGER_DEFAULT}.`)
-    }
-    return { UsageLedger: usage.UsageLedger, ContextUtilizationTracker: context.ContextUtilizationTracker, USAGE_LEDGER_PATH: usage.USAGE_LEDGER_PATH }
-  })()
-  return unexported
-}
-
-const sdkStorage = new InMemoryStorageProvider()
-let ledger: UsageLedgerLike | undefined
 let memoryStore: LocalMemoryStore | undefined
 
 export function squadSdkMemoryStore(): LocalMemoryStore {
@@ -138,56 +85,64 @@ export async function writeWithSquad(request: MemoryWriteRequest): Promise<Memor
   return squadSdkMemoryStore().write(request)
 }
 
-export async function squadUsageLedger(): Promise<UsageLedgerLike> {
-  if (!ledger) {
-    const runtime = await loadUnexportedSquadRuntime()
-    ledger = new runtime.UsageLedger(sdkStorage, SDK_USAGE_LEDGER_PATH)
-  }
-  return ledger
-}
-
-export async function squadContextTracker(resolveContextWindow: (model: string) => number | undefined): Promise<ContextTrackerLike> {
-  const runtime = await loadUnexportedSquadRuntime()
-  return new runtime.ContextUtilizationTracker({ resolveContextWindow })
-}
-
-export function squadSdkStorageSnapshot(): Map<string, string> {
-  return sdkStorage.snapshot()
-}
-
 export function newCostTracker(): CostTracker {
   installedSquadSdkVersion()
   return new CostTracker()
 }
 
 let costTracker: CostTracker | undefined
+/** Process-wide tracker. Production usage does not write here. Org totals use costTrackerForOrg. */
 export function sharedCostTracker(): CostTracker {
   costTracker ??= newCostTracker()
   return costTracker
 }
 
-export async function recordSquadUsage(event: SquadUsageEvent): Promise<void> {
-  sharedCostTracker().recordUsage({
-    sessionId: event.sessionId,
-    agentName: event.agentName,
-    model: event.model,
-    inputTokens: event.inputTokens,
-    outputTokens: event.outputTokens,
-    estimatedCost: event.estimatedCost,
-  })
-  await (await squadUsageLedger()).append(event)
+const orgCostTrackers = new Map<string, CostTracker>()
+
+/** One tracker per organisation. Recording org B does not change org A's totals. */
+export function costTrackerForOrg(orgId: string): CostTracker {
+  let tracker = orgCostTrackers.get(orgId)
+  if (!tracker) {
+    tracker = newCostTracker()
+    orgCostTrackers.set(orgId, tracker)
+  }
+  return tracker
 }
 
-export async function assessSquadContext(input: { sessionId: string; model: string; inputTokens: number; outputTokens: number; contextWindowTokens: number }): Promise<SquadContextSnapshot> {
-  const active = await squadContextTracker(() => input.contextWindowTokens)
-  const snapshot = active.recordEstimated({
+export function resetSquadSdkForTests() {
+  costTracker = undefined
+  orgCostTrackers.clear()
+  memoryStore = undefined
+}
+
+/**
+ * Record a dollar amount the operator's rate produced. Callers pass null's absence by not calling
+ * this when the rate is unset. 0 is allowed only as a computed cost, never as "unknown".
+ */
+export function recordSquadUsage(event: { orgId: string; sessionId: string; agentName?: string; model: string; inputTokens: number; outputTokens: number; estimatedCost: number }): void {
+  if (!Number.isFinite(event.estimatedCost) || event.estimatedCost < 0) {
+    throw new Error('Usage cost must be a non-negative finite number from BUDGET_USD_PER_MILLION_TOKENS. An unknown price is not recorded as 0.')
+  }
+  costTrackerForOrg(event.orgId).recordUsage(event)
+}
+
+/** Local context ratio. The SDK tracker is not a package export, and it only warns. */
+export function assessContextWindow(input: { sessionId: string; inputTokens: number; outputTokens: number; contextWindowTokens: number }): SquadContextSnapshot {
+  if (!Number.isInteger(input.contextWindowTokens) || input.contextWindowTokens <= 0) throw new Error('Context window must be a positive integer.')
+  if (!Number.isInteger(input.inputTokens) || !Number.isInteger(input.outputTokens) || input.inputTokens < 0 || input.outputTokens < 0) {
+    throw new Error('Context token counts must be non-negative integers.')
+  }
+  const occupiedTokens = input.inputTokens + input.outputTokens
+  const utilization = occupiedTokens / input.contextWindowTokens
+  return {
     sessionId: input.sessionId,
-    model: input.model,
-    inputTokens: input.inputTokens,
-    outputTokens: input.outputTokens,
-  })
-  if (!snapshot) throw new Error('Context utilization tracker returned no snapshot.')
-  return snapshot
+    occupiedTokens,
+    contextWindowTokens: input.contextWindowTokens,
+    utilization,
+    warningThreshold: CONTEXT_WARNING_THRESHOLD,
+    warning: utilization >= CONTEXT_WARNING_THRESHOLD,
+    source: 'estimated',
+  }
 }
 
 export function buildSquadConfig(input: {

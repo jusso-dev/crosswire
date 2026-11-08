@@ -1,14 +1,14 @@
 import { env } from '../env'
 import { modelDescription } from './model'
 import { loadPolicy } from './policy'
-import { installedSquadSdkVersion, squadSdkPackageHasBackendExport, SQUAD_SDK_PIN, SDK_USAGE_LEDGER_DEFAULT, SDK_USAGE_LEDGER_PATH } from './squad-sdk'
+import { installedSquadSdkVersion, squadSdkPackageHasBackendExport, SQUAD_SDK_PIN } from './squad-sdk'
 
 export interface ConfigDiagnostic {
   ok: boolean
   sdk: { required: string; resolved: string; backendExport: boolean; harnessAdapter: 'absent-from-1.1.0'; copilotSeatRequired: false }
   provider: { provider: string; model: string | null; auth: string | null }
   flags: { memory: string; runs: string; egress: string; approvalBinding: string }
-  budgets: { maxInputTokens: number; maxOutputTokens: number; maxInflight: number; contextWindowTokens: number; spendCapConfigured: boolean; priceConfigured: boolean }
+  budgets: { maxInputTokens: number; maxOutputTokens: number; maxInflight: number; contextWindowTokens: number; spendCapConfigured: boolean; priceConfigured: boolean; price: 'unpriced' | 'configured' }
   policy: { sha256?: string; error?: string }
   limits: string[]
 }
@@ -50,11 +50,14 @@ export function configurationDiagnostic(): ConfigDiagnostic {
       contextWindowTokens: e.BUDGET_CONTEXT_WINDOW_TOKENS,
       spendCapConfigured: e.BUDGET_MAX_SPEND_MICROS !== undefined,
       priceConfigured: e.BUDGET_USD_PER_MILLION_TOKENS !== undefined,
+      price: e.BUDGET_USD_PER_MILLION_TOKENS === undefined ? 'unpriced' : 'configured',
     },
     policy,
     limits: [
-      `UsageLedger is loaded from the installed ${SQUAD_SDK_PIN} dist file because the exports map omits it. Ledger path is ${SDK_USAGE_LEDGER_PATH}, not ${SDK_USAGE_LEDGER_DEFAULT}.`,
-      'ContextUtilizationTracker warns at 0.8 and does not block. Crosswire refuses the call at that threshold.',
+      'UsageLedger and ContextUtilizationTracker are in the 1.1.0 dist and are not package exports. Crosswire does not file-URL import them. Observed tokens are stored in Postgres. Context refusal is local, at 0.8.',
+      'When BUDGET_USD_PER_MILLION_TOKENS is unset, usage is unpriced: estimated_cost_micros is null. Crosswire does not store 0 as a dollar cost. A spend cap without a rate refuses the model call. A spend cap also refuses when today already has an unpriced row. A finished model call with no token count is stored as null tokens and blocks the daily cap until the next UTC day. Explicit provider zeroes are a real count, except a 0/0 report on a turn that already has assistant text: that turn is stored with null tokens. A run claims its input estimate under a per-org lock before the model call. A cost that does not fit in a Postgres integer is stored as null micros. CostTracker totals are kept per organisation.',
+      'Capacity slots are claimed on the run row. Reconcile returns only a slot that row held. It does not set inflight from the count of running rows, so one org cannot rewrite another. A legacy ledger has no run row: that slot is released in memory only, and a crash can leave it taken. A cancel written on the run row aborts the live model call in this process. That abort is not a timeout.',
+      'Run replay redacts secrets and keeps the rest of the payload, including samples, until sample retention clears sample arrays. An org member can open one run and read that full redacted output. Another organisation cannot.',
       'SOC turns use Azure or an OpenAI-compatible endpoint. They do not use SquadClient or a Copilot seat.',
       'HarnessAdapter and preview 2.0.0-preview.3 are not imported.',
       'Token estimates from text length are a pre-call gate. The usage ledger stores provider counts only.',

@@ -52,7 +52,7 @@ export function withoutSamples(value: unknown): unknown {
   return out
 }
 
-/** What the model is allowed to see. Raw rows stay in the hunt tables and, when a run is open, in agent_run_outputs. */
+/** What the model is allowed to see. Raw rows stay in the hunt tables. Run replay stores a redacted copy; samples stay until sample retention. */
 export function prepareToolResult(value: unknown): unknown {
   if (env().EGRESS_FILTER === 'legacy') return value
   return redactValue(withoutSamples(value))
@@ -68,10 +68,16 @@ async function traced<T>(ctx: ToolContext, tool: string, input: unknown, fn: () 
     return forModel
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
-    ctx.traces.push({ tool, input, output: null, error })
-    await recordDecision({ orgId: ctx.orgId, actorType: 'agent', actorKey: ctx.agentKey, action: `tool:${tool}:error`, input, output: error, threadId: ctx.threadId })
+    await recordToolFailure(ctx, tool, input, error)
     return { error }
   }
+}
+
+/** Full redacted replay of a tool failure, plus the truncated redacted decision summary. */
+export async function recordToolFailure(ctx: ToolContext, tool: string, input: unknown, error: string) {
+  if (ctx.runId) await recordRunOutput(ctx.runId, ctx.orgId, `tool:${tool}:error`, error)
+  ctx.traces.push({ tool, input, output: null, error })
+  await recordDecision({ orgId: ctx.orgId, actorType: 'agent', actorKey: ctx.agentKey, action: `tool:${tool}:error`, input, output: error, threadId: ctx.threadId })
 }
 
 const appUrl = () => env().APP_URL.replace(/\/$/, '')

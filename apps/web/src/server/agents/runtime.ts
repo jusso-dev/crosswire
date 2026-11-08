@@ -10,8 +10,8 @@ import { createModelAdapter, modelDescription, ModelNotConfiguredError } from '.
 import { loadPolicy } from './policy'
 import { approvedDirectiveBlock } from './directives'
 import { prepareModelMessages } from './egress'
-import { appendRunEvent, finishRun, recordRunOutput, reconcileStaleRuns, requestRunCancel, startRun } from './runs'
-import { acquireSlot, checkBudget, outputCharCap, providerFallback, recordObservedUsage, releaseSlot, usageFromChunk } from './budgets'
+import { appendRunEvent, finishRun, getRun, recordRunOutput, reconcileStaleRuns, requestRunCancel, startRun } from './runs'
+import { acquireRunSlot, checkBudget, claimDailyBudget, outputCharCap, providerFallback, recordObservedUsage, recordUnmeasuredUsage, releaseDailyClaim, releaseOnce, usageFromChunk } from './budgets'
 import { sha256 } from './canonical'
 import { SQUAD_SDK_PIN } from './squad-sdk'
 
@@ -120,7 +120,10 @@ export class LlmAgentRuntime implements AgentRuntime {
       }
       return { stream: errorStream(message), traces, runId: run?.id }
     }
-    const budget = await checkBudget(input.orgId, { sessionId: run?.id ?? input.threadId ?? input.orgId, model: described.model ?? described.provider, text: messages.map((m) => m.content).join('\n') })
+    const budgetText = messages.map((m) => m.content).join('\n')
+    const budget = run
+      ? await claimDailyBudget(input.orgId, run.id, { sessionId: run.id, model: described.model ?? described.provider, text: budgetText, agentKey, provider: env().MODEL_PROVIDER })
+      : await checkBudget(input.orgId, { sessionId: input.threadId ?? input.orgId, model: described.model ?? described.provider, text: budgetText })
     if (run) await appendRunEvent(run.id, input.orgId, 'budget_estimate', { estimatedInputTokens: budget.estimatedInputTokens, utilization: budget.utilization ?? null, warning: budget.warning ?? false, ok: budget.ok, observed: false })
     if (!budget.ok) {
       if (run) {
@@ -131,10 +134,11 @@ export class LlmAgentRuntime implements AgentRuntime {
     }
     let slot: { orgId: string } | undefined
     try {
-      slot = await acquireSlot(input.orgId)
+      slot = await acquireRunSlot(input.orgId, run?.id)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       if (run) {
+        await releaseDailyClaim(input.orgId, run.id)
         await recordRunOutput(run.id, input.orgId, 'error', message)
         await finishRun(input.orgId, run.id, 'failed', message)
       }
@@ -142,46 +146,59 @@ export class LlmAgentRuntime implements AgentRuntime {
     }
     const fallback = providerFallback(env().MODEL_PROVIDER)
     if (run) await recordRunOutput(run.id, input.orgId, 'routing', { provider: fallback.provider, switched: fallback.switched, reason: fallback.reason, sdk: SQUAD_SDK_PIN })
-    let released = false
-    const release = async () => {
-      if (released || !slot) return
-      released = true
-      await releaseSlot(slot.orgId)
+    const release = releaseOnce(slot.orgId, run?.id)
+    let stream: AsyncIterable<StreamChunk>
+    try {
+      stream = chat({
+        adapter,
+        messages,
+        threadId: input.threadId ?? `ephemeral-${crypto.randomUUID()}`,
+        systemPrompts: [await systemPromptFor(input.orgId, agentKey, orchestrate)],
+        tools,
+        agentLoopStrategy: maxIterations(6),
+        abortController: input.abortController,
+        stream: true,
+        // TanStack AI 1.2.0 has no chat() output-cap field. max_tokens is a provider key the library recognises.
+        modelOptions: { max_tokens: env().BUDGET_MAX_OUTPUT_TOKENS } as { max_tokens: number },
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (run) {
+        await recordUnmeasuredUsage({ orgId: input.orgId, runId: run.id, agentKey, provider: env().MODEL_PROVIDER, model: described.model ?? described.provider })
+        await recordRunOutput(run.id, input.orgId, 'error', message)
+        await finishRun(input.orgId, run.id, 'failed', message)
+      }
+      await release()
+      return { stream: errorStream(message), traces, runId: run?.id }
     }
-    const stream = chat({
-      adapter,
-      messages,
-      threadId: input.threadId ?? `ephemeral-${crypto.randomUUID()}`,
-      systemPrompts: [await systemPromptFor(input.orgId, agentKey, orchestrate)],
-      tools,
-      agentLoopStrategy: maxIterations(6),
-      abortController: input.abortController,
-      stream: true,
-      // TanStack AI 1.2.0 has no chat() output-cap field. max_tokens is a provider key the library recognises.
-      modelOptions: { max_tokens: env().BUDGET_MAX_OUTPUT_TOKENS } as { max_tokens: number },
-    })
     return { stream: this.boundStream(stream, input, run?.id, release), traces, runId: run?.id, release }
   }
 
   private async *boundStream(stream: AsyncIterable<StreamChunk>, input: AgentRunInput, runId: string | undefined, release: () => Promise<void>): AsyncIterable<StreamChunk> {
     const cap = outputCharCap()
     let chars = 0
+    let assistantText = ''
+    let lastUsage: { inputTokens: number; outputTokens: number } | null = null
+    const iterator = stream[Symbol.asyncIterator]()
+    const signal = input.abortController.signal
+    const stopCancelWatch = runId ? watchExternalCancel(input.orgId, runId, input.abortController) : () => {}
+    const onAbort = new Promise<'abort'>((resolve) => {
+      if (signal.aborted) resolve('abort')
+      else signal.addEventListener('abort', () => resolve('abort'), { once: true })
+    })
     try {
-      for await (const chunk of stream) {
-        const observed = usageFromChunk(chunk)
-        if (observed && runId) {
-          const described = modelDescription()
-          await recordObservedUsage({
-            orgId: input.orgId,
-            runId,
-            agentKey: selectionAgent(input.selection),
-            provider: env().MODEL_PROVIDER,
-            model: described.model ?? described.provider,
-            inputTokens: observed.inputTokens,
-            outputTokens: observed.outputTokens,
-          })
+      while (true) {
+        const next = await Promise.race([iterator.next(), onAbort])
+        if (next === 'abort') {
+          await iterator.return?.()
+          break
         }
+        if (next.done) break
+        const chunk = next.value
+        const observed = usageFromChunk(chunk)
+        if (observed) lastUsage = observed
         if (chunk.type === EventType.TEXT_MESSAGE_CONTENT && 'delta' in chunk && typeof chunk.delta === 'string') {
+          assistantText += chunk.delta
           chars += chunk.delta.length
           if (chars > cap) {
             input.abortController.abort(new Error('output budget exceeded'))
@@ -193,7 +210,23 @@ export class LlmAgentRuntime implements AgentRuntime {
         yield chunk
       }
     } finally {
-      await release()
+      stopCancelWatch()
+      try {
+        if (runId) {
+          const described = modelDescription()
+          await settleUsage({
+            orgId: input.orgId,
+            runId,
+            agentKey: selectionAgent(input.selection),
+            provider: env().MODEL_PROVIDER,
+            model: described.model ?? described.provider,
+            usage: lastUsage,
+            assistantText,
+          })
+        }
+      } finally {
+        await release()
+      }
     }
   }
 
@@ -217,30 +250,48 @@ export class LlmAgentRuntime implements AgentRuntime {
       memorySha256: sha256(memory),
     })
     if (run) sub.runId = run.id
-    const budget = await checkBudget(input.orgId, { sessionId: run?.id ?? `${input.threadId ?? input.orgId}:${agent}`, model: described.model ?? described.provider, text: task })
+    const budget = run
+      ? await claimDailyBudget(input.orgId, run.id, { sessionId: run.id, model: described.model ?? described.provider, text: task, agentKey: agent, provider: env().MODEL_PROVIDER })
+      : await checkBudget(input.orgId, { sessionId: `${input.threadId ?? input.orgId}:${agent}`, model: described.model ?? described.provider, text: task })
     if (run) await appendRunEvent(run.id, input.orgId, 'budget_estimate', { estimatedInputTokens: budget.estimatedInputTokens, utilization: budget.utilization ?? null, warning: budget.warning ?? false, ok: budget.ok, observed: false })
     if (!budget.ok) {
       if (run) await finishRun(input.orgId, run.id, 'failed', budget.reason)
       throw new Error(budget.reason ?? 'Budget refused the specialist call.')
     }
-    const slot = await acquireSlot(input.orgId)
+    let slot: { orgId: string }
+    try {
+      slot = await acquireRunSlot(input.orgId, run?.id)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (run) {
+        await releaseDailyClaim(input.orgId, run.id)
+        await finishRun(input.orgId, run.id, 'failed', message)
+      }
+      throw err instanceof Error ? err : new Error(message)
+    }
+    const release = releaseOnce(slot.orgId, run?.id)
+    const stopCancelWatch = run ? watchExternalCancel(input.orgId, run.id, input.abortController) : () => {}
+    let settled = false
     try {
       const filtered = prepareModelMessages(childInput.messages)
-      const text = await chat({
-        adapter: createModelAdapter(agent),
-        messages: filtered,
-        threadId: `${input.threadId ?? 'ephemeral'}:delegate:${agent}:${crypto.randomUUID()}`,
-        systemPrompts: [await systemPromptFor(input.orgId, agent, false)],
-        tools: toolsFor(agent, sub),
-        agentLoopStrategy: maxIterations(4),
-        stream: false,
-        abortController: input.abortController,
-        modelOptions: { max_tokens: env().BUDGET_MAX_OUTPUT_TOKENS } as { max_tokens: number },
-      })
+      const text = await promiseUntilAbort(
+        chat({
+          adapter: createModelAdapter(agent),
+          messages: filtered,
+          threadId: `${input.threadId ?? 'ephemeral'}:delegate:${agent}:${crypto.randomUUID()}`,
+          systemPrompts: [await systemPromptFor(input.orgId, agent, false)],
+          tools: toolsFor(agent, sub),
+          agentLoopStrategy: maxIterations(4),
+          stream: false,
+          abortController: input.abortController,
+          modelOptions: { max_tokens: env().BUDGET_MAX_OUTPUT_TOKENS } as { max_tokens: number },
+        }),
+        input.abortController.signal,
+      )
       const answer = typeof text === 'string' ? text : ((text as { text?: string }).text ?? '')
-      const observed = usageFromChunk(text)
-      if (observed && run) {
-        await recordObservedUsage({ orgId: input.orgId, runId: run.id, agentKey: agent, provider: env().MODEL_PROVIDER, model: described.model ?? described.provider, inputTokens: observed.inputTokens, outputTokens: observed.outputTokens })
+      if (run) {
+        await settleUsage({ orgId: input.orgId, runId: run.id, agentKey: agent, provider: env().MODEL_PROVIDER, model: described.model ?? described.provider, usage: usageFromChunk(text), assistantText: answer })
+        settled = true
       }
       if (run) await recordRunOutput(run.id, input.orgId, 'assistant', answer)
       const capped = answer.length > outputCharCap() ? `${answer.slice(0, outputCharCap())}\n[output budget]` : answer
@@ -253,7 +304,14 @@ export class LlmAgentRuntime implements AgentRuntime {
       if (run) await finishRun(input.orgId, run.id, input.abortController.signal.aborted ? 'interrupted' : 'failed', err instanceof Error ? err.message : String(err))
       throw err
     } finally {
-      await releaseSlot(slot.orgId)
+      stopCancelWatch()
+      try {
+        if (run && !settled) {
+          await settleUsage({ orgId: input.orgId, runId: run.id, agentKey: agent, provider: env().MODEL_PROVIDER, model: described.model ?? described.provider, usage: null, assistantText: '' })
+        }
+      } finally {
+        await release()
+      }
     }
   }
 
@@ -307,21 +365,69 @@ export function setAgentRuntime(r: AgentRuntime) {
   runtime = r
 }
 
-/** Enforce a wall-clock timeout on a stream; on timeout abort and emit RUN_ERROR instead of hanging. */
+/** Store the provider's last cumulative counts once. A 0/0 report with assistant text is unmeasured, not free. */
+async function settleUsage(input: { orgId: string; runId: string; agentKey: string; provider: string; model: string; usage: { inputTokens: number; outputTokens: number } | null; assistantText: string }) {
+  const blank = input.usage !== null && input.usage.inputTokens === 0 && input.usage.outputTokens === 0 && input.assistantText.length > 0
+  if (!input.usage || blank) {
+    await recordUnmeasuredUsage({ orgId: input.orgId, runId: input.runId, agentKey: input.agentKey, provider: input.provider, model: input.model })
+    return
+  }
+  await recordObservedUsage({ orgId: input.orgId, runId: input.runId, agentKey: input.agentKey, provider: input.provider, model: input.model, inputTokens: input.usage.inputTokens, outputTokens: input.usage.outputTokens })
+}
+
+function timeoutAbort(signal: AbortSignal) {
+  const reason = signal.reason
+  return reason instanceof Error && reason.message === 'agent timeout'
+}
+
+/**
+ * Abort this process's model call when another process writes cancel_requested_at.
+ * The abort reason is "cancelled", so withTimeout does not report a timeout.
+ * A specialist shares the turn's controller: cancelling that child also stops the parent stream.
+ * A read error retries on the next tick and does not abort a healthy turn.
+ */
+function watchExternalCancel(orgId: string, runId: string, abort: AbortController): () => void {
+  if (abort.signal.aborted) return () => {}
+  const timer = setInterval(() => {
+    void getRun(orgId, runId)
+      .then((row) => {
+        if (!row?.cancelRequestedAt || abort.signal.aborted) return
+        abort.abort(new Error('cancelled'))
+      })
+      .catch(() => {
+        // A missed read retries on the next tick.
+      })
+  }, 500)
+  const stop = () => clearInterval(timer)
+  abort.signal.addEventListener('abort', stop, { once: true })
+  return stop
+}
+
+/** Reject when the signal aborts, even if the model promise does not. */
+function promiseUntilAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'))
+  return new Promise((resolve, reject) => {
+    const fail = () => reject(signal.reason instanceof Error ? signal.reason : new Error('aborted'))
+    signal.addEventListener('abort', fail, { once: true })
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', fail))
+  })
+}
+
+/** Enforce a wall-clock timeout on a stream. Only the timeout abort is reported as a timeout. */
 export async function* withTimeout(stream: AsyncIterable<StreamChunk>, ms: number, abort: AbortController): AsyncIterable<StreamChunk> {
   const timer = setTimeout(() => abort.abort(new Error('agent timeout')), ms)
+  const timeoutMessage = `Agent timed out after ${Math.round(ms / 1000)}s.`
   let errored = false
   try {
     for await (const chunk of stream) {
       if (chunk.type === EventType.RUN_ERROR) errored = true
       yield chunk
     }
-    if (abort.signal.aborted && !errored) {
-      const message = `Agent timed out after ${Math.round(ms / 1000)}s.`
-      yield { type: EventType.RUN_ERROR, message, timestamp: Date.now(), error: { message } } as unknown as StreamChunk
+    if (!errored && timeoutAbort(abort.signal)) {
+      yield { type: EventType.RUN_ERROR, message: timeoutMessage, timestamp: Date.now(), error: { message: timeoutMessage } } as unknown as StreamChunk
     }
   } catch (err) {
-    const message = abort.signal.aborted ? `Agent timed out after ${Math.round(ms / 1000)}s.` : err instanceof Error ? err.message : String(err)
+    const message = timeoutAbort(abort.signal) ? timeoutMessage : err instanceof Error ? err.message : String(err)
     yield { type: EventType.RUN_ERROR, message, timestamp: Date.now(), error: { message } } as unknown as StreamChunk
   } finally {
     clearTimeout(timer)

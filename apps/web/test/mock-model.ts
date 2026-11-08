@@ -9,7 +9,11 @@ import type { AddressInfo } from 'node:net'
  * `reply(req)` decides each turn: return text to stream, or a tool call to make.
  */
 export type MockRequest = { system: string; lastUser: string; lastRole: string; toolResult?: string; tools: string[]; userMessages: string[] }
-export type MockReply = { text: string } | { toolCall: { name: string; args: Record<string, unknown> } } | { status: number; body: string }
+export type MockReply =
+  | { text: string; omitUsage?: boolean; usage?: { prompt_tokens: number; completion_tokens: number } }
+  | { toolCall: { name: string; args: Record<string, unknown> }; omitUsage?: boolean }
+  | { status: number; body: string }
+  | { hold: true; text: string }
 
 export async function startMockModel(reply: (req: MockRequest) => MockReply | Promise<MockReply>) {
   const calls: MockRequest[] = []
@@ -41,6 +45,23 @@ export async function startMockModel(reply: (req: MockRequest) => MockReply | Pr
       }
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       const chunk = (d: Record<string, unknown>) => res.write(`data: ${JSON.stringify({ id: 'mock', object: 'chat.completion.chunk', created: 1, model: 'mock', choices: [{ index: 0, ...d }] })}\n\n`)
+      if ('hold' in r) {
+        chunk({ delta: { content: r.text }, finish_reason: null })
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 8_000)
+          const done = () => {
+            clearTimeout(timer)
+            resolve()
+          }
+          req.on('close', done)
+          res.on('close', done)
+        })
+        if (!res.writableEnded) {
+          res.write('data: [DONE]\n\n')
+          res.end()
+        }
+        return
+      }
       if ('toolCall' in r) {
         chunk({ delta: { role: 'assistant', tool_calls: [{ index: 0, id: `call_${calls.length}`, type: 'function', function: { name: r.toolCall.name, arguments: JSON.stringify(r.toolCall.args) } }] }, finish_reason: null })
         chunk({ delta: {}, finish_reason: 'tool_calls' })
@@ -48,6 +69,10 @@ export async function startMockModel(reply: (req: MockRequest) => MockReply | Pr
         // Stream in several deltas so tests can see real incremental streaming.
         for (const piece of r.text.match(/.{1,12}/gs) ?? ['']) chunk({ delta: { content: piece }, finish_reason: null })
         chunk({ delta: {}, finish_reason: 'stop' })
+      }
+      if (!r.omitUsage) {
+        const usage = 'usage' in r && r.usage ? { ...r.usage, total_tokens: r.usage.prompt_tokens + r.usage.completion_tokens } : { prompt_tokens: 12, completion_tokens: 4, total_tokens: 16 }
+        res.write(`data: ${JSON.stringify({ id: 'mock', object: 'chat.completion.chunk', created: 1, model: 'mock', choices: [], usage })}\n\n`)
       }
       res.write('data: [DONE]\n\n')
       res.end()
@@ -58,7 +83,11 @@ export async function startMockModel(reply: (req: MockRequest) => MockReply | Pr
   return {
     baseUrl: `http://127.0.0.1:${port}/v1`,
     calls,
-    close: () => new Promise<void>((r) => server.close(() => r())),
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve())
+        server.closeAllConnections?.()
+      }),
   }
 }
 
