@@ -10,6 +10,9 @@ import { listSchedules } from './schedules'
 export const REPORT_MAX_CHARS = 200_000
 const SAMPLE_ROWS = 5
 const SAMPLE_COLS = 8
+/** Scheduled runs that get a sample: only the most recent few, within their own share of the report. */
+export const SCHEDULED_SAMPLE_RUNS = 5
+export const SCHEDULED_SAMPLE_BUDGET = Math.floor(REPORT_MAX_CHARS * 0.3)
 
 const md = (s: unknown) => redactString(String(s ?? '')).replace(/\r?\n/g, ' ').replace(/\|/g, '\\|')
 const fence = (s: string) => {
@@ -37,6 +40,15 @@ function sampleTable(columns: string[], rows: Array<Record<string, unknown>>) {
     `| ${cols.map(() => '---').join(' | ')} |`,
     ...safe.map((r) => `| ${cols.map((c) => truncate(md(typeof r[c] === 'object' ? JSON.stringify(r[c]) : r[c]), 80)).join(' | ')} |`),
   ].join('\n')
+}
+
+type StoredSummary = { mode?: string; rowCount?: number; truncated?: boolean; columns?: string[]; sample?: Array<Record<string, unknown>>; sampleExpired?: boolean; sampleRetentionDays?: number }
+
+/** Sample lines for one stored result (a query run or a repeat-search run). Empty when there is nothing to show. */
+function sampleBlock(r: StoredSummary): string[] {
+  if (r.sampleExpired) return [`_Sample removed${r.sampleRetentionDays ? ` after ${r.sampleRetentionDays} days` : ''} (retention); the row count is kept._`, '']
+  const t = sampleTable(r.columns ?? [], r.sample ?? [])
+  return t ? [`Sample (first ${SAMPLE_ROWS} rows, ${SAMPLE_COLS} columns, redacted):`, '', t, ''] : []
 }
 
 /**
@@ -72,13 +84,12 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
   out.push('## Queries that ran', '')
   if (!ran.length) out.push('_No query has run on this hunt._', '')
   for (const p of ran) {
-    const r = (p.resultSummary ?? {}) as { mode?: string; rowCount?: number; truncated?: boolean; columns?: string[]; sample?: Array<Record<string, unknown>> }
+    const r = (p.resultSummary ?? {}) as StoredSummary
     out.push(`### ${p.target === 'defender' ? 'Defender XDR' : 'Sentinel'} · ${iso(p.ranAt)}`, '')
     out.push(`- **Approved by:** ${who(p.decidedBy)} at ${iso(p.decidedAt)}`, `- **Proposed by:** ${p.proposedByType} ${md(p.proposedById)}${p.kql !== p.originalKql ? ' (edited before running)' : ''}`)
     out.push(`- **Result:** ${r.rowCount ?? 0} rows${r.truncated ? ' (truncated to cap)' : ''}${r.mode === 'demo' ? ' · demo data' : ''}`, `- **Columns:** ${(r.columns ?? []).map(md).join(', ')}`, '')
     out.push(fence(p.kql), '')
-    const t = sampleTable(r.columns ?? [], r.sample ?? [])
-    if (t) out.push(`Sample (first ${SAMPLE_ROWS} rows, ${SAMPLE_COLS} columns, redacted):`, '', t, '')
+    out.push(...sampleBlock(r))
   }
 
   const other = proposals.filter((p) => p.status !== 'run')
@@ -96,10 +107,25 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
     const runs = evidence.filter((e) => e.type === 'scheduled_result' || e.type === 'scheduled_failed').slice(-20)
     if (runs.length) {
       out.push('', 'Recent scheduled results:', '')
+      // Issue #99: each run's own sample, indented under its bullet, same redaction and bounds. Only
+      // the most recent SCHEDULED_SAMPLE_RUNS results get one, within SCHEDULED_SAMPLE_BUDGET
+      // characters, so samples cannot crowd out the response proposals and timeline below.
+      const withSample = new Set(runs.filter((e) => e.type === 'scheduled_result').slice(-SCHEDULED_SAMPLE_RUNS).map((e) => e.id))
+      let budget = SCHEDULED_SAMPLE_BUDGET
+      let countsOnly = 0
       for (const e of runs) {
-        const pl = e.payload as { rowCount?: number; error?: string }
-        out.push(`- ${iso(e.createdAt)} · ${e.type === 'scheduled_result' ? `${pl.rowCount ?? 0} rows` : `failed: ${md(truncate(pl.error ?? '', 200))}`}`)
+        const pl = e.payload as StoredSummary & { error?: string }
+        out.push(`- ${iso(e.createdAt)} · ${e.type === 'scheduled_result' ? `${pl.rowCount ?? 0} rows${pl.mode === 'demo' ? ' · demo data' : ''}` : `failed: ${md(truncate(pl.error ?? '', 200))}`}`)
+        if (e.type !== 'scheduled_result') continue
+        const block = sampleBlock(pl).map((l) => (l ? `  ${l}` : l))
+        if (!block.length) continue
+        const size = block.reduce((n, l) => n + l.length + 1, 0)
+        if (withSample.has(e.id) && size <= budget) {
+          out.push(...block)
+          budget -= size
+        } else countsOnly++
       }
+      if (countsOnly) out.push('', `_Samples are shown for the ${SCHEDULED_SAMPLE_RUNS} most recent runs at most, within a size limit; ${countsOnly} run${countsOnly === 1 ? ' is' : 's are'} listed with row counts only._`)
     }
     out.push('')
   }

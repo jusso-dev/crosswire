@@ -10,17 +10,22 @@ version 1.7.18.
   migrations in `apps/web/drizzle/` (`pnpm db:migrate`).
 - Cookies: httpOnly, `SameSite=Lax`; `Secure` and `__Secure-` prefix when `NODE_ENV=production`.
 - CSRF: Better Auth origin checks on its endpoints; TanStack server functions are same-origin POSTs.
-- Rate limiting: Better Auth limiter, 5 sign-in attempts per minute per IP. Client IP comes from
-  `X-Forwarded-For`; set `TRUSTED_PROXIES` (comma-separated IPs/CIDRs of your proxy) so multi-hop
-  headers resolve correctly. Audit rows record the right-most hop (the one your proxy appended).
-- Sessions: database sessions (7 days). No hand-rolled JWT store.
+- Rate limiting: Better Auth limiter, 5 sign-in attempts per minute per IP (30 requests per minute
+  for other `/api/auth/*` endpoints). Counters live in the `rate_limit` table, so every replica
+  shares them (`RATE_LIMIT_STORAGE=database`, the default; `memory` makes them per process). Client
+  IP comes from `X-Forwarded-For`; set `TRUSTED_PROXIES` (comma-separated IPs/CIDRs of your proxy)
+  so multi-hop headers resolve correctly. Audit rows record the right-most hop (the one your proxy
+  appended).
+- Sessions: database sessions with an idle timeout and an absolute cap (see
+  [Session lifetime](#session-lifetime)). No hand-rolled JWT store.
 
 ## Local sign-in (issue #18)
 
 Email and password (`AUTH_EMAIL_PASSWORD=true`, minimum 12 characters, Better Auth's scrypt
 hashing). Open `/sign-in`, choose "Create an account". The first account gets a personal
 workspace where it is the owner. Errors are generic ("Invalid email or password") to avoid account
-enumeration. Magic links are not enabled; SMTP settings are used only for digests.
+enumeration. Magic links are not enabled; SMTP settings are used only for digests and the digest
+address confirmation email ([watchlists](watchlists.md#digest-email-address-102)).
 
 Demo users: `SEED_PASSWORD=... pnpm --filter web db:seed` creates `owner@example.test` and
 `analyst@example.test` in one org (development only).
@@ -74,10 +79,56 @@ update orgs set entra_tenant_id = '<tenant guid>' where id = '<org id>';
 - `/healthz`, `/readyz`, `/sign-in`, `/auth-error` and `/api/auth/*` are public.
 - `returnTo` only accepts same-origin paths (no open redirects).
 
+## Session lifetime
+
+Two limits, both from the environment:
+
+| Setting | Default | Rule |
+| --- | --- | --- |
+| `SESSION_IDLE_MINUTES` | `60` | The session ends after this long with no requests. Activity slides the expiry forward (Better Auth refreshes it at most every 5 minutes). |
+| `SESSION_MAX_AGE_HOURS` | `12` | Hard cap since sign-in. Activity never extends it. |
+
+- The absolute cap is checked in `getAppSession` (every `/app` page, server function and `/api/*`
+  call) and in front of every `/api/auth/*` request, so Better Auth cannot serve or refresh an
+  over-age session on its own endpoints.
+- An over-age session is deleted and audited as `session_expired_absolute` (actor `system`; the
+  data holds the cap in hours and the sign-in time). The browser's cookie is cleared on its next
+  request and the user signs in again.
+- Changes take effect after a restart. A lower `SESSION_MAX_AGE_HOURS` ends sessions already past
+  the new cap on their next request.
+
+**MFA stays with the identity provider.** Crosswire does not prompt for MFA. Require it with Entra
+Conditional Access on the SSO app. Signing in again after a session ends may be silent while the
+Microsoft session is still valid; Conditional Access sign-in frequency controls that.
+
+## HTTP security headers (#74)
+
+Every response gets security headers from `apps/web/src/server/lib/http-security.ts`. They are fixed
+in code, not configured.
+
+- **Content-Security-Policy (production):** `script-src 'self'` plus a fresh per-request nonce on
+  HTML pages (`'nonce-…'`), so only the scripts the server rendered can run. No `'unsafe-inline'`
+  and no `'unsafe-eval'` for scripts. Non-HTML responses get `script-src 'self'`.
+- `style-src 'self' 'unsafe-inline'` (React `style` attributes cannot carry a nonce),
+  `font-src 'self' data:` (small fonts inlined into the CSS), `img-src 'self' data:`,
+  `connect-src 'self'`, `object-src 'none'`, `base-uri 'self'`, `frame-ancestors 'none'`,
+  `form-action 'self'`.
+- Development keeps `'unsafe-inline'` for scripts, because Vite injects inline scripts without a
+  nonce.
+- Also sent: `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`,
+  `X-Frame-Options: DENY`, `Permissions-Policy`, `Cross-Origin-Opener-Policy: same-origin`, and
+  HSTS over https.
+- `/api/chat` is rate limited per client (`RATE_LIMIT_CHAT_PER_MIN`, default 20) in the
+  `app_rate_limits` table, shared by every replica. If the database errors, the limiter lets the
+  request through and logs a warning (chat still needs a session and the database). Sign-in limits
+  are Better Auth's own and are not affected.
+
 ## Auth audit log (issue #22)
 
 Table `audit_events` (`category = 'auth'`): `sign_up`, `sign_in`, `sign_out`, `sso_success`,
-`sso_failure`, `sso_linked`, `sso_rejected_unknown_tenant`, `session_revoke*`, `role_changed`.
+`sso_failure`, `sso_linked`, `sso_rejected_unknown_tenant`, `session_revoke*`,
+`session_expired_absolute`, `role_changed`, and `digest_email_requested` / `digest_email_confirmed`
+/ `digest_email_cleared` (these record the address's domain only).
 Each row has result, user id when known, org id, IP address, user agent and timestamp. Passwords,
 tokens, authorisation codes and submitted emails are never stored.
 
@@ -88,9 +139,10 @@ select created_at, action, result, actor_id, ip_address from audit_events
 where category = 'auth' order by created_at desc limit 100;
 ```
 
-**Retention and PII:** rows are kept indefinitely in v1; self-hosters own retention. IP addresses
-and user agents are personal data in some jurisdictions; delete old rows on your schedule:
-`delete from audit_events where created_at < now() - interval '365 days';`
+**Retention and PII:** the worker deletes audit rows older than `RETENTION_AUDIT_DAYS` (default 730;
+`0` keeps them forever) once a day. IP addresses and user agents are personal data in some
+jurisdictions; set the period to suit your obligations. See
+[data retention](runbooks/data-retention.md).
 
 ## SAML SSO (Later)
 

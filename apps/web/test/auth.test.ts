@@ -1,9 +1,9 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import { eq } from 'drizzle-orm'
-import { auth, resetAuthForTests } from '../src/server/auth/auth'
-import { getAppSession, requireApiSession, safeReturnTo, HttpError } from '../src/server/auth/session'
+import { auth, resetAuthForTests, sessionLifetime } from '../src/server/auth/auth'
+import { getAppSession, pastAbsoluteMaxAge, requireApiSession, safeReturnTo, HttpError, enforceAbsoluteSessionCap } from '../src/server/auth/session'
 import { getDb } from '../src/server/db/client'
-import { auditEvents, orgMemberships, orgs } from '../src/server/db/schema'
+import { auditEvents, orgMemberships, orgs, session } from '../src/server/db/schema'
 import { entraEmailFallback, placeEntraUser, resolveEntraOrg, UnknownTenantError } from '../src/server/auth/entra'
 import { createOrg } from '../src/server/orgs'
 import { resetEnvForTests } from '../src/server/env'
@@ -135,6 +135,72 @@ describe('Entra org mapping (#19)', () => {
       expect(m?.role).toBe('owner')
     } finally {
       delete process.env.ENTRA_AUTO_PROVISION_ORGS
+      resetEnvForTests()
+    }
+  })
+})
+
+describe('session lifetime (absolute cap + idle timeout)', () => {
+  it('idle timeout drives Better Auth expiresIn; updateAge is about five minutes and at most half', () => {
+    expect(sessionLifetime(60)).toEqual({ expiresIn: 3600, updateAge: 300 })
+    expect(sessionLifetime(5)).toEqual({ expiresIn: 300, updateAge: 150 })
+    expect(auth().options.session).toEqual({ expiresIn: 3600, updateAge: 300 })
+  })
+
+  it('absolute cap compares sign-in time with SESSION_MAX_AGE_HOURS', () => {
+    const now = Date.parse('2026-11-08T12:00:00Z')
+    expect(pastAbsoluteMaxAge(new Date(now - 11 * 3_600_000), now)).toBe(false)
+    expect(pastAbsoluteMaxAge(new Date(now - 12 * 3_600_000), now)).toBe(true)
+  })
+
+  it('a session older than the cap is revoked, treated as signed out and audited', async () => {
+    const res = await call('/sign-up/email', { email: 'old-session@example.test', password, name: 'Old' })
+    expect(res.status).toBe(200)
+    const cookie = cookieFrom(res)
+    const before = await getAppSession(new Headers({ cookie }))
+    expect(before).not.toBeNull()
+    const userId = before!.user.id
+
+    // Signed in 13 hours ago, but still active (idle expiry in the future).
+    await getDb()
+      .update(session)
+      .set({ createdAt: new Date(Date.now() - 13 * 3_600_000), expiresAt: new Date(Date.now() + 30 * 60_000) })
+      .where(eq(session.userId, userId))
+
+    expect(await getAppSession(new Headers({ cookie }))).toBeNull()
+    await expect(requireApiSession(new Request(`${BASE}/api/x`, { headers: { cookie } }))).rejects.toMatchObject({ status: 401 })
+    const rows = await getDb().select().from(session).where(eq(session.userId, userId))
+    expect(rows).toHaveLength(0)
+    const audit = await getDb().select().from(auditEvents).where(eq(auditEvents.action, 'session_expired_absolute'))
+    expect(audit).toHaveLength(1)
+    expect(audit[0]).toMatchObject({ category: 'auth', actorId: userId, actorType: 'system' })
+  })
+
+  it('the cap also applies in front of Better Auth endpoints (/api/auth/get-session)', async () => {
+    const res = await call('/sign-up/email', { email: 'old-session-2@example.test', password, name: 'Old2' })
+    const cookie = cookieFrom(res)
+    const userId = (await getAppSession(new Headers({ cookie })))!.user.id
+    // Under the cap: nothing happens.
+    await enforceAbsoluteSessionCap(new Headers({ cookie }))
+    expect(await getDb().select().from(session).where(eq(session.userId, userId))).toHaveLength(1)
+    await getDb()
+      .update(session)
+      .set({ createdAt: new Date(Date.now() - 13 * 3_600_000), expiresAt: new Date(Date.now() + 30 * 60_000) })
+      .where(eq(session.userId, userId))
+    await enforceAbsoluteSessionCap(new Headers({ cookie }))
+    expect(await getDb().select().from(session).where(eq(session.userId, userId))).toHaveLength(0)
+    const got = await auth().handler(new Request(`${BASE}/api/auth/get-session`, { headers: { cookie } }))
+    expect(await got.json()).toBeNull()
+  })
+
+  it('SESSION_MAX_AGE_HOURS is configurable', () => {
+    process.env.SESSION_MAX_AGE_HOURS = '1'
+    resetEnvForTests()
+    try {
+      const now = Date.now()
+      expect(pastAbsoluteMaxAge(new Date(now - 61 * 60_000), now)).toBe(true)
+    } finally {
+      delete process.env.SESSION_MAX_AGE_HOURS
       resetEnvForTests()
     }
   })

@@ -17,6 +17,8 @@ Owners add webhook channels under **Settings → Notifications**. Each channel s
   Messages are Adaptive Cards.
 - **Slack:** create an app with *Incoming Webhooks* and copy the `https://hooks.slack.com/services/…` URL.
 - Paste the URL, pick events, **Add channel**, then **Send test**.
+- **Delete** a channel: click **Delete**, then **Confirm delete** (or **Cancel**). Nothing is
+  removed until you confirm.
 
 ## Safety
 

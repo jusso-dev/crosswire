@@ -1,0 +1,714 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analyst workspace: system design, components and security</title>
+<meta name="description" content="Technical design and security document for the analyst workspace in this repository: architecture, components, states, roles, threat model, operations and testing.">
+<style>
+  :root {
+    --ink: #1f2328; --ink-2: #3d444d; --muted: #59636e; --rule: #d1d9e0; --rule-2: #e8ecf0;
+    --bg: #ffffff; --bg-2: #f6f8fa; --code: #f3f4f6;
+    --ok: #1a6b35; --warn: #8a5200; --bad: #a3242a; --plan: #4b3a8c; --info: #24508f;
+  }
+  * { box-sizing: border-box; }
+  html { font-size: 10.5pt; }
+  body { margin: 0; color: var(--ink); background: var(--bg); font: 1rem/1.55 -apple-system, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif; }
+  main { max-width: 190mm; margin: 0 auto; padding: 16mm 12mm 20mm; }
+  h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 .4rem; letter-spacing: -.01em; }
+  h2 { font-size: 1.4rem; margin: 2.2rem 0 .6rem; padding-top: .4rem; border-top: 2px solid var(--ink); page-break-after: avoid; break-after: avoid; }
+  h3 { font-size: 1.1rem; margin: 1.5rem 0 .4rem; page-break-after: avoid; break-after: avoid; }
+  h4 { font-size: 1rem; margin: 1.1rem 0 .3rem; page-break-after: avoid; break-after: avoid; }
+  p, li { orphans: 3; widows: 3; }
+  p { margin: .4rem 0 .6rem; }
+  ul, ol { margin: .3rem 0 .7rem; padding-left: 1.3rem; }
+  li { margin: .15rem 0; }
+  a { color: var(--info); text-decoration: underline; text-underline-offset: 2px; overflow-wrap: anywhere; }
+  code, pre, kbd { font-family: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; font-size: .86em; }
+  code { background: var(--code); padding: 0 .25em; border-radius: 3px; overflow-wrap: break-word; }
+  pre { background: var(--bg-2); border: 1px solid var(--rule); border-radius: 4px; padding: .6rem .8rem; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.4; page-break-inside: avoid; break-inside: avoid; }
+  pre.diagram { font-size: .78em; line-height: 1.3; white-space: pre; overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; margin: .5rem 0 1rem; font-size: .9em; page-break-inside: auto; }
+  thead { display: table-header-group; }
+  tr { page-break-inside: avoid; break-inside: avoid; }
+  th, td { border: 1px solid var(--rule); padding: .3rem .45rem; vertical-align: top; text-align: left; overflow-wrap: break-word; }
+  th { background: var(--bg-2); font-weight: 600; }
+  caption { caption-side: top; text-align: left; font-weight: 600; padding: 0 0 .3rem; }
+  .meta { color: var(--muted); font-size: .92em; }
+  .meta dt { font-weight: 600; float: left; clear: left; width: 9.5rem; }
+  .meta dd { margin: 0 0 .15rem 9.5rem; }
+  .note { border-left: 3px solid var(--info); background: var(--bg-2); padding: .5rem .8rem; margin: .7rem 0; page-break-inside: avoid; break-inside: avoid; }
+  .note.warn { border-color: var(--warn); }
+  .note.bad { border-color: var(--bad); }
+  .tag { display: inline-block; font-size: .78em; font-weight: 700; letter-spacing: .02em; padding: 0 .35em; border: 1px solid currentColor; border-radius: 3px; white-space: nowrap; }
+  .t-impl { color: var(--ok); } .t-part { color: var(--warn); } .t-plan { color: var(--plan); } .t-gap { color: var(--bad); } .t-assume { color: var(--muted); } .t-decide { color: var(--info); }
+  .toc ol { list-style: none; padding-left: 0; columns: 2; column-gap: 2rem; }
+  .toc ol ol { padding-left: 1rem; columns: 1; }
+  .toc li { margin: .1rem 0; break-inside: avoid; }
+  .toc a { text-decoration: none; color: var(--ink); }
+  .toc a:hover { text-decoration: underline; }
+  .small { font-size: .88em; }
+  .ac { counter-reset: ac; list-style: none; padding-left: 0; }
+  .ac > li { counter-increment: ac; padding-left: 3.2rem; position: relative; }
+  .ac > li::before { content: "AC-" counter(ac, decimal-leading-zero); position: absolute; left: 0; font-weight: 700; font-family: "SF Mono", Menlo, monospace; font-size: .85em; }
+  @page { size: A4; margin: 16mm 14mm 18mm; }
+  @media print {
+    html { font-size: 9.6pt; }
+    main { max-width: none; padding: 0; }
+    a { color: var(--ink); }
+    h2 { page-break-before: auto; }
+    h2.newpage { page-break-before: always; break-before: page; }
+    .toc { page-break-after: always; break-after: page; }
+    pre.diagram { white-space: pre; overflow: visible; font-size: .72em; }
+  }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>Analyst workspace: system design, components and security</h1>
+  <p class="meta">Technical design and security reference for the analyst workspace in this repository. Unbranded and factual: product names appear only where the code depends on them or a standard is cited.</p>
+  <dl class="meta">
+    <dt>Repository</dt><dd><code>jusso-dev/crosswire</code>, branch <code>main</code></dd>
+    <dt>Verified at commit</dt><dd><code>95c7f97</code> (merge of PR #103), 8 November 2026 (Australia/Sydney)</dd>
+    <dt>Scope</dt><dd>Web application, background worker, data model, integrations, deployment, operations and security controls as they exist at that commit, plus explicitly labelled plans and gaps</dd>
+    <dt>Audience</dt><dd>Engineers, security reviewers and operators</dd>
+    <dt>Source of truth</dt><dd>The code. Where this document and the code differ, the code wins and this document has a defect</dd>
+  </dl>
+</header>
+
+<section class="note">
+  <p><strong>How to read status labels.</strong> Every capability carries one label:</p>
+  <p>
+    <span class="tag t-impl">IMPLEMENTED</span> present in code at the commit above and covered by tests or verified in the lab deployment.
+    <span class="tag t-part">PARTIAL</span> present but with a stated limitation.
+    <span class="tag t-plan">PLANNED</span> tracked as an issue or explicit follow-up; not in code.
+    <span class="tag t-gap">GAP</span> missing; no issue yet, or a known risk.
+    <span class="tag t-assume">ASSUMPTION</span> relied on but not verified by this repository.
+    <span class="tag t-decide">OPEN DECISION</span> needs an owner decision.
+  </p>
+</section>
+
+<section class="note warn">
+  <p><strong>Provenance and scope check.</strong> An earlier request described a "cohesive analyst workspace redesign". That work is real and merged: PR #98 (merge commit <code>0813e12</code>) delivered the workspace, design tokens, accessible components, URL-held view state, an automated WCAG 2.2 AA scan and Azure OpenAI chat; its pattern research and design decisions are recorded in <code>design.md</code> at the repository root. This document builds on that record rather than restating the redesign as new. Earlier history (v1 phases 0 to 8, PR #87; v2 response depth, PR #96, issues #88 to #94) is treated as the existing base. Nothing in this document describes unmerged work as implemented.</p>
+</section>
+
+<nav class="toc" aria-label="Contents">
+  <h2 id="contents">Contents</h2>
+  <ol>
+    <li><a href="#s1">1. Summary</a></li>
+    <li><a href="#s2">2. Users, workflows and boundaries</a></li>
+    <li><a href="#s3">3. Architecture and trust boundaries</a></li>
+    <li><a href="#s4">4. Data flows</a></li>
+    <li><a href="#s5">5. Backend components</a></li>
+    <li><a href="#s6">6. Data model and storage</a></li>
+    <li><a href="#s7">7. Frontend: views and shared UI</a></li>
+    <li><a href="#s8">8. Component and state catalogue</a></li>
+    <li><a href="#s9">9. Design tokens and accessibility</a></li>
+    <li><a href="#s10">10. Roles, tenants and permissions</a></li>
+    <li><a href="#s11">11. Threat model</a></li>
+    <li><a href="#s12">12. Security controls in depth</a></li>
+    <li><a href="#s13">13. AI agent safety</a></li>
+    <li><a href="#s14">14. Configuration and dependencies</a></li>
+    <li><a href="#s15">15. Deployment and operations</a></li>
+    <li><a href="#s16">16. Testing and acceptance criteria</a></li>
+    <li><a href="#s17">17. Standards mapping</a></li>
+    <li><a href="#s18">18. Gaps, open decisions and backlog</a></li>
+    <li><a href="#s19">19. Traceability and references</a></li>
+    <li><a href="#s20">20. Rendering this document</a></li>
+  </ol>
+</nav>
+
+<h2 id="s1">1. Summary</h2>
+<p>The application is a self-hosted security operations workspace for teams that use Microsoft Defender XDR and Microsoft Sentinel. Analysts keep a watch list of vendors, products, CVEs and tags; a worker matches it hourly against two public threat-intelligence feeds; analysts open hunt cases, review and approve read-only KQL searches, inspect stored result samples, and propose containment actions that an approver dry-runs and decides. A set of AI agents can read intelligence, hunts and memory and can <em>propose</em> searches or actions. They cannot run or approve anything.</p>
+<p>Three design rules shape almost every component:</p>
+<ol>
+  <li><strong>People approve; machines propose.</strong> No code path lets an agent execute KQL or a response action. Live execution is off by default and needs two independent switches.</li>
+  <li><strong>Every query is tenant-scoped on the server.</strong> All organisation data is filtered by <code>org_id</code> in server code; UI hiding is never the control.</li>
+  <li><strong>Untrusted input stays data.</strong> Feed content, model output, query results and webhook targets are validated, escaped or allowlisted before use.</li>
+</ol>
+
+<h2 id="s2">2. Users, workflows and boundaries</h2>
+<h3>2.1 Roles</h3>
+<table>
+  <thead><tr><th>Role</th><th>Purpose</th><th>Source</th></tr></thead>
+  <tbody>
+    <tr><td>Analyst</td><td>Investigates, writes notes, proposes searches and actions. Default for new members.</td><td><code>apps/web/src/server/response/rbac.ts</code></td></tr>
+    <tr><td>Approver</td><td>Analyst rights plus approve, reject, dry-run and execute response proposals; schedule repeat searches.</td><td>same</td></tr>
+    <tr><td>Owner</td><td>Approver rights plus member roles, connectors, notification channels, audit log and audit bundle export.</td><td>same, and <code>fns/settings.ts</code>, <code>fns/approvals.ts</code></td></tr>
+  </tbody>
+</table>
+<h3>2.2 Implemented workflows</h3>
+<table>
+  <thead><tr><th>#</th><th>Workflow</th><th>Status</th><th>Primary code</th></tr></thead>
+  <tbody>
+    <tr><td>W1</td><td>Watch: add vendors, keywords, CVEs, tags; hourly matching against pwn.watch and CISA KEV; daily digest per <code>APP_TIMEZONE</code> day</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>server/ti/*</code>, <code>routes/app.watches.tsx</code>, <code>routes/app.digests.tsx</code></td></tr>
+    <tr><td>W2</td><td>Hunt: case file with hypothesis, KQL proposals, approval, stored sample results, evidence timeline, notes, export</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>server/hunting/*</code>, <code>routes/app.hunts.$huntId.tsx</code></td></tr>
+    <tr><td>W3</td><td>Repeat search: approver schedules a search that already ran; approval lapses after at most 30 days</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>server/hunting/schedules.ts</code></td></tr>
+    <tr><td>W4</td><td>Respond: proposal, dry run, separate approver decision, optional live execution, rollback as a new proposal</td><td><span class="tag t-impl">IMPLEMENTED</span> (live execution off by default)</td><td><code>server/response/*</code>, <code>routes/app.approvals*.tsx</code></td></tr>
+    <tr><td>W5</td><td>Compare one CVE or indicator across intelligence sources</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>server/ti/compare.ts</code>, <code>routes/app.intel.$key.tsx</code></td></tr>
+    <tr><td>W6</td><td>Ask an agent: streamed chat with five chartered agents and their allowlisted tools</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>server/agents/*</code>, <code>server/chat/*</code>, <code>routes/app.chat*.tsx</code></td></tr>
+    <tr><td>W7</td><td>Notify: Teams and Slack webhooks for selected events</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>server/notify/notify.ts</code></td></tr>
+  </tbody>
+</table>
+<h3>2.3 Out of scope (by design)</h3>
+<p>Alert queues, detection-rule authoring, entity relationship graphs, risk scoring, ATT&amp;CK mapping, case assignment and storage of full result sets are not part of the product. The interface does not present synthetic metrics or graphs for data the backend does not hold (see <code>design.md</code>, section 1).</p>
+
+<h2 id="s3">3. Architecture and trust boundaries</h2>
+<h3>3.1 Component diagram</h3>
+<pre class="diagram" aria-label="Component diagram">
+ Browser (analyst)                                   Identity provider
+ ┌──────────────────────┐   OIDC / SAML   ┌───────────────────────────┐
+ │ React SPA + SSR HTML │◀───────────────▶│ Microsoft Entra ID (OIDC) │
+ └─────────┬────────────┘                 │ or a SAML IdP (per org)   │
+           │ HTTPS, session cookie        └───────────────────────────┘
+ ══════════╪═══════════════════ TB1: internet → app ingress ═══════════════════
+           ▼
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │ Web app (Node, TanStack Start; container "web")                          │
+ │  routes/   SSR pages + API routes (/api/chat SSE, /api/auth/*)           │
+ │  fns/      server functions; every private one runs `authed` middleware  │
+ │  server/   domain: auth, ti, hunting, response, agents, chat, notify     │
+ │            security headers, CORS allowlist, rate limits, redaction      │
+ └──────┬───────────────┬────────────────────┬──────────────────┬──────────┘
+        │ SQL (TLS)     │ HTTPS allowlists   │ HTTPS (Entra     │ HTTPS
+        ▼               ▼                    │  token, no key)  ▼
+ ┌──────────────┐ ┌─────────────────────┐    ▼            ┌──────────────────┐
+ │ PostgreSQL   │ │ Microsoft Graph /   │ ┌──────────────┐│ Teams / Slack    │
+ │ (all state,  │ │ Log Analytics /     │ │ Azure OpenAI ││ incoming webhooks│
+ │  org_id on   │ │ Azure management /  │ │ (chat model) │└──────────────────┘
+ │  every org   │ │ Defender API        │ └──────────────┘
+ │  row)        │ └─────────────────────┘  TB4: app → model provider
+ └──────▲───────┘  TB3: app → customer tenant (read-only hunting app; separate
+        │                 response app; both per org)
+ ┌──────┴──────────────────────────────┐    ┌───────────────────────────────┐
+ │ Worker (same image; container       │───▶│ Public TI feeds: pwn.watch,   │
+ │ "worker"): hourly TI ingest, match, │    │ CISA KEV (HTTPS, cached)      │
+ │ digests, expiry, repeat searches    │    └───────────────────────────────┘
+ └─────────────────────────────────────┘     TB2: app → public internet (untrusted content)
+ Secrets: Azure Key Vault references → container env (managed identity). Logs: Log Analytics / App Insights.
+</pre>
+<h3>3.2 Trust boundaries</h3>
+<table>
+  <thead><tr><th>ID</th><th>Boundary</th><th>What crosses it</th><th>Primary controls</th></tr></thead>
+  <tbody>
+    <tr><td>TB1</td><td>Internet to application</td><td>Browser requests, cookies, chat messages, form input</td><td>TLS only (ingress <code>allowInsecure: false</code>), HSTS, CSP, CORS allowlist, Better Auth sessions, <code>authed</code> middleware, zod validation, rate limits</td></tr>
+    <tr><td>TB2</td><td>Application to public internet</td><td>Feed JSON from pwn.watch and CISA KEV</td><td>Fixed feed URLs from configuration, identifiable User-Agent, timeouts, bounded retries, cache with TTL, schema parsing (zod), rendered as text</td></tr>
+    <tr><td>TB3</td><td>Application to customer tenant</td><td>KQL queries and results; response API calls</td><td>Separate least-privilege apps per org, request allowlists (host + path + method), KQL safety filter, row and time caps, human approval, dry-run default</td></tr>
+    <tr><td>TB4</td><td>Application to model provider</td><td>System prompt, conversation, tool results</td><td>Entra ID token (managed identity; no stored key), server-chosen model and tools, tool allowlist per agent, no execute tools, output rendered as escaped markdown</td></tr>
+    <tr><td>TB5</td><td>Application to chat-ops endpoints</td><td>Notification payloads</td><td>HTTPS, default port, no credentials in URL, host allowlist per kind, <code>redirect: 'error'</code>, 5 s timeout, payloads carry titles, counts and links only</td></tr>
+    <tr><td>TB6</td><td>Organisation to organisation (logical)</td><td>All tenant data in one database</td><td><code>org_id</code> on every org-owned row; server code always filters by the session's org; cross-org tests</td></tr>
+  </tbody>
+</table>
+
+<h2 id="s4">4. Data flows</h2>
+<h3>4.1 Intelligence ingest and matching (W1)</h3>
+<ol>
+  <li>The worker (<code>server/cli/worker.ts</code>) runs an ingest cycle at start and every hour: <code>fetchAndIngestPwnWatch</code> (incidents, changes, tags) and <code>fetchAndIngestKev</code>, via <code>politeFetch</code> in <code>server/ti/http.ts</code> (cache table <code>ti_fetch_cache</code>, TTL at least 3600 s by default).</li>
+  <li>Records are parsed with zod schemas; invalid items are skipped and counted, not stored.</li>
+  <li><code>server/ti/matcher.ts</code> matches each org's active watches (keyword and vendor are case-insensitive whole-word, at least 3 characters; CVE and tag are exact) and writes <code>watch_hits</code> rows with <code>org_id</code>.</li>
+  <li>Five minutes after local midnight in <code>APP_TIMEZONE</code>, the worker builds the previous day's digest per org and emails owners when SMTP is configured (<code>server/ti/digest.ts</code>). Day bounds are DST-safe, including zones with no local midnight.</li>
+</ol>
+<h3>4.2 Search approval and execution (W2)</h3>
+<ol>
+  <li>An agent tool (<code>propose_kql</code>) or an analyst creates a <code>kql_proposals</code> row (status <code>proposed</code>, expiry set).</li>
+  <li>A person reviews and may edit the KQL, then approves. <code>approveAndRunKql</code> (<code>server/hunting/hunts.ts</code>) is the only code path that executes KQL and requires a human user id.</li>
+  <li><code>assertSafeKql</code> rejects external data, HTTP, plugin, cross-cluster and management commands. The claim is atomic: only one approver moves <code>proposed</code> to <code>approved</code>.</li>
+  <li>The hunting client obtains a client-credentials token for the org's read-only app (<code>server/hunting/broker.ts</code>), checks the request against <code>HUNTING_ALLOWLIST</code>, applies row and timeout caps, and stores a summary (row count, columns, a sample of at most 20 rows) plus an evidence event. In demo mode, labelled fixture rows are returned instead.</li>
+</ol>
+<h3>4.3 Response (W4)</h3>
+<ol>
+  <li>A proposal (<code>response_proposals</code>) holds targets, a blast-radius summary and payload. Agents may create proposals only through <code>propose_response</code>, on behalf of a member.</li>
+  <li>An approver dry-runs it: executors compute the exact calls and any blockers without sending anything.</li>
+  <li>A different approver approves (self-approval is refused unless <code>RESPONSE_ALLOW_SELF_APPROVAL=true</code>).</li>
+  <li>Execution happens only if <code>RESPONSE_DRY_RUN=false</code> <em>and</em> the executor flag for that action type is <code>on</code>. Calls are checked against <code>RESPONSE_ALLOWLIST</code>, capped by <code>RESPONSE_MAX_LIVE_TARGETS</code>, and recorded per call. Rollback is a new proposal through the same gates.</li>
+</ol>
+<h3>4.4 Chat (W6)</h3>
+<ol>
+  <li><code>POST /api/chat</code> (<code>server/chat/handler.ts</code>) authenticates, rate-limits per IP, loads the thread for that user and org, appends the user message and builds history from the database (the client never supplies history).</li>
+  <li><code>server/agents/runtime.ts</code> builds the system prompt from the agent's charter plus org memory and runs the TanStack AI tool loop (at most 6 iterations; 4 for delegated specialists) with only that agent's tools.</li>
+  <li>The model is Azure OpenAI via <code>server/agents/model.ts</code>, signed in with <code>DefaultAzureCredential</code> (managed identity). The response streams to the browser as Server-Sent Events and is persisted on completion; every turn and tool call writes an <code>agent_decisions</code> row.</li>
+</ol>
+
+<h2 id="s5">5. Backend components</h2>
+<table>
+  <caption>Backend inventory (paths under <code>apps/web/src/</code>)</caption>
+  <thead><tr><th>Component</th><th>Responsibility</th><th>Contracts and notes</th><th>Status</th></tr></thead>
+  <tbody>
+    <tr><td><code>server/env.ts</code></td><td>Typed configuration (zod); production refuses to start without <code>APP_URL</code>, <code>DATABASE_URL</code>, <code>BETTER_AUTH_SECRET</code>, <code>APP_ENCRYPTION_KEY</code></td><td>Empty values mean unset; invalid values fail fast with the variable name</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+    <tr><td><code>server/auth/*</code></td><td>Better Auth: email and password (off in Azure), Entra ID OIDC, SAML per org; org placement by tenant id; session lookup</td><td><code>getAppSession</code>, <code>requireApiSession</code>; Entra users without an email claim fall back to UPN, always unverified</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+    <tr><td><code>fns/*</code> + <code>fns/middleware.ts</code></td><td>Server functions consumed by the UI</td><td>Every private function uses <code>authed</code>; inputs validated with zod; role checks inside handlers</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+    <tr><td><code>server/ti/*</code></td><td>Feed ingest, cache, matching, digests, compare, optional Cloudflare Radar enrichment</td><td>Global TI tables (not org-scoped); org-scoped watches, hits, digests</td><td><span class="tag t-impl">IMPLEMENTED</span> (Radar flag-off)</td></tr>
+    <tr><td><code>server/hunting/*</code></td><td>Hunts, KQL proposals, safety filter, token broker, hunting client, schedules, report export</td><td>Request allowlist; row cap at most 1000; timeout at most 120 s; demo fixtures when no connector</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+    <tr><td><code>server/response/*</code></td><td>Proposals, RBAC, executors (Sentinel playbook, Logic App, Defender isolate), response connector</td><td>Dry-run default; two switches for live; per-call results; rollback as proposal</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+    <tr><td><code>server/agents/*</code></td><td>Charters, tool registry, memory, decision log, runtime, model adapter</td><td><code>EXECUTION_TOOL_NAMES</code> must stay empty (tested); Azure OpenAI or OpenAI-compatible</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+    <tr><td><code>server/chat/*</code></td><td>Threads, messages, feedback, SSE handler</td><td>Threads scoped by org and user; history assembled server-side</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+    <tr><td><code>server/notify/notify.ts</code></td><td>Teams and Slack webhooks</td><td>URL validation and encryption at rest; payloads exclude query results and secrets</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+    <tr><td><code>server/lib/*</code></td><td>AES-256-GCM secret encryption with key rotation, nonce-based CSP and security headers, CORS, rate limiter, JSON logger, redaction</td><td>Rate limits are stored in Postgres and shared by every replica with the default <code>RATE_LIMIT_STORAGE=database</code>; <code>memory</code> keeps per-replica counters</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+    <tr><td><code>server/ops/*</code></td><td>Bootstrap first org and admin, setup checklist, demo fixtures, migration status, control-panel overview queries, daily retention purge</td><td>Bootstrap refuses if an org exists or live execution is enabled</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+    <tr><td><code>server/cli/*</code></td><td>Worker, migrate, bootstrap, ingest, match, digest, expire, compact, fixtures, retention, rotate-secrets, <code>model:check</code></td><td>Run as one-off container jobs in Azure</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+    <tr><td>Observability</td><td>JSON logs with request id; Azure Monitor OpenTelemetry when <code>APPLICATIONINSIGHTS_CONNECTION_STRING</code> is set; alert rules in Bicep</td><td><code>apps/web/telemetry.mjs</code>, <code>infra/azure/modules/alerts.bicep</code></td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+  </tbody>
+</table>
+
+<h3>5.1 HTTP surface</h3>
+<table>
+  <thead><tr><th>Route</th><th>Auth</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><code>GET /healthz</code></td><td>None</td><td>Process up; no database</td></tr>
+    <tr><td><code>GET /readyz</code></td><td>None</td><td>503 until Postgres is reachable and migrations are current; reports the latest migration tag</td></tr>
+    <tr><td><code>/api/auth/*</code></td><td>Better Auth</td><td>Sign-in, callbacks, sign-out; Better Auth rate limits (sign-in 5 per minute)</td></tr>
+    <tr><td><code>GET /api/me</code></td><td>Session</td><td>401 when signed out</td></tr>
+    <tr><td><code>POST /api/chat</code></td><td>Session</td><td>401 when signed out; per-IP limit <code>RATE_LIMIT_CHAT_PER_MIN</code> (default 20); 20,000-character cap; SSE response</td></tr>
+    <tr><td>Server functions</td><td>Session (<code>authed</code>)</td><td>All application data; role checks per function</td></tr>
+  </tbody>
+</table>
+
+<h2 id="s6">6. Data model and storage</h2>
+<p>PostgreSQL holds all state (34 tables; schema in <code>apps/web/src/server/db/schema/</code>, migrations in <code>apps/web/drizzle/</code>, latest <code>0004_gaps_retention_sessions_ratelimits</code>). Tests run the real migrations against in-process PGlite.</p>
+<table>
+  <thead><tr><th>Group</th><th>Tables</th><th>Scope</th><th>Sensitive fields and handling</th></tr></thead>
+  <tbody>
+    <tr><td>Identity</td><td><code>user</code>, <code>session</code>, <code>account</code>, <code>verification</code>, <code>sso_provider</code></td><td>Global (Better Auth)</td><td>Passwords hashed by Better Auth; OAuth tokens encrypted (<code>encryptOAuthTokens: true</code>)</td></tr>
+    <tr><td>Tenancy</td><td><code>orgs</code>, <code>org_memberships</code>, <code>sso_org_bindings</code></td><td>Org</td><td>Entra tenant id binds an org; role per membership</td></tr>
+    <tr><td>Audit</td><td><code>audit_events</code>, <code>agent_decisions</code></td><td>Org</td><td>Inputs and outputs redacted before storage</td></tr>
+    <tr><td>Threat intel</td><td><code>ti_fetch_cache</code>, <code>pwn_incidents</code>, <code>pwn_changes</code>, <code>pwn_tags</code>, <code>cve_records</code></td><td><strong>Global</strong></td><td>Public data; untrusted content</td></tr>
+    <tr><td>Watching</td><td><code>watch_entries</code>, <code>watch_hits</code>, <code>digests</code></td><td>Org</td><td>None secret</td></tr>
+    <tr><td>Hunting</td><td><code>hunt_cases</code>, <code>hunt_evidence</code>, <code>kql_proposals</code>, <code>hunt_schedules</code>, <code>org_connectors</code></td><td>Org</td><td>Result samples (at most 20 rows) may hold tenant data; connector client secret AES-256-GCM encrypted or an <code>env:</code> reference</td></tr>
+    <tr><td>Response</td><td><code>response_proposals</code>, <code>response_events</code>, <code>org_response_connectors</code></td><td>Org</td><td>Response secret encrypted; playbook allowlist</td></tr>
+    <tr><td>Agents and chat</td><td><code>agent_memories</code>, <code>agent_memory_entries</code>, <code>chat_threads</code>, <code>chat_messages</code>, <code>message_feedback</code></td><td>Org (threads also by user)</td><td>Memory entries redacted; chat content may contain tenant data</td></tr>
+    <tr><td>Notify</td><td><code>org_notification_channels</code></td><td>Org</td><td>Webhook URL encrypted; only the host is shown</td></tr>
+  </tbody>
+</table>
+<div class="note"><p><span class="tag t-impl">IMPLEMENTED</span> A daily retention purge (<code>server/ops/retention.ts</code>) removes chat older than <code>RETENTION_CHAT_DAYS</code> (365), agent decisions older than <code>RETENTION_DECISIONS_DAYS</code> (365) and audit events older than <code>RETENTION_AUDIT_DAYS</code> (730), and strips stored result rows older than <code>RETENTION_SAMPLES_DAYS</code> (180) while keeping row counts. A value of 0 keeps that data forever. Tool outputs in the decision log store result rows as a count only; free text written by the model may still quote values and follows the decisions period. See <a href="#s18">section 18</a>.</p></div>
+
+<h2 id="s7">7. Frontend: views and shared UI</h2>
+<p>React 19 with TanStack Start (SSR) and TanStack Router. View state that matters to an investigation lives in the URL, so reload, back and forward, and shared links restore the same view. Routes are in <code>apps/web/src/routes/</code>.</p>
+<table>
+  <thead><tr><th>View</th><th>Route file</th><th>Purpose</th><th>URL state</th></tr></thead>
+  <tbody>
+    <tr><td>Sign-in, auth error</td><td><code>sign-in.tsx</code>, <code>auth-error.tsx</code></td><td>Entra or SAML sign-in; readable errors without provider payloads</td><td><code>returnTo</code> (same-origin paths only)</td></tr>
+    <tr><td>App shell</td><td><code>app.tsx</code></td><td>Grouped navigation, org and role, theme, skip link, focus on navigation</td><td>none</td></tr>
+    <tr><td>Control panel</td><td><code>app.index.tsx</code></td><td>Feed status, safety state, decisions waiting, emerging threats, watch hits by day, newly exploited flaws, hunts, agent activity</td><td>none</td></tr>
+    <tr><td>Watches</td><td><code>app.watches.tsx</code></td><td>Watch list with per-watch counts; hits table</td><td><code>q</code>, <code>entry</code>, <code>day</code>, <code>source</code></td></tr>
+    <tr><td>Digests</td><td><code>app.digests.tsx</code></td><td>One section per local day; link to that day's hits</td><td>none</td></tr>
+    <tr><td>Hunts list</td><td><code>app.hunts.tsx</code></td><td>Dense table, text and status filters, new hunt</td><td><code>q</code>, <code>status</code>, <code>fromHit</code>, <code>title</code></td></tr>
+    <tr><td>Hunt workspace</td><td><code>app.hunts.$huntId.tsx</code></td><td>Context bar, search list, query review, result grid, row inspector, entities, timeline, notes, repeat searches</td><td><code>q</code>, <code>row</code>, <code>f</code>, <code>s</code>, <code>tl</code>, <code>ev</code></td></tr>
+    <tr><td>Approvals and detail</td><td><code>app.approvals*.tsx</code></td><td>Waiting / decided inbox; targets, blast radius, dry-run calls, decision, timeline</td><td><code>view</code></td></tr>
+    <tr><td>Compare</td><td><code>app.intel.$key.tsx</code></td><td>Field-by-source grid with labelled dates</td><td>key in path</td></tr>
+    <tr><td>Chat</td><td><code>app.chat*.tsx</code></td><td>Conversation list by calendar day, streamed markdown, tool steps, stop, copy, rating</td><td>thread id in path</td></tr>
+    <tr><td>Agents and log</td><td><code>app.agents.tsx</code></td><td>Agent memory; server-searched, paged decision log</td><td><code>agent</code>, <code>actor</code>, <code>q</code>, <code>before</code></td></tr>
+    <tr><td>Settings</td><td><code>app.settings.tsx</code></td><td>People and roles, hunting and response connectors, notification channels, audit log</td><td>anchors</td></tr>
+  </tbody>
+</table>
+<h3>7.1 Shared UI modules</h3>
+<table>
+  <thead><tr><th>Module</th><th>Exports</th></tr></thead>
+  <tbody>
+    <tr><td><code>components/ui.tsx</code></td><td><code>Mark</code>, <code>Wordmark</code>, <code>Breadcrumbs</code>, <code>PageHead</code>, <code>SectionHead</code>, <code>Notice</code>, <code>Term</code> (glossary), <code>TableWrap</code>, <code>Count</code></td></tr>
+    <tr><td><code>components/signals.tsx</code></td><td><code>SeverityTag</code>, <code>Freshness</code>, <code>ModeTag</code> (demo / live / dry run), <code>StatusTag</code>, <code>normaliseSeverity</code></td></tr>
+    <tr><td><code>components/results.tsx</code></td><td><code>ResultGrid</code>, <code>Inspector</code>, <code>FilterChips</code>; filter and sort URL encoding; <code>kqlLiteral</code>, <code>kqlIdentifier</code>; <code>summariseEntities</code></td></tr>
+    <tr><td><code>components/ThemeToggle.tsx</code></td><td>System / light / dark select; pre-paint script in <code>routes/__root.tsx</code></td></tr>
+    <tr><td><code>components/format.ts</code></td><td>Display time zone, absolute and relative time</td></tr>
+  </tbody>
+</table>
+
+<h2 id="s8">8. Component and state catalogue</h2>
+<p>For each interactive component: what it does, keyboard support, accessibility, security notes and the states it must render. "Permission" means the control is absent or disabled for the role <em>and</em> the server refuses the action.</p>
+
+<h3>8.1 Result grid (<code>ResultGrid</code>)</h3>
+<ul>
+  <li><strong>Interaction:</strong> sortable columns (sort held in the URL and shared with the inspector); wrap toggle; click or Enter opens a row.</li>
+  <li><strong>Keyboard:</strong> roving tab index; <kbd>j</kbd>/<kbd>k</kbd> or arrows move; Enter or Space opens; Escape closes the inspector.</li>
+  <li><strong>Accessibility:</strong> native table, <code>aria-sort</code>, selected row marked with <code>aria-selected</code> and an inset bar (not colour alone); key hints visible.</li>
+  <li><strong>Security:</strong> cells rendered as text; long values truncated with the full value in the inspector; nothing interpreted as HTML.</li>
+  <li><strong>States:</strong> no sample stored; zero rows returned (stated as a result); filtered to nothing (with clear action); sample smaller than row count (notice: filters apply to the sample only); demo data tag on the search.</li>
+</ul>
+<h3>8.2 Row inspector (<code>Inspector</code>)</h3>
+<ul>
+  <li><strong>Interaction:</strong> Fields and Raw JSON views; hide empty fields; per-field Show only, Filter out, Copy, Add to new search; previous and next follow the visible order.</li>
+  <li><strong>Keyboard:</strong> <kbd>j</kbd>/<kbd>k</kbd> step rows; Escape closes and returns focus to the row being shown.</li>
+  <li><strong>Accessibility:</strong> side panel on wide screens; at 1180 px and below it is a <code>role="dialog"</code> with <code>aria-modal</code>, focus moves to its heading, Tab is contained and the rest of the page is <code>inert</code>.</li>
+  <li><strong>Security:</strong> "Add to new search" drafts <code>| where</code> with <code>kqlIdentifier</code> (bracket-quoted names) and <code>kqlLiteral</code> (escapes quotes, backslashes, line breaks and control characters). The draft is a proposal: it still needs approval and passes <code>assertSafeKql</code>.</li>
+  <li><strong>States:</strong> clipboard unavailable (message); empty values shown as "empty", never blank or zero.</li>
+</ul>
+<h3>8.3 Query review panel</h3>
+<ul>
+  <li><strong>Interaction:</strong> editable KQL with "edited from the proposal" indicator and restore; Approve and run, Reject; expiry shown.</li>
+  <li><strong>Security:</strong> what is approved is exactly what runs and is stored; server enforces expiry, single claim, safety filter and caps.</li>
+  <li><strong>States:</strong> needs review, running, ran, failed (error shown), rejected, expired (with "edit as new search"), demo mode notice.</li>
+</ul>
+<h3>8.4 Evidence timeline and entities</h3>
+<ul>
+  <li>Timeline: filter chips (All, Searches, Results, Notes, Schedules) in the URL; entries link to the producing search or to a repeat run's own sample; actors labelled agent, person or system.</li>
+  <li>Entities: devices, accounts, files and network values counted within the sample only (stated); selecting one adds a filter.</li>
+  <li>States: nothing yet; no entity columns; sample without column metadata (columns inferred).</li>
+</ul>
+<h3>8.5 Approval decision panel</h3>
+<ul>
+  <li><strong>Permission:</strong> analysts see a read-only notice; approvers see Dry run, Approve, Reject and, when approved, Execute. Requesters see a notice that another approver must decide. The server enforces all of these.</li>
+  <li><strong>States:</strong> pending, approved (executor off, dry-run, live), executed, failed or partial, rejected, expired; dry run with blockers ("would be refused"); per-call results matched by position; rollback proposed.</li>
+</ul>
+<h3>8.6 Chat</h3>
+<ul>
+  <li><strong>Interaction:</strong> Enter sends, Shift+Enter new line, Stop reply, Copy, rating; agent selector; suggested questions; draft survives reloads.</li>
+  <li><strong>Accessibility:</strong> transcript is <code>role="log"</code>; one polite status per reply ("Intel replied"), not per token; tool steps are a labelled list with pending, done and failed states.</li>
+  <li><strong>Security:</strong> markdown rendered with <code>react-markdown</code> and <code>remark-gfm</code> without raw HTML; external links open in a new tab with <code>noopener noreferrer</code>; no model credentials reach the browser.</li>
+  <li><strong>States:</strong> model not configured (read-only, setup notice), thinking, streaming, stopped, model error with retry, empty conversation.</li>
+</ul>
+<h3>8.7 Control panel and feed status</h3>
+<ul>
+  <li>Feed state per required endpoint: live, stale (older than 3 hours, written out), not fetched; the oldest endpoint decides.</li>
+  <li>Counts come from separate count queries; lists are capped previews. Waiting items exclude expired and already-approved items.</li>
+  <li>Hits-by-day chart: units, window, time zone and zero days are stated; consecutive calendar days are generated without DST errors.</li>
+</ul>
+<h3>8.8 Forms (settings, watches, notes, new hunt)</h3>
+<ul>
+  <li>Visible labels; hints and errors linked with <code>aria-describedby</code>; errors announced (<code>role="alert"</code>); success announced politely; secrets in password inputs with <code>autocomplete="new-password"</code>, never re-displayed.</li>
+  <li>Removing a watch, deleting a conversation and deleting a notification channel use an inline confirm step; focus moves to Confirm and returns to Delete on Cancel.</li>
+</ul>
+<h3>8.9 State matrix</h3>
+<table>
+  <thead><tr><th>State</th><th>Rule</th><th>Where</th></tr></thead>
+  <tbody>
+    <tr><td>Loading</td><td>Route pending component with a plain sentence</td><td>Every data route</td></tr>
+    <tr><td>Error</td><td><code>Notice</code> with tone "error" and text label; retry where possible</td><td>Every data route, forms</td></tr>
+    <tr><td>Not found</td><td>Explains possible causes, including another org</td><td>Hunt, approval, conversation, app root</td></tr>
+    <tr><td>Empty</td><td>Says what will appear and how to get there</td><td>All lists</td></tr>
+    <tr><td>Stale</td><td>"stale" written next to the age</td><td>Feeds, freshness tags</td></tr>
+    <tr><td>Missing value</td><td>"empty" or "not reported"; never zero</td><td>Grid, inspector, compare</td></tr>
+    <tr><td>Unknown severity</td><td>Dashed square glyph and "Unknown severity"; never treated as low</td><td>Lists, compare</td></tr>
+    <tr><td>Demo data</td><td>Tag on the result and a notice on the hunt; never shown as live</td><td>Hunts, hits, digests, approvals</td></tr>
+    <tr><td>Permission</td><td>Explains who can act; server refuses regardless</td><td>Approvals, schedules, settings, export</td></tr>
+    <tr><td>Integration unavailable</td><td>Connector not configured: demo mode notice; model not configured: chat read-only</td><td>Hunts, chat</td></tr>
+  </tbody>
+</table>
+<h3>8.10 Performance and scale</h3>
+<ul>
+  <li>Result samples are small (at most 20 rows); filtering and sorting are client-side over the sample.</li>
+  <li>Lists are capped server-side (hunts 200, hits 100, or 500 when scoped to a watch or day; decision log paged in 100s).</li>
+  <li><span class="tag t-impl">IMPLEMENTED</span> With the default <code>RATE_LIMIT_STORAGE=database</code>, rate limits are stored in Postgres and shared by every web replica; with <code>memory</code> each replica keeps its own counters. Repeat-search claims are atomic, so extra workers are safe.</li>
+  <li><span class="tag t-gap">GAP</span> No load test has been run. No pagination on the hunts list beyond 200.</li>
+</ul>
+
+<h2 id="s9">9. Design tokens and accessibility</h2>
+<p>Tokens live in <code>apps/web/src/styles/tokens.css</code> as CSS custom properties with light and dark themes; components reference semantic roles only. The pattern research and decisions are in <code>design.md</code>.</p>
+<table>
+  <thead><tr><th>Token group</th><th>Examples</th><th>Rule</th></tr></thead>
+  <tbody>
+    <tr><td>Surfaces</td><td><code>--bg</code>, <code>--surface-1..3</code>, <code>--surface-selected</code>, <code>--surface-code</code></td><td>Borders separate; shadows only for overlays</td></tr>
+    <tr><td>Text</td><td><code>--text</code>, <code>--text-2</code>, <code>--text-muted</code>, <code>--text-code</code></td><td>All text pairs at least 4.5:1 in both themes (scripted check)</td></tr>
+    <tr><td>Accent and focus</td><td><code>--accent</code>, <code>--accent-solid</code>, <code>--focus</code></td><td>One accent; focus 2 px, never animated</td></tr>
+    <tr><td>Controls</td><td><code>--border-control</code></td><td>Input and button boundaries at least 3:1 (WCAG 1.4.11)</td></tr>
+    <tr><td>Severity</td><td><code>--sev-critical..unknown</code></td><td>Always with a shape and a word</td></tr>
+    <tr><td>Status</td><td><code>--status-ok/attention/danger/info/neutral</code> (+ <code>-bg</code>)</td><td>Outlined tag with text</td></tr>
+    <tr><td>Provenance</td><td><code>--mode-demo</code></td><td>Demo data is visibly distinct</td></tr>
+    <tr><td>Type and space</td><td><code>--text-body</code> 14 px, tables 13 px; 4-point spacing; radii 4/6/8 px</td><td>Root size stays at the browser default</td></tr>
+  </tbody>
+</table>
+<h3>9.1 Accessibility commitments</h3>
+<ul>
+  <li><span class="tag t-impl">IMPLEMENTED</span> Automated axe scan of 14 views in both themes, tags <code>wcag2a</code>, <code>wcag2aa</code>, <code>wcag21a</code>, <code>wcag21aa</code>, <code>wcag22aa</code>: 0 violations (<code>e2e/tests/a11y.spec.ts</code>).</li>
+  <li><span class="tag t-impl">IMPLEMENTED</span> Skip link; focus to the page heading after navigation; label-in-name on all controls; 24 px minimum targets; links in text underlined; glossary terms are buttons with dismissible, persistent definitions (WCAG 1.4.13); reduced motion respected; no horizontal scroll at 390 px.</li>
+  <li><span class="tag t-gap">GAP</span> No manual screen-reader test (NVDA, JAWS, VoiceOver) has been recorded. Automated checks find only part of the issues.</li>
+</ul>
+
+<h2 id="s10">10. Roles, tenants and permissions</h2>
+<h3>10.1 Permission matrix</h3>
+<p>Every row is enforced on the server. "UI" notes how the interface presents it.</p>
+<table>
+  <thead><tr><th>Action</th><th>Analyst</th><th>Approver</th><th>Owner</th><th>Agent</th><th>Enforced in</th></tr></thead>
+  <tbody>
+    <tr><td>Read org data (hunts, hits, approvals, log)</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Via tools, org-scoped</td><td><code>authed</code>; every query filters <code>org_id</code></td></tr>
+    <tr><td>Add or remove watches; notes; new hunt</td><td>Yes</td><td>Yes</td><td>Yes</td><td>No</td><td><code>fns/watches.ts</code>, <code>fns/hunts.ts</code></td></tr>
+    <tr><td>Propose KQL</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes (<code>propose_kql</code>)</td><td><code>proposeKql</code></td></tr>
+    <tr><td>Approve and run KQL</td><td>Yes</td><td>Yes</td><td>Yes</td><td><strong>No</strong></td><td><code>approveAndRunKql</code> requires a human user id; <code>KQL_APPROVAL_POLICY</code> may restrict it (10.2)</td></tr>
+    <tr><td>Schedule, pause, re-approve repeat search</td><td>No</td><td>Yes</td><td>Yes</td><td>No</td><td><code>createSchedule</code> (tested)</td></tr>
+    <tr><td>Propose response action</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Lead, Responder</td><td><code>createProposal</code>, <code>AGENT_TOOLS</code></td></tr>
+    <tr><td>Dry run, approve, reject, execute</td><td>No</td><td>Yes (not own request)</td><td>Yes (not own request)</td><td><strong>No</strong></td><td><code>assertCanDecide</code>; lint rule blocks agent imports</td></tr>
+    <tr><td>Compact agent memory</td><td>No</td><td>Yes</td><td>Yes</td><td>No</td><td><code>fns/agents.ts</code></td></tr>
+    <tr><td>Change roles; connectors; channels; audit log; audit bundle</td><td>No</td><td>No</td><td>Yes</td><td>No</td><td><code>fns/settings.ts</code>, <code>fns/hunts.ts</code>, <code>fns/notify.ts</code>, <code>fns/approvals.ts</code></td></tr>
+    <tr><td>Load demo data</td><td>No</td><td>No</td><td>Yes, only if <code>ALLOW_DEMO_FIXTURES=true</code> in production</td><td>No</td><td><code>fns/setup.ts</code></td></tr>
+  </tbody>
+</table>
+<div class="note"><p><span class="tag t-impl">IMPLEMENTED</span> <strong>KQL approval policy</strong> (<code>KQL_APPROVAL_POLICY</code>, rules in <code>apps/web/src/shared/kql-approval.ts</code>, shared by the server check and the UI notice). <code>member</code> (default, decided 08-11-2026): any member may approve and run a read-only search. <code>approver</code>: owners and approvers only. <code>second-person</code>: an approver other than the person who asked for the search (the proposer, or the chat user whose agent proposed it, stored as <code>requested_by</code>), and the query cannot be edited at approval; an edit becomes a new proposal.</p></div>
+<h3>10.2 Tenant isolation</h3>
+<ul>
+  <li>Each org-owned table carries <code>org_id</code>; server functions take the org from the session, never from the request body.</li>
+  <li>Cross-references are re-checked in the same org (for example, a hunt's origin watch hit resolves only within the org; tested in <code>test/workspace.test.ts</code>).</li>
+  <li>Entra sign-in maps the token's tenant id to exactly one org; unknown tenants are refused before a user row is created and audited (<code>sso_rejected_unknown_tenant</code>).</li>
+  <li>Connector secrets use per-org <code>env:</code> reference prefixes; a reference outside the org's prefix is refused.</li>
+  <li><span class="tag t-assume">ASSUMPTION</span> Isolation is enforced in application code. PostgreSQL row-level security is not used; a missing filter in new code would not be caught by the database.</li>
+</ul>
+
+<h2 id="s11">11. Threat model</h2>
+<p>STRIDE-style, per boundary. Likelihood and impact are qualitative for this deployment model (single customer per installation, self-hosted).</p>
+<table>
+  <thead><tr><th>ID</th><th>Threat</th><th>Boundary</th><th>Mitigations in code</th><th>Residual risk</th></tr></thead>
+  <tbody>
+    <tr><td>T1</td><td>Session theft or fixation</td><td>TB1</td><td>Secure, HTTP-only cookies in production; HSTS; Better Auth sessions; CSRF protection via Better Auth origin checks and <code>trustedOrigins</code></td><td>Idle timeout 60 minutes and absolute cap 12 hours (configurable)</td></tr>
+    <tr><td>T2</td><td>Cross-tenant data access (IDOR)</td><td>TB6</td><td>Org from session; every query filters <code>org_id</code>; tests for cross-org access</td><td>No database-enforced isolation (see 10.2)</td></tr>
+    <tr><td>T3</td><td>Privilege escalation to approve or execute</td><td>TB1</td><td>Role checks on the server; self-approval off; execution needs two switches; agents have no execute path (lint and tests)</td><td>Owner account compromise grants full control; depends on IdP MFA</td></tr>
+    <tr><td>T4</td><td>KQL abuse (exfiltration, management commands, cost)</td><td>TB3</td><td>Human approval; <code>assertSafeKql</code> blocklist; read-only app permissions; row and time caps; request allowlist</td><td>Approved KQL can read any table the hunting app can read (documented in <code>docs/hunting.md</code>)</td></tr>
+    <tr><td>T5</td><td>SSRF via configurable URLs</td><td>TB2, TB5</td><td>Feed URLs from server config only; webhook host allowlist, HTTPS, default port, no redirects; hunting and response clients use fixed host and path allowlists</td><td>Feed base URLs are trusted configuration</td></tr>
+    <tr><td>T6</td><td>XSS from feed content, results or model output</td><td>TB2, TB4</td><td>React escaping; markdown without raw HTML; no <code>dangerouslySetInnerHTML</code> on untrusted data; CSP with <code>default-src 'self'</code>, <code>object-src 'none'</code>, <code>frame-ancestors 'none'</code></td><td>Production CSP uses a per-request script nonce; <code>style-src</code> still allows inline styles</td></tr>
+    <tr><td>T7</td><td>Prompt injection through feed text, results or chat</td><td>TB4</td><td>Agents can only read and propose; every action needs a person; tool allowlists; tool arguments validated by zod; decisions logged</td><td>A model can still produce misleading text or proposals; reviewers must read them</td></tr>
+    <tr><td>T8</td><td>Secret disclosure in logs, memory or UI</td><td>All</td><td>Redaction of tokens, JWTs, keys and secret-named fields in logs, audit, decisions and memory; secrets never returned to the browser; Key Vault references in Azure</td><td>Pattern-based redaction can miss novel formats</td></tr>
+    <tr><td>T9</td><td>Supply-chain compromise</td><td>Build</td><td>Pinned actions by SHA; frozen lockfile; SBOM (SPDX); Trivy gate on fixable critical CVEs; non-root container</td><td>Deploys run images by digest; a promoted release is verified (<code>gh attestation verify</code>, source ref) before deploy. Images built inside the same deploy run are trusted from that run</td></tr>
+    <tr><td>T10</td><td>Denial of service</td><td>TB1, TB4</td><td>Per-IP chat limit; Better Auth limits; message size cap; agent timeout; model iterations capped</td><td>Limits are shared through Postgres; the chat limiter fails open if the database errors; no WAF</td></tr>
+    <tr><td>T11</td><td>Unauthorised live containment</td><td>TB3</td><td>Dry-run default; executor flags; target cap; allowlisted playbooks; per-call audit; rollback as proposal</td><td>Requires operational change control to stay effective</td></tr>
+    <tr><td>T12</td><td>Account takeover via email claim</td><td>TB1</td><td>Entra UPN fallback always unverified; Microsoft provider not trusted for implicit linking; org placement by tenant id</td><td>Local accounts can exist if email sign-up is enabled (off in Azure)</td></tr>
+  </tbody>
+</table>
+
+<h2 id="s12">12. Security controls in depth</h2>
+<h3>12.1 Authentication, session, SSO and MFA</h3>
+<ul>
+  <li><span class="tag t-impl">IMPLEMENTED</span> Entra ID OIDC (<code>openid profile email</code> only), single tenant recommended; SAML per org (<code>@better-auth/sso</code>); email and password disabled in Azure (<code>AUTH_EMAIL_PASSWORD=false</code>).</li>
+  <li><span class="tag t-assume">ASSUMPTION</span> MFA and phishing-resistant authentication are enforced by the identity provider (Conditional Access). The application does not implement its own second factor. Align the IdP policy with NIST SP 800-63B-4 at AAL2 or above, preferring phishing-resistant methods for owners and approvers.</li>
+  <li><span class="tag t-impl">IMPLEMENTED</span> Sessions: idle timeout <code>SESSION_IDLE_MINUTES</code> (60) slides with activity; absolute cap <code>SESSION_MAX_AGE_HOURS</code> (12) since sign-in is enforced on every app request and in front of the auth endpoints; over-age sessions are revoked and audited (<code>session_expired_absolute</code>).</li>
+  <li><span class="tag t-impl">IMPLEMENTED</span> Bootstrap: the first admin email is bound to the org; the first matching sign-in becomes owner.</li>
+</ul>
+<h3>12.2 Least privilege</h3>
+<ul>
+  <li>Three separate Entra apps: SSO (sign-in only), hunting (<code>ThreatHunting.Read.All</code>, Log Analytics Reader, Sentinel Reader), response (<code>Machine.Isolate</code>, Sentinel Responder, Logic App Contributor on allowlisted playbooks). See <code>docs/runbooks/entra-setup.md</code>.</li>
+  <li>Deployment identity: GitHub OIDC federation to a Contributor role on the resource group only; no long-lived deploy secret.</li>
+  <li>Runtime identity: user-assigned managed identity with Key Vault Secrets User and Cognitive Services OpenAI User only.</li>
+  <li>Azure OpenAI resource with local (key) authentication disabled in the lab.</li>
+</ul>
+<h3>12.3 Secrets and key management</h3>
+<ul>
+  <li>Azure Key Vault holds <code>database-url</code>, <code>better-auth-secret</code>, <code>app-encryption-key</code>, <code>entra-client-secret</code>; Container Apps resolve them with the managed identity.</li>
+  <li>Connector and webhook secrets are encrypted with AES-256-GCM under <code>APP_ENCRYPTION_KEY</code> (<code>server/lib/crypto.ts</code>, format <code>v1.iv.tag.ciphertext</code>).</li>
+  <li><span class="tag t-impl">IMPLEMENTED</span> Key rotation: decryption also accepts <code>APP_ENCRYPTION_KEY_PREVIOUS</code>; <code>pnpm rotate-secrets</code> re-encrypts every stored secret under the current key in one transaction and reports counts only (<code>docs/runbooks/key-rotation.md</code>).</li>
+</ul>
+<h3>12.4 Transport and storage encryption</h3>
+<ul>
+  <li>Ingress is HTTPS only; HSTS one year with subdomains. Database connections use <code>sslmode=require</code>.</li>
+  <li><span class="tag t-assume">ASSUMPTION</span> Storage encryption at rest is provided by the platform (Azure Database for PostgreSQL and Key Vault defaults). No customer-managed keys are configured.</li>
+</ul>
+<h3>12.5 Input, query and injection protection</h3>
+<ul>
+  <li>All server-function inputs are validated with zod; SQL is built with Drizzle (parameterised); <code>ILIKE</code> search terms escape <code>%</code>, <code>_</code> and backslash.</li>
+  <li>KQL: human approval, <code>assertSafeKql</code> blocklist (external data, HTTP, Python and R plugins, SQL request, management commands, cross-cluster), length limit 10,000.</li>
+  <li>Generated KQL drafts escape literals and quote identifiers.</li>
+</ul>
+<h3>12.6 Untrusted intelligence ingestion</h3>
+<ul>
+  <li>Fixed URLs, timeouts, bounded retries with back-off on 429 and 503, identifiable User-Agent, cache TTL at least one hour.</li>
+  <li>Schema-validated; invalid items skipped and counted; content stored and rendered as text; links open with <code>noopener noreferrer</code>.</li>
+  <li><span class="tag t-impl">IMPLEMENTED</span> Feed responses larger than <code>TI_MAX_RESPONSE_BYTES</code> (25 MB) are refused, by Content-Length and while streaming, and nothing is cached.</li>
+</ul>
+<h3>12.7 Safe rendering of links, files and graphs</h3>
+<ul>
+  <li>No graph rendering exists. Exports (hunt report Markdown, audit bundle JSON) are generated server-side and downloaded as files; the report redacts secrets and caps size (<code>REPORT_MAX_CHARS</code>).</li>
+</ul>
+<h3>12.8 Audit, redaction, privacy and retention</h3>
+<ul>
+  <li><code>audit_events</code>: sign-ins, rejections, role changes, connector and channel changes, response events, bootstrap, exports. <code>agent_decisions</code>: every agent turn and tool call, redacted.</li>
+  <li>Logs are JSON with request ids; authorisation headers, cookies, tokens and secrets are redacted.</li>
+  <li>Bootstrap audit stores no full email; people are shown by email only to members of the same org.</li>
+  <li><span class="tag t-impl">IMPLEMENTED</span> Retention periods (section 6). <span class="tag t-gap">GAP</span> Deleting one person's data on request is a manual database task; there is no self-service export or erasure.</li>
+</ul>
+<h3>12.9 Supply chain and CI security</h3>
+<ul>
+  <li>GitHub-hosted runners; actions pinned to commit SHAs; <code>pnpm install --frozen-lockfile</code>; lint, typecheck, tests, build and migration drift check on every PR.</li>
+  <li>Image job: build, SBOM (Anchore, SPDX), Trivy gate failing on fixable critical CVEs; image pushed to GHCR by immutable SHA tag.</li>
+  <li>Container runs as the <code>node</code> user with a health check.</li>
+  <li><span class="tag t-impl">IMPLEMENTED</span> Dependabot (Actions, npm, Docker, weekly); CodeQL for TypeScript and workflow files on every PR, push and weekly; signed build provenance and SBOM attestations bound to the pushed digest; release tags are published only after both attestations succeed (<code>docs/releasing.md</code>).</li>
+</ul>
+
+<h2 id="s13">13. AI agent safety</h2>
+<table>
+  <thead><tr><th>Control</th><th>Implementation</th><th>Reference</th></tr></thead>
+  <tbody>
+    <tr><td>No excessive agency</td><td>Tools can read and propose only; <code>EXECUTION_TOOL_NAMES</code> empty and tested; lint blocks agents from importing executors or decision functions</td><td>OWASP LLM06 Excessive Agency</td></tr>
+    <tr><td>Per-agent allowlist</td><td><code>AGENT_TOOLS</code> in <code>server/agents/tools.ts</code></td><td>OWASP LLM06</td></tr>
+    <tr><td>Authorisation outside the model</td><td>Every tool re-checks org from server context; approvals by people only</td><td>OWASP LLM06</td></tr>
+    <tr><td>Prompt injection tolerance</td><td>Feed text, results and chat cannot trigger execution; outputs rendered as escaped markdown</td><td>OWASP LLM01, LLM05</td></tr>
+    <tr><td>Sensitive data</td><td>Memory and decisions redacted; model credentials never reach the browser</td><td>OWASP LLM02</td></tr>
+    <tr><td>Unbounded consumption</td><td>Iteration caps, timeout, per-IP limit, message size cap</td><td>OWASP LLM10</td></tr>
+    <tr><td>Model access</td><td>Azure OpenAI via managed identity; deployment chosen server-side</td><td>ADR 0004</td></tr>
+  </tbody>
+</table>
+
+<h2 id="s14">14. Configuration and dependencies</h2>
+<h3>14.1 Key configuration</h3>
+<table>
+  <thead><tr><th>Variable</th><th>Default</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td><code>APP_URL</code>, <code>DATABASE_URL</code>, <code>BETTER_AUTH_SECRET</code>, <code>APP_ENCRYPTION_KEY</code></td><td>none in production</td><td>Required; start-up fails without them</td></tr>
+    <tr><td><code>AUTH_EMAIL_PASSWORD</code></td><td><code>true</code> locally, <code>false</code> in Bicep</td><td>Local accounts</td></tr>
+    <tr><td><code>ENTRA_CLIENT_ID</code>, <code>ENTRA_TENANT_ID</code>, <code>ENTRA_CLIENT_SECRET</code></td><td>unset</td><td>Enables Entra sign-in</td></tr>
+    <tr><td><code>HUNTING_DEMO_MODE</code>, <code>HUNTING_MAX_ROWS</code>, <code>HUNTING_TIMEOUT_MS</code></td><td><code>true</code>, 100, 60 s</td><td>Demo fixtures when no connector; caps (hard limits 1000 rows, 120 s)</td></tr>
+    <tr><td><code>RESPONSE_DRY_RUN</code></td><td>unset = on</td><td>Live execution needs an explicit <code>false</code></td></tr>
+    <tr><td><code>RESPONSE_EXECUTOR_SENTINEL|LOGICAPP|GRAPH</code></td><td><code>off</code></td><td><code>off</code>, <code>dry-run</code> or <code>on</code></td></tr>
+    <tr><td><code>RESPONSE_ALLOW_SELF_APPROVAL</code>, <code>RESPONSE_MAX_LIVE_TARGETS</code>, <code>RESPONSE_PROPOSAL_TTL_HOURS</code></td><td><code>false</code>, 10, 24</td><td>Decision rules and caps</td></tr>
+    <tr><td><code>MODEL_PROVIDER</code>, <code>AZURE_OPENAI_ENDPOINT</code>, <code>AZURE_OPENAI_DEPLOYMENT</code>, <code>AZURE_CLIENT_ID</code></td><td><code>off</code></td><td>Chat model; keyless via managed identity</td></tr>
+    <tr><td><code>AGENT_TIMEOUT_MS</code>, <code>RATE_LIMIT_CHAT_PER_MIN</code>, <code>RATE_LIMIT_STORAGE</code></td><td>90 s, 20, <code>database</code></td><td>Chat limits; <code>database</code> shares counters across replicas, <code>memory</code> keeps them per replica</td></tr>
+    <tr><td><code>KQL_APPROVAL_POLICY</code></td><td><code>member</code></td><td><code>member</code>, <code>approver</code> or <code>second-person</code></td></tr>
+    <tr><td><code>SESSION_IDLE_MINUTES</code>, <code>SESSION_MAX_AGE_HOURS</code></td><td>60, 12</td><td>Idle timeout and absolute session cap</td></tr>
+    <tr><td><code>RETENTION_CHAT_DAYS</code>, <code>RETENTION_DECISIONS_DAYS</code>, <code>RETENTION_SAMPLES_DAYS</code>, <code>RETENTION_AUDIT_DAYS</code></td><td>365, 365, 180, 730</td><td>Daily purge; 0 keeps forever</td></tr>
+    <tr><td><code>TI_MAX_RESPONSE_BYTES</code></td><td>25 MB</td><td>Feed download cap</td></tr>
+    <tr><td><code>APP_ENCRYPTION_KEY_PREVIOUS</code></td><td>unset</td><td>Old keys accepted for decryption during rotation</td></tr>
+    <tr><td><code>APP_TIMEZONE</code></td><td><code>Australia/Sydney</code></td><td>Display and digest day</td></tr>
+    <tr><td><code>ALLOW_DEMO_FIXTURES</code></td><td>unset</td><td>Allows demo data in production (labs only)</td></tr>
+  </tbody>
+</table>
+<p>Full list: <code>.env.example</code> and <code>docs/configuration.md</code>.</p>
+<h3>14.2 Version assumptions</h3>
+<table>
+  <thead><tr><th>Dependency</th><th>Version at commit</th></tr></thead>
+  <tbody>
+    <tr><td>Node.js</td><td>24 (<code>.nvmrc</code>); image <code>node:24-bookworm-slim</code></td></tr>
+    <tr><td>pnpm</td><td>10.11.0</td></tr>
+    <tr><td>React, React DOM</td><td>19.3.1</td></tr>
+    <tr><td>TanStack Start / Router</td><td>1.169.4 / 1.170.46</td></tr>
+    <tr><td>TanStack AI (+ OpenAI adapter)</td><td>1.2.0 (1.1.1)</td></tr>
+    <tr><td>Better Auth (+ SSO)</td><td>1.7.18</td></tr>
+    <tr><td>Drizzle ORM, postgres.js</td><td>0.45.4, 3.4.9</td></tr>
+    <tr><td>@azure/identity</td><td>4.14.1</td></tr>
+    <tr><td>zod</td><td>4.6.7</td></tr>
+    <tr><td>PostgreSQL</td><td>17 (Compose and Azure Flexible Server)</td></tr>
+  </tbody>
+</table>
+
+<h2 id="s15">15. Deployment and operations</h2>
+<h3>15.1 Topology (Azure)</h3>
+<p>Bicep in <code>infra/azure/</code>: Container Apps environment with <code>web</code> (1 to 3 replicas, probes on <code>/healthz</code> and <code>/readyz</code>), <code>worker</code> (exactly 1) and a manual migration job; PostgreSQL Flexible Server (Burstable B1ms, 7-day backups); Key Vault (RBAC); Log Analytics and Application Insights; alert rules; user-assigned managed identity; optional Azure OpenAI role assignment. Docker Compose files support local and self-hosted use.</p>
+<div class="note warn"><p><span class="tag t-impl">IMPLEMENTED</span> <code>privateNetworking=true</code> (Bicep) puts the Container Apps environment and PostgreSQL in a VNet with a private DNS zone and public database access disabled. <span class="tag t-assume">ASSUMPTION</span> Not yet deployed anywhere; an existing environment cannot be switched in place. The lab still uses <code>postgresPublicAccess=true</code> ("Allow Azure services" firewall rule). Production should use private networking (VNet integration or a private endpoint) as described in <code>docs/runbooks/azure-deploy.md</code>.</p></div>
+<h3>15.2 Release and rollback</h3>
+<ol>
+  <li>Deploy workflow (manual dispatch on <code>main</code>): CI, image build with SBOM and CVE gate, then the <code>production</code> environment with required reviewers.</li>
+  <li>Records the current revision, runs the migration job, rolls out web and worker, waits for the new revision, runs the smoke test.</li>
+  <li>Rollback: re-point to the previous revision or image tag (<code>docs/runbooks/rollback.md</code>). Migrations are forward-only; schema changes must stay backward compatible for one release.</li>
+</ol>
+<h3>15.3 Backup and restore</h3>
+<p>Point-in-time restore of the database (7-day retention). A restore drill and recorded RPO/RTO are part of the go-live checklist (<code>docs/go-live-checklist.md</code>, <code>docs/runbooks/backup-restore.md</code>). <span class="tag t-plan">PLANNED</span> The drill has not been recorded for the lab.</p>
+<h3>15.4 Operational runbook (summary)</h3>
+<table>
+  <thead><tr><th>Task</th><th>How</th></tr></thead>
+  <tbody>
+    <tr><td>Health</td><td><code>scripts/smoke.sh &lt;url&gt; &lt;migration-tag&gt;</code>; <code>/readyz</code></td></tr>
+    <tr><td>Model check</td><td>Run <code>src/server/cli/model-check.ts</code> as a one-off job with the app's environment</td></tr>
+    <tr><td>Bootstrap</td><td><code>docs/runbooks/bootstrap.md</code></td></tr>
+    <tr><td>Custom domain and TLS</td><td><code>docs/runbooks/custom-domain.md</code></td></tr>
+    <tr><td>Logs</td><td>Log Analytics: <code>ContainerAppConsoleLogs_CL</code>; alert on 5xx, probe failures and failed hunts or executions</td></tr>
+    <tr><td>Live execution</td><td>Change ticket, then <code>RESPONSE_DRY_RUN=false</code> and the executor flag; review <code>docs/response.md</code></td></tr>
+  </tbody>
+</table>
+
+<h2 id="s16">16. Testing and acceptance criteria</h2>
+<h3>16.1 Test inventory at the commit</h3>
+<ul>
+  <li>Unit and integration (Vitest, real migrations on PGlite): 197 tests in 21 files; 195 pass and 2 are skipped (run locally on 8 November 2026); covers auth, RBAC, tenant isolation, hunting safety, schedules, response gates, notifications, TI, digests and time zones, agents and chat with a mock model.</li>
+  <li>End to end (Playwright, local, not in PR CI): golden path, hunt workspace (keyboard, filters, history, theme, 390 px and 1000 px dialogs), chat streaming (deterministic mock), axe scan.</li>
+  <li>End to end on a local production build of this branch (8 November 2026): all 6 Playwright specs pass with the nonce CSP active and no CSP violations, including the axe WCAG 2.2 AA scan.</li>
+  <li>Live lab check (8 November 2026): smoke test, in-container Azure OpenAI call via managed identity, Entra sign-in, hunt run, analyst read-only approval, streamed chat with a tool call.</li>
+</ul>
+<h3>16.2 Acceptance criteria</h3>
+<ol class="ac">
+  <li>An analyst cannot dry-run, approve, reject or execute a response proposal; the server returns an error even if the request is sent directly.</li>
+  <li>A requester cannot approve their own proposal unless <code>RESPONSE_ALLOW_SELF_APPROVAL=true</code>.</li>
+  <li>No agent tool can execute KQL or a response action; <code>EXECUTION_TOOL_NAMES</code> is empty.</li>
+  <li>With default configuration, no response call leaves the application (dry-run on, executors off).</li>
+  <li>A user in org A cannot read or change any org B record through any server function or API route.</li>
+  <li>A KQL proposal containing a blocked operator is rejected before execution.</li>
+  <li>Webhook URLs outside the allowed hosts, with credentials, a non-default port or HTTP are rejected.</li>
+  <li>No secret value appears in logs, audit events, decision rows, memory entries or API responses.</li>
+  <li>Feed, result and model text is never interpreted as HTML in the browser.</li>
+  <li>Every view passes the axe scan for WCAG 2.2 AA in light and dark themes with 0 violations.</li>
+  <li>All interactive features are usable with a keyboard alone; focus is visible and returns sensibly after dialogs close.</li>
+  <li>Reload and browser back restore the hunt workspace view (search, row, filters, sort, timeline).</li>
+  <li>Demo data is labelled at every place it appears; it is never presented as live.</li>
+  <li><code>/readyz</code> returns 503 until the database is reachable and migrations are current.</li>
+  <li>The image build fails on a fixable critical vulnerability.</li>
+</ol>
+
+<h2 id="s17">17. Standards mapping</h2>
+<p>This is guidance alignment, not a compliance or certification claim.</p>
+<table>
+  <thead><tr><th>Standard</th><th>Version used</th><th>Where it applies here</th></tr></thead>
+  <tbody>
+    <tr><td>OWASP Top 10</td><td>2025</td><td>A01 access control and SSRF (sections 10, 12); A02 misconfiguration (14, 15); A03 supply chain (12.9); A04 crypto (12.3, 12.4); A05 injection (12.5); A07 authentication (12.1); A09 logging and alerting (12.8, 15); A10 exceptional conditions (8.9 states, fail-closed executors)</td></tr>
+    <tr><td>OWASP ASVS</td><td>5.0.0 (May 2025)</td><td>Use as the verification checklist; target Level 2 for this application. Reference requirements with version-tagged ids (for example <code>v5.0.0-x.y.z</code>). No formal assessment has been done.</td></tr>
+    <tr><td>OWASP Top 10 for LLM Applications</td><td>2025</td><td>LLM01, LLM02, LLM05, LLM06, LLM10 (section 13)</td></tr>
+    <tr><td>NIST SP 800-63B-4</td><td>Final (2025)</td><td>IdP policy: AAL2 or above; phishing-resistant authenticators preferred for owners and approvers (section 12.1)</td></tr>
+    <tr><td>NIST SP 800-218 (SSDF)</td><td>1.1 final; 1.2 draft (December 2025)</td><td>Secure development practices: reviewed changes, pinned dependencies, SBOM, vulnerability gate, staged release and rollback (sections 12.9, 15.2)</td></tr>
+    <tr><td>NIST SP 800-207</td><td>Final (August 2020)</td><td>Per-request authorisation, least privilege, no implicit trust between components (sections 3, 10, 12.2)</td></tr>
+    <tr><td>CIS Docker Benchmark</td><td>1.9.0</td><td>Container image and runtime hardening (non-root user, minimal base, health check)</td></tr>
+    <tr><td>CIS Microsoft Azure Foundations Benchmark</td><td>current CIS release (6.0.0 or later)</td><td>Subscription baseline: Key Vault, PostgreSQL networking, logging, identity <span class="tag t-assume">ASSUMPTION</span> not assessed</td></tr>
+    <tr><td>WCAG</td><td>2.2 (W3C Recommendation, 12 December 2024 edition)</td><td>Section 9 and acceptance criteria AC-10, AC-11</td></tr>
+  </tbody>
+</table>
+
+<h2 id="s18">18. Gaps, open decisions and backlog</h2>
+<table>
+  <thead><tr><th>Item</th><th>Type</th><th>Detail</th><th>Suggested phase</th></tr></thead>
+  <tbody>
+    <tr><td>Data retention</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Daily purge; defaults 365 / 365 / 180 / 730 days (decided 08-11-2026)</td><td>Done</td></tr>
+    <tr><td>Database-level isolation</td><td><span class="tag t-gap">GAP</span></td><td>Consider PostgreSQL row-level security as defence in depth for <code>org_id</code></td><td>2</td></tr>
+    <tr><td>CSP script policy</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Per-request nonce; verified in a production build with no violations</td><td>Done</td></tr>
+    <tr><td>Feed size limit</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>TI_MAX_RESPONSE_BYTES</code></td><td>Done</td></tr>
+    <tr><td>Key rotation</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>APP_ENCRYPTION_KEY_PREVIOUS</code> plus <code>pnpm rotate-secrets</code></td><td>Done</td></tr>
+    <tr><td>Supply chain</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Dependabot, CodeQL, provenance and SBOM attestations; release promotion verifies attestations and deploys the verified digest</td><td>Done</td></tr>
+    <tr><td>Private networking</td><td><span class="tag t-part">PARTIAL</span></td><td>Opt-in <code>privateNetworking</code> Bicep mode added and linted, not yet deployed; the lab keeps public access. Key Vault private endpoint and NSGs are follow-ups</td><td>Before production</td></tr>
+    <tr><td>Screen-reader testing</td><td><span class="tag t-gap">GAP</span></td><td>Manual NVDA and VoiceOver passes</td><td>1</td></tr>
+    <tr><td>Load testing</td><td><span class="tag t-gap">GAP</span></td><td>No measured capacity. Rate limits are shared across replicas when stored in the database (the default)</td><td>2</td></tr>
+    <tr><td>KQL approval role</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Decided 08-11-2026: configurable <code>KQL_APPROVAL_POLICY</code>, default <code>member</code></td><td>Done</td></tr>
+    <tr><td>Session lifetime</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Decided 08-11-2026: 1 hour idle, 12 hours absolute, configurable</td><td>Done</td></tr>
+    <tr><td>Repeat-run samples in report</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Issue #99: five redacted rows per run</td><td>Done</td></tr>
+    <tr><td>Digest contact address</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Issue #102: confirmed by an emailed link (needs SMTP)</td><td>Done</td></tr>
+    <tr><td>Live hunting against a real tenant</td><td><span class="tag t-plan">PLANNED</span></td><td>Lab has no Defender or Sentinel connector; demo mode is on</td><td>1</td></tr>
+    <tr><td>Restore drill</td><td><span class="tag t-plan">PLANNED</span></td><td>Record RPO and RTO for the lab</td><td>Before production</td></tr>
+    <tr><td>Unused dependency</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>@tanstack/ai-anthropic</code> removed</td><td>Done</td></tr>
+    <tr><td>Channel delete confirm</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Inline confirm step</td><td>Done</td></tr>
+    <tr><td>Shared rate limits</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Postgres-backed for sign-in and chat</td><td>Done</td></tr>
+    <tr><td>Retention query indexes</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>created_at</code> indexes on chat messages, evidence, decisions and audit events (migration 0004)</td><td>Done</td></tr>
+    <tr><td>Data subject requests</td><td><span class="tag t-gap">GAP</span></td><td>No self-service export or erasure for one person's data</td><td>2</td></tr>
+    <tr><td>Custom domain</td><td><span class="tag t-plan">PLANNED</span></td><td>Lab hostname change pending DNS records</td><td>1</td></tr>
+  </tbody>
+</table>
+
+<h2 id="s19">19. Traceability and references</h2>
+<h3>19.1 Repository</h3>
+<table>
+  <thead><tr><th>Topic</th><th>Paths</th></tr></thead>
+  <tbody>
+    <tr><td>Design decisions and pattern matrix</td><td><code>design.md</code></td></tr>
+    <tr><td>Architecture decisions</td><td><code>docs/adr/0002-squad-sdk-embed.md</code>, <code>docs/adr/0004-chat-model-azure-openai.md</code></td></tr>
+    <tr><td>Authentication and tenants</td><td><code>docs/auth.md</code>, <code>apps/web/src/server/auth/</code>, <code>apps/web/src/server/orgs.ts</code></td></tr>
+    <tr><td>Hunting</td><td><code>docs/hunting.md</code>, <code>apps/web/src/server/hunting/</code>, <code>apps/web/src/shared/kql-approval.ts</code></td></tr>
+    <tr><td>Response</td><td><code>docs/response.md</code>, <code>apps/web/src/server/response/</code></td></tr>
+    <tr><td>Agents and chat</td><td><code>docs/agents.md</code>, <code>docs/chat-model.md</code>, <code>.squad/</code>, <code>apps/web/src/server/agents/</code></td></tr>
+    <tr><td>Threat intelligence</td><td><code>docs/watchlists.md</code>, <code>docs/ti/</code>, <code>apps/web/src/server/ti/</code></td></tr>
+    <tr><td>Security headers and limits</td><td><code>apps/web/src/server/lib/http-security.ts</code>, <code>redact.ts</code>, <code>crypto.ts</code></td></tr>
+    <tr><td>Infrastructure</td><td><code>infra/azure/</code>, <code>Dockerfile</code>, <code>docker-compose*.yml</code></td></tr>
+    <tr><td>CI and release</td><td><code>.github/workflows/</code>, <code>docs/releasing.md</code></td></tr>
+    <tr><td>Retention and keys</td><td><code>apps/web/src/server/ops/retention.ts</code>, <code>apps/web/src/server/cli/rotate-secrets.ts</code>, <code>docs/runbooks/data-retention.md</code>, <code>docs/runbooks/key-rotation.md</code></td></tr>
+    <tr><td>Runbooks</td><td><code>docs/runbooks/</code>, <code>docs/go-live-checklist.md</code>, <code>docs/day-1-operator-playbook.md</code></td></tr>
+    <tr><td>Tests</td><td><code>apps/web/test/</code>, <code>e2e/tests/</code></td></tr>
+  </tbody>
+</table>
+<h3>19.2 External references</h3>
+<ul class="small">
+  <li>OWASP Top 10:2025. <a href="https://owasp.org/Top10/2025/">https://owasp.org/Top10/2025/</a></li>
+  <li>OWASP Application Security Verification Standard 5.0.0. <a href="https://asvs.owasp.org/">https://asvs.owasp.org/</a>; <a href="https://github.com/OWASP/ASVS">https://github.com/OWASP/ASVS</a></li>
+  <li>OWASP Top 10 for LLM Applications 2025 (GenAI Security Project). <a href="https://genai.owasp.org/">https://genai.owasp.org/</a></li>
+  <li>NIST SP 800-63-4 Digital Identity Guidelines, including SP 800-63B-4. <a href="https://pages.nist.gov/800-63-4/sp800-63b/authenticators/">https://pages.nist.gov/800-63-4/sp800-63b/authenticators/</a></li>
+  <li>NIST SP 800-218 Secure Software Development Framework (1.1 final; 1.2 draft). <a href="https://csrc.nist.gov/projects/ssdf/publications">https://csrc.nist.gov/projects/ssdf/publications</a></li>
+  <li>NIST SP 800-207 Zero Trust Architecture. <a href="https://nvlpubs.nist.gov/nistpubs/specialpublications/NIST.SP.800-207.pdf">https://nvlpubs.nist.gov/nistpubs/specialpublications/NIST.SP.800-207.pdf</a></li>
+  <li>CIS Docker Benchmark. <a href="https://www.cisecurity.org/benchmark/docker">https://www.cisecurity.org/benchmark/docker</a></li>
+  <li>CIS Benchmarks list (Azure Foundations). <a href="https://www.cisecurity.org/cis-benchmarks">https://www.cisecurity.org/cis-benchmarks</a></li>
+  <li>W3C Web Content Accessibility Guidelines 2.2. <a href="https://www.w3.org/TR/WCAG22/">https://www.w3.org/TR/WCAG22/</a></li>
+</ul>
+
+<h2 id="s20">20. Rendering this document</h2>
+<p>The HTML file is the source; the PDF is generated from it with headless Chrome so text stays selectable and links stay live.</p>
+<pre>bash docs/design/render.sh   # writes docs/design/analyst-workspace-design.pdf</pre>
+<p>The script uses Google Chrome or Chromium in headless mode with <code>--print-to-pdf</code>, A4 page size from the document's <code>@page</code> rule, no browser headers or footers, and outline generation for bookmarks where the browser supports it. Review the PDF for clipped tables after any edit.</p>
+
+</main>
+</body>
+</html>

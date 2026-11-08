@@ -1,5 +1,7 @@
 # Reusable: build the production image, generate an SBOM, fail on CRITICAL CVEs in the runtime
 # image (#85), then push to GHCR. Callers pass extra tags (e.g. the git tag); :sha-<sha> is always added.
+# After the push, signed build provenance and SBOM attestations are bound to the image digest.
+# Callers must grant packages: write, id-token: write and attestations: write.
 name: Image
 
 on:
@@ -11,7 +13,7 @@ on:
         default: ''
     outputs:
       image:
-        description: Immutable image reference (sha tag)
+        description: Immutable image reference, pinned to the attested digest (repo@sha256:...)
         value: ${{ jobs.build.outputs.image }}
 
 permissions:
@@ -24,8 +26,10 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # Sigstore signing certificate for attestations
+      attestations: write
     outputs:
-      image: ${{ steps.meta.outputs.image }}
+      image: ${{ steps.meta.outputs.repo }}@${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -70,10 +74,42 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push
+        id: push
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          REPO: ${{ steps.meta.outputs.repo }}
+          EXTRA_TAG: ${{ inputs.tags }}
         run: |
-          docker tag crosswire:scan "${{ steps.meta.outputs.image }}"
-          docker push "${{ steps.meta.outputs.image }}"
-          if [ -n "${{ inputs.tags }}" ]; then
-            docker tag crosswire:scan "${{ steps.meta.outputs.repo }}:${{ inputs.tags }}"
-            docker push "${{ steps.meta.outputs.repo }}:${{ inputs.tags }}"
-          fi
+          docker tag crosswire:scan "$IMAGE"
+          # Digest reported by this push itself, so a concurrent build that re-pushes the same
+          # sha tag cannot swap the image these attestations are bound to.
+          digest="$(docker push "$IMAGE" | sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' | tail -n1)"
+          echo "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::could not read the digest from docker push ($digest)"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      # Signed SLSA provenance + SBOM attestations bound to the pushed digest (verify: docs/releasing.md).
+      # actions/attest supersedes attest-build-provenance / attest-sbom (now thin wrappers over it).
+      # Storage records need an organisation-owned repo, so they are off.
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.meta.outputs.repo }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.meta.outputs.repo }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+      # The version tag is published only after both attestations succeed, and points at the
+      # attested digest, so a release tag never exists without provenance.
+      - name: Publish version tag
+        if: inputs.tags != ''
+        env:
+          REPO: ${{ steps.meta.outputs.repo }}
+          EXTRA_TAG: ${{ inputs.tags }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: docker buildx imagetools create --tag "$REPO:$EXTRA_TAG" "$REPO@$DIGEST"

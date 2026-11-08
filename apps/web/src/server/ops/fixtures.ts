@@ -81,7 +81,9 @@ export async function loadDemoFixtures(orgId: string, userId: string) {
     kql: 'DeviceProcessEvents | where Timestamp > ago(7d) | where FileName =~ "powershell.exe" and ProcessCommandLine has "-enc" | take 50',
     rationale: `${DEMO_PREFIX} Encoded command lines are a common loader pattern.`,
   })
-  await approveAndRunKql(orgId, userId, p1.id)
+  // Demo data is loaded by an owner; pass the role so any KQL_APPROVAL_POLICY accepts it. The
+  // proposal comes from an agent with no requester, so second-person allows it too.
+  await approveAndRunKql(orgId, userId, p1.id, undefined, 'owner')
   await proposeKql(orgId, { type: 'agent', id: 'hunter' }, {
     huntId: hunt.id,
     target: 'sentinel',

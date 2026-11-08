@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { addNote, approveKqlFn, createScheduleFn, disableScheduleFn, fetchHunt, huntReportFn, proposeKqlFn, reapproveScheduleFn, rejectKqlFn, setHuntStatusFn } from '../fns/hunts'
 import { fmtTime } from '../components/format'
 import { Notice, Term } from '../components/ui'
+import { kqlApprovalBlock } from '../shared/kql-approval'
 import { Freshness, ModeTag, StatusTag, TARGET_LABEL } from '../components/signals'
 import { FilterChips, Inspector, ResultGrid, applyFilters, decodeFilters, decodeSort, encodeFilters, encodeSort, kqlIdentifier, kqlLiteral, sortRows, summariseEntities, type Filter, type Row, type Sort } from '../components/results'
 
@@ -51,7 +52,25 @@ export const Route = createFileRoute('/app/hunts/$huntId')({
 
 type Data = Awaited<ReturnType<typeof fetchHunt>> & {}
 type Proposal = Data['proposals'][number]
-type Summary = { mode?: string; rowCount?: number; truncated?: boolean; columns?: string[]; sample?: Row[]; durationMs?: number }
+type Summary = { mode?: string; rowCount?: number; truncated?: boolean; columns?: string[]; sample?: Row[]; durationMs?: number; sampleExpired?: boolean; sampleRetentionDays?: number }
+type ApprovalContext = { policy: Data['kqlApprovalPolicy']; canApprove: boolean; userId: string; role: string }
+
+/**
+ * Why this person cannot approve this proposal under KQL_APPROVAL_POLICY, or null when they can.
+ * Same rules as the server (src/shared/kql-approval.ts); approveAndRunKql enforces them.
+ */
+function approvalBlock(a: ApprovalContext, p: Proposal, edited: boolean): string | null {
+  const block = kqlApprovalBlock(a.policy, { userId: a.userId, role: a.role }, p, edited)
+  if (block === 'needs-approver') return 'Your organisation requires an approver to run searches.'
+  if (block === 'own-request') return 'Another approver must run this search. You asked for it, and your organisation requires a second person to approve searches.'
+  if (block === 'edited') return 'Your organisation requires a second person to approve searches, so an edited search must be proposed as a new search. Restore the original to approve it, or propose your edit.'
+  return null
+}
+
+/** Plain message in place of the result grid once retention has removed a stored sample. */
+function expiredSampleText(s: Summary) {
+  return s.sampleRetentionDays ? `Sample removed after ${s.sampleRetentionDays} days (retention). The row count and columns are kept.` : 'Sample removed by the retention policy. The row count and columns are kept.'
+}
 
 function summaryOf(p: Proposal): Summary | null {
   return (p.resultSummary as Summary | null) ?? null
@@ -218,6 +237,7 @@ function HuntWorkspace() {
             onFilters={(next) => set({ f: encodeFilters(next), row: undefined })}
             onError={setError}
             onDraft={(kql) => setDraft({ kql, target: selected.target })}
+            approval={{ policy: data.kqlApprovalPolicy, canApprove: data.canApprove, userId: data.userId, role: data.role }}
           />
         )}
 
@@ -270,6 +290,7 @@ function SearchPanel({
   onFilters,
   onError,
   onDraft,
+  approval,
 }: {
   p: Proposal
   summary: Summary | null
@@ -284,6 +305,7 @@ function SearchPanel({
   onFilters: (f: Filter[]) => void
   onError: (e: string | null) => void
   onDraft: (kql: string) => void
+  approval: ApprovalContext
 }) {
   const router = useRouter()
   const [kql, setKql] = useState(p.kql)
@@ -291,6 +313,8 @@ function SearchPanel({
   const s = summary
   const pending = p.status === 'proposed'
   const edited = pending && kql.trim() !== p.originalKql.trim()
+  const changed = pending && kql.trim() !== p.kql.trim()
+  const blocked = pending ? approvalBlock(approval, p, changed) : null
   const visible = ordered
 
   return (
@@ -329,11 +353,25 @@ function SearchPanel({
                 )}
               </div>
             </div>
+            {blocked && (
+              <Notice tone="info">
+                {blocked}
+                {approval.policy === 'second-person' && approval.canApprove && changed && (
+                  <>
+                    {' '}
+                    <button type="button" className="cw-linkbtn" onClick={() => onDraft(kql)}>
+                      Propose the edit as a new search
+                    </button>
+                  </>
+                )}
+              </Notice>
+            )}
             <div className="cw-row" style={{ marginTop: 'var(--space-sm)' }}>
               <button
                 type="button"
                 className="cw-btn"
-                disabled={busy || !kql.trim()}
+                disabled={busy || !kql.trim() || blocked !== null}
+                title={blocked ?? undefined}
                 data-state={busy ? 'loading' : undefined}
                 onClick={async () => {
                   setBusy(true)
@@ -396,7 +434,7 @@ function SearchPanel({
               </div>
               <div>
                 <dt>Stored sample</dt>
-                <dd className="num">{s.sample?.length ?? 0} rows</dd>
+                <dd className="num">{s.sampleExpired ? 'removed (retention)' : `${s.sample?.length ?? 0} rows`}</dd>
               </div>
               <div>
                 <dt>Ran</dt>
@@ -413,7 +451,9 @@ function SearchPanel({
             </dl>
           </div>
           <div className="cw-panel2-body">
-            {!s.sample?.length ? (
+            {s.sampleExpired ? (
+              <p className="cw-empty">{expiredSampleText(s)}</p>
+            ) : !s.sample?.length ? (
               <p className="cw-empty">{s.rowCount === 0 ? 'The search ran and returned no rows. That is a result: nothing matched in the queried time range.' : 'Rows were returned but no sample was stored, so there is nothing to inspect here.'}</p>
             ) : (
               <>
@@ -512,7 +552,9 @@ function Entities({ summary, onFilter }: { summary: Summary | null; onFilter: (c
   return (
     <section className="cw-rail-section" aria-labelledby="entities-title">
       <h2 id="entities-title">Entities in this result</h2>
-      {!s?.sample?.length ? (
+      {s?.sampleExpired ? (
+        <p className="cw-empty">{expiredSampleText(s)}</p>
+      ) : !s?.sample?.length ? (
         <p className="cw-empty">Run a search to see the devices, accounts and URLs it returned.</p>
       ) : groups.length === 0 ? (
         <p className="cw-empty">No device, account, file or network columns in this result.</p>

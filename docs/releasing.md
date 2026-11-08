@@ -34,3 +34,33 @@ Manual fallback: `gh release create vX.Y.Z --notes-file <notes> sbom.spdx.json`.
 - **Waivers:** add the CVE to `.trivyignore` with the reason, an ADR or issue link, and an expiry
   date. Waivers need a maintainer review. Triage: upgrade the base image (`node:24-bookworm-slim`)
   or the dependency first; waive only when the vulnerable code is unreachable.
+
+## Verify an image
+
+Every image that `.github/workflows/image.yml` builds successfully (releases and deploy builds)
+carries two signed attestations bound to its digest: SLSA build provenance and the SPDX SBOM. If an
+attestation step fails, the run fails and the version tag is not published; the `sha-<sha>` tag
+may still exist without attestations, so always verify before promoting. They are stored in the
+GitHub attestations API and pushed to GHCR next to the image. Check provenance before you run or
+promote an image:
+
+```sh
+sha=<full commit SHA>
+digest=$(docker buildx imagetools inspect ghcr.io/jusso-dev/crosswire:sha-$sha --format '{{json .Manifest}}' | jq -r .digest)
+gh attestation verify "oci://ghcr.io/jusso-dev/crosswire@$digest" --repo jusso-dev/crosswire --source-digest "$sha"
+```
+
+Verify by digest, then deploy that digest (`ghcr.io/jusso-dev/crosswire@sha256:...`), so a tag that
+moves after verification cannot swap the image. For a release, resolve the digest of `:vX.Y.Z` the
+same way and pass the release commit to `--source-digest`. A pass confirms the image was built by
+this repository's workflow from that exact commit. Deploys built by the Deploy workflow already run
+the image by digest. To check the SBOM attestation as well, add
+`--predicate-type https://spdx.dev/Document/v2.3`. If the image is private, run
+`gh auth token | docker login ghcr.io -u <user> --password-stdin` first.
+
+## Dependency and code scanning
+
+- **Dependabot** (`.github/dependabot.yml`) opens weekly PRs for Actions SHA pins, the pnpm workspace
+  (minor and patch grouped) and the Dockerfile base image.
+- **CodeQL** (`.github/workflows/codeql.yml`) scans JavaScript/TypeScript and the workflows on every
+  push and PR to `main` and weekly. Results appear under Security → Code scanning.

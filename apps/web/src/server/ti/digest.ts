@@ -88,7 +88,8 @@ export function renderDigestEmail(orgName: string, digest: { day: string; hitCou
 /**
  * Daily job: build digests for every org; email owners when SMTP is configured.
  * Idempotent: `emailed_at` guards against double-sending for the same org-day.
- * Recipients always come from that org's own membership, never from global config.
+ * Recipients always come from that org's own membership, never from global config: each owner's
+ * confirmed digest address, or their sign-in email (#102).
  */
 export async function runDailyDigest(day = appDay()) {
   const db = getDb()

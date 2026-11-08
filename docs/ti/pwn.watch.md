@@ -40,4 +40,6 @@ Queues; plain Node timers.
 - **Throttling:** at most 2 retries on `429`/`503`, honouring `Retry-After` (capped at 60 s). No
   tight loops.
 - **Timeouts:** `TI_HTTP_TIMEOUT_MS` (30 s).
+- **Size cap:** responses over `TI_MAX_RESPONSE_BYTES` (default 25 MB) are refused, by
+  `Content-Length` and by counting the streamed body; nothing is cached.
 - `robots.txt` allows all paths (checked 2026-11-07). We use JSON feeds only, never HTML scraping.

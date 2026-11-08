@@ -1,0 +1,25 @@
+# Dependabot: weekly version updates for Actions (SHA pins), the pnpm workspace and the Dockerfile.
+# No custom labels: Dependabot applies its default "dependencies" label (and creates it if missing).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # pnpm is handled by the npm ecosystem (reads pnpm-lock.yaml / pnpm-workspace.yaml at the root).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2

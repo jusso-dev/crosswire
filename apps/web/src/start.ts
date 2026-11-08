@@ -20,21 +20,25 @@ const requestLogger = createMiddleware({ type: 'request' }).server(async ({ requ
   if (request.method === 'OPTIONS') {
     return new Response(null, { status: cors ? 204 : 403, headers: { ...(cors ?? {}), 'x-request-id': requestId } })
   }
-  // Rate limit chat per client (#74). Auth uses Better Auth's limiter; TI ingest is CLI/worker only.
+  // Rate limit chat per client (#74), shared across replicas through the database. Auth uses
+  // Better Auth's limiter; TI ingest is CLI/worker only.
   if ((path === '/api/chat' || path === '/api/chat/') && request.method === 'POST') {
-    const r = sec.chatRateLimiter().check(sec.clientKey(request))
+    const r = await sec.chatRateLimiter().check(sec.clientKey(request))
     if (!r.ok) {
       logger.warn('rate limited', { requestId, path })
       return Response.json({ error: 'rate_limited' }, { status: 429, headers: { 'Retry-After': String(r.retryAfterSec), 'x-request-id': requestId } })
     }
   }
+  // Per-request CSP nonce. src/router.tsx reads it from the global start context and hands it to
+  // the router (`ssr.nonce`), which stamps it on every script it renders.
+  const cspNonce = sec.newCspNonce()
   try {
-    const result = await next()
+    const result = await next({ context: { cspNonce } })
     const status = result.response.status
     const isHttps = url.protocol === 'https:' || request.headers.get('x-forwarded-proto') === 'https'
     try {
       result.response.headers.set('x-request-id', requestId)
-      for (const [k, v] of Object.entries(sec.securityHeaders(isHttps))) {
+      for (const [k, v] of Object.entries(sec.securityHeaders(isHttps, isHtml(result.response) ? cspNonce : undefined))) {
         if (!result.response.headers.has(k)) result.response.headers.set(k, v)
       }
       if (cors) for (const [k, v] of Object.entries(cors)) result.response.headers.set(k, v)
@@ -50,5 +54,10 @@ const requestLogger = createMiddleware({ type: 'request' }).server(async ({ requ
     throw err
   }
 })
+
+/** Only HTML documents carry the nonce; other responses get a script-src of 'self'. */
+function isHtml(res: Response) {
+  return (res.headers.get('content-type') ?? '').toLowerCase().includes('text/html')
+}
 
 export const startInstance = createStart(() => ({ requestMiddleware: [requestLogger] }))

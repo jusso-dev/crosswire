@@ -31,6 +31,7 @@ import { Route as AppChatIndexRouteImport } from './routes/app.chat.index'
 import { Route as AppChatThreadIdRouteImport } from './routes/app.chat.$threadId'
 import { Route as AppHuntsHuntIdRouteImport } from './routes/app.hunts.$huntId'
 import { Route as AppIntelKeyRouteImport } from './routes/app.intel.$key'
+import { Route as AppSettingsDigestEmailConfirmRouteImport } from './routes/app.settings_.digest-email.confirm'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -142,6 +143,12 @@ const AppIntelKeyRoute = AppIntelKeyRouteImport.update({
   path: '/intel/$key',
   getParentRoute: () => AppRoute,
 } as any)
+const AppSettingsDigestEmailConfirmRoute =
+  AppSettingsDigestEmailConfirmRouteImport.update({
+    id: '/settings_/digest-email/confirm',
+    path: '/settings/digest-email/confirm',
+    getParentRoute: () => AppRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -166,6 +173,7 @@ export interface FileRoutesByFullPath {
   '/app/hunts/$huntId': typeof AppHuntsHuntIdRoute
   '/app/intel/$key': typeof AppIntelKeyRoute
   '/app/chat/': typeof AppChatIndexRoute
+  '/app/settings/digest-email/confirm': typeof AppSettingsDigestEmailConfirmRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -188,6 +196,7 @@ export interface FileRoutesByTo {
   '/app/hunts/$huntId': typeof AppHuntsHuntIdRoute
   '/app/intel/$key': typeof AppIntelKeyRoute
   '/app/chat': typeof AppChatIndexRoute
+  '/app/settings/digest-email/confirm': typeof AppSettingsDigestEmailConfirmRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -213,6 +222,7 @@ export interface FileRoutesById {
   '/app/hunts/$huntId': typeof AppHuntsHuntIdRoute
   '/app/intel/$key': typeof AppIntelKeyRoute
   '/app/chat/': typeof AppChatIndexRoute
+  '/app/settings_/digest-email/confirm': typeof AppSettingsDigestEmailConfirmRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -239,6 +249,7 @@ export interface FileRouteTypes {
     | '/app/hunts/$huntId'
     | '/app/intel/$key'
     | '/app/chat/'
+    | '/app/settings/digest-email/confirm'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -261,6 +272,7 @@ export interface FileRouteTypes {
     | '/app/hunts/$huntId'
     | '/app/intel/$key'
     | '/app/chat'
+    | '/app/settings/digest-email/confirm'
   id:
     | '__root__'
     | '/'
@@ -285,6 +297,7 @@ export interface FileRouteTypes {
     | '/app/hunts/$huntId'
     | '/app/intel/$key'
     | '/app/chat/'
+    | '/app/settings_/digest-email/confirm'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -455,6 +468,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIntelKeyRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/settings_/digest-email/confirm': {
+      id: '/app/settings_/digest-email/confirm'
+      path: '/settings/digest-email/confirm'
+      fullPath: '/app/settings/digest-email/confirm'
+      preLoaderRoute: typeof AppSettingsDigestEmailConfirmRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
@@ -505,6 +525,7 @@ interface AppRouteChildren {
   AppWatchesRoute: typeof AppWatchesRoute
   AppIndexRoute: typeof AppIndexRoute
   AppIntelKeyRoute: typeof AppIntelKeyRoute
+  AppSettingsDigestEmailConfirmRoute: typeof AppSettingsDigestEmailConfirmRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
@@ -517,6 +538,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppWatchesRoute: AppWatchesRoute,
   AppIndexRoute: AppIndexRoute,
   AppIntelKeyRoute: AppIntelKeyRoute,
+  AppSettingsDigestEmailConfirmRoute: AppSettingsDigestEmailConfirmRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

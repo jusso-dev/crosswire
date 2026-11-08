@@ -56,6 +56,14 @@ export const orgMemberships = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
     role: orgRole('role').notNull().default('analyst'),
+    /** #102: confirmed address for digest email (used instead of the sign-in email when set). */
+    digestEmail: text('digest_email'),
+    /** Address awaiting confirmation, with a SHA-256 hash of the emailed token and its expiry. */
+    digestEmailPending: text('digest_email_pending'),
+    digestEmailTokenHash: text('digest_email_token_hash'),
+    digestEmailTokenExpiresAt: timestamp('digest_email_token_expires_at', { withTimezone: true }),
+    /** When the last confirmation link was requested. Clear and confirm leave it, so the resend limit holds. */
+    digestEmailRequestedAt: timestamp('digest_email_requested_at', { withTimezone: true }),
     createdAt: createdAt(),
   },
   (t) => [uniqueIndex('org_memberships_org_user_uq').on(t.orgId, t.userId), index('org_memberships_user_idx').on(t.userId)],
@@ -81,7 +89,7 @@ export const auditEvents = pgTable(
     data: jsonb('data').$type<Record<string, unknown>>().notNull().default({}),
     createdAt: createdAt(),
   },
-  (t) => [index('audit_events_org_created_idx').on(t.orgId, t.createdAt), index('audit_events_category_idx').on(t.category, t.createdAt)],
+  (t) => [index('audit_events_org_created_idx').on(t.orgId, t.createdAt), index('audit_events_category_idx').on(t.category, t.createdAt), index('audit_events_created_idx').on(t.createdAt)],
 )
 
 // ---------- Chat (#26, #27) ----------
@@ -115,7 +123,7 @@ export const chatMessages = pgTable(
     metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
     createdAt: createdAt(),
   },
-  (t) => [index('chat_messages_thread_idx').on(t.threadId, t.createdAt)],
+  (t) => [index('chat_messages_thread_idx').on(t.threadId, t.createdAt), index('chat_messages_created_idx').on(t.createdAt)],
 )
 
 export const messageFeedback = pgTable(
@@ -181,7 +189,7 @@ export const agentDecisions = pgTable(
     huntId: text('hunt_id'),
     createdAt: createdAt(),
   },
-  (t) => [index('agent_decisions_org_created_idx').on(t.orgId, t.createdAt)],
+  (t) => [index('agent_decisions_org_created_idx').on(t.orgId, t.createdAt), index('agent_decisions_created_idx').on(t.createdAt)],
 )
 
 // ---------- Threat intel (#36, #37, #42) — global, not org-scoped ----------
@@ -391,7 +399,7 @@ export const huntEvidence = pgTable(
     actorId: text('actor_id'),
     createdAt: createdAt(),
   },
-  (t) => [index('hunt_evidence_hunt_idx').on(t.huntId, t.createdAt)],
+  (t) => [index('hunt_evidence_hunt_idx').on(t.huntId, t.createdAt), index('hunt_evidence_created_idx').on(t.createdAt)],
 )
 
 export const kqlStatus = pgEnum('kql_status', ['proposed', 'approved', 'rejected', 'run', 'failed', 'expired'])
@@ -411,6 +419,8 @@ export const kqlProposals = pgTable(
     status: kqlStatus('status').notNull().default('proposed'),
     proposedByType: text('proposed_by_type', { enum: ['user', 'agent'] }).notNull(),
     proposedById: text('proposed_by_id').notNull(),
+    /** The person who asked for the search: the proposer, or the chat user behind an agent proposal. */
+    requestedBy: text('requested_by'),
     decidedBy: text('decided_by'),
     decidedAt: timestamp('decided_at', { withTimezone: true }),
     ranAt: timestamp('ran_at', { withTimezone: true }),
@@ -559,3 +569,12 @@ export const huntSchedules = pgTable(
   },
   (t) => [index('hunt_schedules_due_idx').on(t.enabled, t.nextRunAt), index('hunt_schedules_hunt_idx').on(t.huntId)],
 )
+
+// ---------- Rate limits shared across replicas ----------
+export const appRateLimits = pgTable('app_rate_limits', {
+  key: text('key').primaryKey(),
+  count: integer('count').notNull(),
+  windowStartedAt: timestamp('window_started_at', { withTimezone: true }).notNull(),
+  /** End of this row's own window. The sweep deletes by it, so limiters with different windows can share the table. */
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+})

@@ -26,11 +26,30 @@ export interface ToolContext {
  */
 export const EXECUTION_TOOL_NAMES: readonly string[] = []
 
-async function traced<T>(ctx: ToolContext, tool: string, input: unknown, fn: () => Promise<T>): Promise<T | { error: string }> {
+/**
+ * Decision-log copy of a tool output with stored result rows replaced by their count, so query
+ * results never outlive RETENTION_SAMPLES_DAYS inside agent_decisions (kept for the longer
+ * RETENTION_DECISIONS_DAYS). The model still receives the full output. A sample that retention
+ * already removed is logged as 'removed (retention)', not 0, so the reason survives truncation.
+ */
+export function withoutSamples(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutSamples)
+  if (!value || typeof value !== 'object' || value instanceof Date) return value
+  const expired = (value as { sampleExpired?: unknown }).sampleExpired === true
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(value)) {
+    if (k === 'sample' && Array.isArray(v)) out.sampleRows = expired ? 'removed (retention)' : v.length
+    else if (k === 'rows' && Array.isArray(v)) out.rowsOmitted = v.length
+    else out[k] = withoutSamples(v)
+  }
+  return out
+}
+
+async function traced<T>(ctx: ToolContext, tool: string, input: unknown, fn: () => Promise<T>, forLog: (output: T) => unknown = (o) => o): Promise<T | { error: string }> {
   try {
     const output = await fn()
     ctx.traces.push({ tool, input, output })
-    await recordDecision({ orgId: ctx.orgId, actorType: 'agent', actorKey: ctx.agentKey, action: `tool:${tool}`, input, output, threadId: ctx.threadId })
+    await recordDecision({ orgId: ctx.orgId, actorType: 'agent', actorKey: ctx.agentKey, action: `tool:${tool}`, input, output: forLog(output), threadId: ctx.threadId })
     return output
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
@@ -87,7 +106,7 @@ export function buildTools(ctx: ToolContext): Record<string, AnyTool> {
       const h = await getHunt(ctx.orgId, huntId)
       if (!h) throw new Error('Hunt not found in this org.')
       return { hunt: h.hunt, evidence: h.evidence.slice(-20), proposals: h.proposals.map((p) => ({ id: p.id, status: p.status, target: p.target, kql: p.kql, resultSummary: p.resultSummary })) }
-    }),
+    }, withoutSamples),
   )
 
   const proposeKqlTool = toolDefinition({
@@ -101,7 +120,7 @@ export function buildTools(ctx: ToolContext): Record<string, AnyTool> {
     }),
   }).server(async (input) =>
     traced(ctx, 'propose_kql', input, async () => {
-      const p = await proposeKql(ctx.orgId, { type: 'agent', id: ctx.agentKey }, { ...input, threadId: ctx.threadId })
+      const p = await proposeKql(ctx.orgId, { type: 'agent', id: ctx.agentKey }, { ...input, threadId: ctx.threadId, requestedBy: ctx.userId })
       return { proposalId: p.id, status: p.status, review: `${appUrl()}/app/hunts/${input.huntId}`, note: 'Pending human review. Not executed.' }
     }),
   )

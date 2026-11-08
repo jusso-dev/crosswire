@@ -38,7 +38,7 @@ az keyvault secret set --vault-name $KV -n entra-client-secret --value '<SSO app
 | --- | --- | --- |
 | `database-url` | `DATABASE_URL` | Change the Postgres password, update the secret, restart |
 | `better-auth-secret` | `BETTER_AUTH_SECRET` | Rotating signs everyone out |
-| `app-encryption-key` | `APP_ENCRYPTION_KEY` | Re-save hunting connector secrets afterwards |
+| `app-encryption-key` | `APP_ENCRYPTION_KEY` | Rotate with the [key rotation runbook](key-rotation.md) (keeps stored secrets readable) |
 | `entra-client-secret` | `ENTRA_CLIENT_SECRET` | Before the Entra secret expires |
 
 Email/password sign-up is disabled in Azure (`AUTH_EMAIL_PASSWORD=false`); analysts sign in with
@@ -69,10 +69,71 @@ properties.configuration.secrets` lists Key Vault references; the revision only 
 when the identity can read them (Key Vault Secrets User is assigned by Bicep).
 
 **Postgres access:** `postgresPublicAccess` defaults to `false` (no public endpoint). For
-production, create the Container Apps environment in a VNet and give Postgres private access
-(VNet integration or a private endpoint) before deploying apps. For a quick lab only, pass
+production, use [private networking](#private-networking-production). For a quick lab only, pass
 `postgresPublicAccess=true`: that adds the "Allow Azure services" firewall rule, which admits any
 Azure-hosted client (including other customers') that has the credentials.
+
+### Private networking (production)
+
+Pass `privateNetworking=true` on the **first** deployment into a resource group. The default is
+`false`, so existing deployments are unchanged and nothing is recreated.
+
+What it creates (`infra/azure/modules/network.bicep`):
+
+| Resource | Detail |
+| --- | --- |
+| VNet `<prefix>-vnet` | Address space `vnetAddressPrefix` (default `10.40.0.0/22`, must be /23 or larger) |
+| Subnet `snet-aca` | First /24, delegated to `Microsoft.App/environments` (workload profiles minimum is /27) |
+| Subnet `snet-postgres` | /28 after it, delegated to `Microsoft.DBforPostgreSQL/flexibleServers`, with the `Microsoft.Storage` service endpoint Postgres needs |
+| Private DNS zone | `<pg-name>.private.postgres.database.azure.com`, linked to the VNet |
+
+It also changes how two existing resources are created:
+
+- **Container Apps environment:** `vnetConfiguration.infrastructureSubnetId` set to `snet-aca`,
+  `internal: false` (ingress stays public, `webFqdn` works as before). A delegated subnet needs a
+  workload profiles environment, so the environment gets the built-in `Consumption` profile and
+  `web`, `worker` and the migration job run on it. Azure also creates a managed `ME_` resource
+  group with a public IP and load balancer, which are billed.
+- **PostgreSQL:** `network.delegatedSubnetResourceId` and `privateDnsZoneArmResourceId` set,
+  `publicNetworkAccess: Disabled`, no firewall rules. The server name in `database-url` does not
+  change; inside the VNet it resolves to the private address.
+
+`postgresPublicAccess=true` together with `privateNetworking=true` fails the deployment with a
+clear error (rather than silently ignoring one of them). The lab (`crosswire-lab`) keeps public
+access: it stays on `postgresPublicAccess=true` and `privateNetworking=false`.
+
+```sh
+az deployment group create -g crosswire-prod -f infra/azure/main.bicep -p infra/azure/main.bicepparam \
+  -p image=ghcr.io/jusso-dev/crosswire:<sha> appUrl=https://placeholder operatorObjectId=<id> \
+  privateNetworking=true
+```
+
+Keep passing `privateNetworking=true` on every redeploy of that resource group (or set it in your
+param file). Without it the template sends an environment and apps with no VNet or workload
+profile, which Azure rejects or only partly applies. Run what-if first if unsure.
+
+**Migration from a public deployment.** You cannot turn this on in place. A Container Apps
+environment cannot gain a VNet after creation, and a Postgres server cannot move from public
+access to VNet integration. Switching means a new environment (with a **new default hostname**,
+so a new `webFqdn`) and a new server. Plan it as a new deployment:
+
+1. Deploy into a **new resource group** with `privateNetworking=true` (names derive from the
+   resource group, so nothing collides with the old one).
+2. Seed Key Vault secrets (step 3). Reuse `app-encryption-key` from the old vault, or saved
+   hunting connector secrets cannot be decrypted.
+3. Move the data: dump the old database and restore it into the new server from a host inside
+   the VNet (or a peered network). The new server has no public endpoint, so a laptop cannot
+   reach it directly. See [backup and restore](backup-restore.md).
+4. Run migrations, then redeploy with `appUrl=https://<new webFqdn>` or your custom domain.
+5. Update the Entra app redirect URI and any custom domain DNS
+   ([custom domain](custom-domain.md)) to the new hostname, update `AZURE_RESOURCE_GROUP` in
+   the GitHub environment, then retire the old resource group.
+
+Operator access to Postgres (`psql`, restores) needs a jump host, Azure Bastion or a VPN into the
+VNet. Container Apps ingress and Key Vault stay public; Key Vault still relies on RBAC.
+
+**Follow-up (not built):** a Key Vault private endpoint with `publicNetworkAccess: Disabled`, and
+NSGs on the two subnets.
 
 ## 4. GitHub Actions deploy (manual approval)
 

@@ -26,6 +26,12 @@ param postgresAdminPassword string
 @description('Lab shortcut (opt-in): public Postgres access with the "Allow Azure services" rule. That admits any Azure-hosted client that has the credentials. Default false; see the runbook for private networking.')
 param postgresPublicAccess bool = false
 
+@description('Production (opt-in): VNet for the Container Apps environment and Postgres VNet integration (private DNS, no public endpoint). Default false. Set it only on a new deployment: an existing environment or server cannot switch. Cannot be combined with postgresPublicAccess. See the runbook.')
+param privateNetworking bool = false
+
+@description('Private networking: VNet address space, /23 or larger. Avoid 172.30.0.0/16, 172.31.0.0/16, 100.100.0.0/16 and ranges used by peered networks.')
+param vnetAddressPrefix string = '10.40.0.0/22'
+
 @description('Object ID of the operator who seeds Key Vault secrets (gets Key Vault Secrets Officer).')
 param operatorObjectId string = ''
 
@@ -57,6 +63,22 @@ var names = {
   worker: '${prefix}-worker'
   kv: take('${prefix}kv${uniqueString(resourceGroup().id)}', 24)
   pg: '${prefix}-pg-${uniqueString(resourceGroup().id)}'
+  vnet: '${prefix}-vnet'
+}
+
+// Fail closed: a public Postgres endpoint with an "Allow Azure services" rule defeats private networking.
+var pgPublic = privateNetworking && postgresPublicAccess
+  ? fail('postgresPublicAccess and privateNetworking cannot both be true. Private networking has no public Postgres endpoint; set postgresPublicAccess=false.')
+  : postgresPublicAccess
+
+module network 'modules/network.bicep' = if (privateNetworking) {
+  name: 'network'
+  params: {
+    location: location
+    vnetName: names.vnet
+    pgDnsZoneName: '${names.pg}.private.postgres.database.azure.com'
+    addressPrefix: vnetAddressPrefix
+  }
 }
 
 resource identity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
@@ -86,7 +108,9 @@ module data 'modules/data.bicep' = {
     pgName: names.pg
     postgresAdminLogin: postgresAdminLogin
     postgresAdminPassword: postgresAdminPassword
-    postgresPublicAccess: postgresPublicAccess
+    postgresPublicAccess: pgPublic
+    pgDelegatedSubnetId: privateNetworking ? network!.outputs.pgSubnetId : ''
+    pgPrivateDnsZoneId: privateNetworking ? network!.outputs.pgDnsZoneId : ''
     appIdentityPrincipalId: identity.properties.principalId
     operatorObjectId: operatorObjectId
   }
@@ -113,6 +137,7 @@ module apps 'modules/apps.bicep' = {
     azureOpenAiEndpoint: azureOpenAiEndpoint
     azureOpenAiDeployment: azureOpenAiDeployment
     identityClientId: identity.properties.clientId
+    infrastructureSubnetId: privateNetworking ? network!.outputs.acaSubnetId : ''
   }
 }
 

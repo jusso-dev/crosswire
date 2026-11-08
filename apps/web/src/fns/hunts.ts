@@ -44,6 +44,7 @@ export const fetchHunt = createServerFn({ method: 'GET' })
         status: p.status,
         proposedByType: p.proposedByType,
         proposedById: p.proposedById,
+        requestedBy: p.requestedBy,
         decidedBy: p.decidedBy,
         expiresAt: p.expiresAt.toISOString(),
         ranAt: iso(p.ranAt),
@@ -55,6 +56,9 @@ export const fetchHunt = createServerFn({ method: 'GET' })
       role: context.session.org.role,
       demoMode: env().HUNTING_DEMO_MODE && !(await getConnectorView(context.session.org.id)),
       canApprove: canApprove(context.session.org.role),
+      // Read on the server only; the UI uses it to explain the Approve button. The server enforces it.
+      kqlApprovalPolicy: env().KQL_APPROVAL_POLICY,
+      userId: context.session.user.id,
       schedules: (await listSchedules(context.session.org.id, data.huntId)).map((s) => ({
         id: s.id,
         target: s.target,
@@ -108,7 +112,7 @@ export const approveKqlFn = createServerFn({ method: 'POST' })
   .validator(z.object({ proposalId: z.string().min(1), kql: z.string().min(1).max(10_000).optional() }))
   .handler(async ({ context, data }) => {
     try {
-      const r = await approveAndRunKql(context.session.org.id, context.session.user.id, data.proposalId, data.kql)
+      const r = await approveAndRunKql(context.session.org.id, context.session.user.id, data.proposalId, data.kql, context.session.org.role)
       return r.status === 'run' ? { ok: true as const, status: 'run' as const, summary: asJson(r.summary) } : { ok: true as const, status: 'failed' as const, error: r.error }
     } catch (err) {
       return { ok: false as const, error: err instanceof Error ? err.message : String(err) }

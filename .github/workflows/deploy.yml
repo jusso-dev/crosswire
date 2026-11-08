@@ -38,11 +38,17 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
 
   resolve:
     needs: image
     if: always() && (needs.image.result == 'success' || inputs.image_tag != '')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
     outputs:
       image: ${{ steps.r.outputs.image }}
     steps:
@@ -50,10 +56,18 @@ jobs:
         env:
           BUILT: ${{ needs.image.outputs.image }}
           TAG: ${{ inputs.image_tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ -n "$TAG" ]; then
             echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::image_tag must be vX.Y.Z"; exit 1; }
-            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:$TAG" >> "$GITHUB_OUTPUT"
+            repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+            echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null
+            # Resolve the tag once, verify that digest, and deploy that digest: a tag that moves
+            # after this point cannot change what runs.
+            digest="$(docker buildx imagetools inspect "$repo:$TAG" --format '{{json .Manifest}}' | jq -r .digest)"
+            echo "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::could not resolve $TAG to a digest"; exit 1; }
+            gh attestation verify "oci://$repo@$digest" --repo "$GITHUB_REPOSITORY" --source-ref "refs/tags/$TAG"
+            echo "image=$repo@$digest" >> "$GITHUB_OUTPUT"
           else
             echo "image=$BUILT" >> "$GITHUB_OUTPUT"
           fi
