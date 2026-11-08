@@ -21,7 +21,7 @@ export interface ConfigDiagnostic {
 export function configurationDiagnostic(): ConfigDiagnostic {
   const e = env()
   const model = modelDescription(e)
-  let policy: ConfigDiagnostic['policy'] = {}
+  let policy: ConfigDiagnostic['policy']
   let ok = true
   try {
     policy = { sha256: loadPolicy().sha256 }
