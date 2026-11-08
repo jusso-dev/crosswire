@@ -62,6 +62,8 @@ export const orgMemberships = pgTable(
     digestEmailPending: text('digest_email_pending'),
     digestEmailTokenHash: text('digest_email_token_hash'),
     digestEmailTokenExpiresAt: timestamp('digest_email_token_expires_at', { withTimezone: true }),
+    /** When the last confirmation link was requested. Clear and confirm leave it, so the resend limit holds. */
+    digestEmailRequestedAt: timestamp('digest_email_requested_at', { withTimezone: true }),
     createdAt: createdAt(),
   },
   (t) => [uniqueIndex('org_memberships_org_user_uq').on(t.orgId, t.userId), index('org_memberships_user_idx').on(t.userId)],
@@ -573,4 +575,6 @@ export const appRateLimits = pgTable('app_rate_limits', {
   key: text('key').primaryKey(),
   count: integer('count').notNull(),
   windowStartedAt: timestamp('window_started_at', { withTimezone: true }).notNull(),
+  /** End of this row's own window. The sweep deletes by it, so limiters with different windows can share the table. */
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 })

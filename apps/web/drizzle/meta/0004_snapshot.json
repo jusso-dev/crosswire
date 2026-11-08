@@ -1,5 +1,5 @@
 {
-  "id": "41245cc6-fcb8-4c3f-bc50-e813dbc2bb9b",
+  "id": "4d688229-e4d5-47cc-9e0d-eecfcadc7c1a",
   "prevId": "368047dd-05ad-4252-b308-f7f1a27ae11b",
   "version": "7",
   "dialect": "postgresql",
@@ -840,6 +840,12 @@
         },
         "window_started_at": {
           "name": "window_started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true
@@ -2425,6 +2431,12 @@
         },
         "digest_email_token_expires_at": {
           "name": "digest_email_token_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "digest_email_requested_at": {
+          "name": "digest_email_requested_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false

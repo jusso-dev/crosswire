@@ -63,6 +63,8 @@ export async function readCappedText(res: Response, max: number): Promise<string
  * - Identifiable User-Agent; timeout; at most `maxRetries` (default 2) retries on 429/503 with
  *   backoff honouring Retry-After (capped), so a 429 can never tight-loop.
  * - Refuses bodies over TI_MAX_RESPONSE_BYTES (header and streamed byte count); nothing is cached.
+ *   A cached body over the cap (stored before the cap, or before it was lowered) is refused the
+ *   same way and its cache row deleted.
  */
 export async function politeFetch(url: string, opts: PoliteFetchOptions = {}): Promise<FetchResult> {
   const e = env()
@@ -74,7 +76,14 @@ export async function politeFetch(url: string, opts: PoliteFetchOptions = {}): P
   const db = getDb()
 
   const [cached] = await db.select().from(tiFetchCache).where(eq(tiFetchCache.url, url)).limit(1)
+  const refuseOversizedCache = async () => {
+    if (cached && Buffer.byteLength(cached.body) > e.TI_MAX_RESPONSE_BYTES) {
+      await db.delete(tiFetchCache).where(eq(tiFetchCache.url, url))
+      throw tooLarge(e.TI_MAX_RESPONSE_BYTES)
+    }
+  }
   if (cached && now().getTime() - cached.fetchedAt.getTime() < ttl * 1000) {
+    await refuseOversizedCache()
     return { body: cached.body, fromCache: true, status: cached.status, fetchedAt: cached.fetchedAt }
   }
 
@@ -93,6 +102,7 @@ export async function politeFetch(url: string, opts: PoliteFetchOptions = {}): P
     }
     const fetchedAt = now()
     if (res.status === 304 && cached) {
+      await refuseOversizedCache()
       await db.update(tiFetchCache).set({ fetchedAt }).where(eq(tiFetchCache.url, url))
       return { body: cached.body, fromCache: true, status: 304, fetchedAt }
     }

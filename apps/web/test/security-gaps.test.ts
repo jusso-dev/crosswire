@@ -83,6 +83,29 @@ describe('shared chat rate limit (database)', () => {
     expect((await rl.check('k', t + 1001)).ok).toBe(false)
   })
 
+  it("a short-window limiter's sweep only deletes rows whose own window has ended", async () => {
+    const short = new DbRateLimiter(5, 1000, 'test-sweep-short:')
+    const long = new DbRateLimiter(1, 3_600_000, 'test-sweep-long:')
+    const t = Date.parse('2026-11-08T02:00:00Z')
+    await short.check('k', t)
+    expect((await long.check('k', t)).ok).toBe(true)
+    const [row] = await getDb().select().from(appRateLimits).where(eq(appRateLimits.key, 'test-sweep-long:k'))
+    expect(row!.expiresAt.getTime()).toBe(t + 3_600_000)
+
+    // Ten minutes on: the short window is long over, the long one is still live.
+    await short.sweep(t + 600_000)
+    const keys = (await getDb().select().from(appRateLimits)).map((r) => r.key)
+    expect(keys).not.toContain('test-sweep-short:k')
+    expect(keys).toContain('test-sweep-long:k')
+    // The long-window bucket kept its count, so the client is still limited.
+    expect((await long.check('k', t + 600_001)).ok).toBe(false)
+
+    // A restarted window moves the expiry forward.
+    await long.check('k', t + 3_600_000)
+    const [moved] = await getDb().select().from(appRateLimits).where(eq(appRateLimits.key, 'test-sweep-long:k'))
+    expect(moved!.expiresAt.getTime()).toBe(t + 7_200_000)
+  })
+
   it('fails open when the database errors', async () => {
     const real = getDb()
     setDb({ execute: () => Promise.reject(new Error('connection refused')) } as unknown as Db)

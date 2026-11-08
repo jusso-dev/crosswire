@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm'
 import { getDb } from '../src/server/db/client'
 import { account, auditEvents, orgMemberships, user } from '../src/server/db/schema'
 import * as mail from '../src/server/mail'
-import { listOrgOwnerEmails } from '../src/server/orgs'
+import { listOrgOwnerEmails, setMemberRole } from '../src/server/orgs'
 import { runDailyDigest, appDay } from '../src/server/ti/digest'
 import { clearDigestEmail, confirmDigestEmail, DIGEST_CONFIRM_PATH, DIGEST_RESEND_MS, DIGEST_TOKEN_TTL_MS, DigestEmailError, getDigestEmailView, previewDigestEmail, requestDigestEmail } from '../src/server/notify/digest-contact'
 import { makeOrg, makeUser, member } from './helpers'
@@ -89,7 +89,7 @@ describe('digest contact address (#102)', () => {
 
     expect(await previewDigestEmail(userId, token)).toMatchObject({ status: 'ready', email: 'soc@contoso.example' })
     const r = await confirmDigestEmail(userId, token)
-    expect(r).toEqual({ orgId, email: 'soc@contoso.example' })
+    expect(r).toEqual({ orgId, orgName: 'Digest', email: 'soc@contoso.example' })
     const row = await membership(orgId, userId)
     expect(row.digestEmail).toBe('soc@contoso.example')
     expect(row.digestEmailPending).toBeNull()
@@ -166,6 +166,71 @@ describe('digest contact address (#102)', () => {
     const [ev] = await auditFor(orgId, 'digest_email_cleared')
     expect(ev!.category).toBe('auth')
     expect(JSON.stringify(ev!.data)).not.toContain('@')
+  })
+
+  it('clearing or confirming does not reset the 60 s resend limit', async () => {
+    const { orgId, userId } = await owner()
+    const t0 = new Date('2026-11-03T00:00:00Z')
+    await requestDigestEmail(orgId, userId, 'a@contoso.example', t0)
+    await clearDigestEmail(orgId, userId)
+    await expect(requestDigestEmail(orgId, userId, 'b@elsewhere.example', new Date(t0.getTime() + 10_000))).rejects.toThrow(/less than a minute ago/)
+
+    const t1 = new Date(t0.getTime() + DIGEST_RESEND_MS)
+    await requestDigestEmail(orgId, userId, 'c@contoso.example', t1)
+    await confirmDigestEmail(userId, tokenFrom(send), new Date(t1.getTime() + 5_000))
+    await expect(requestDigestEmail(orgId, userId, 'd@elsewhere.example', new Date(t1.getTime() + 20_000))).rejects.toThrow(/less than a minute ago/)
+    expect(send).toHaveBeenCalledTimes(2)
+    expect((await membership(orgId, userId)).digestEmailRequestedAt!.getTime()).toBe(t1.getTime())
+  })
+
+  /** Make the next token lookup see `row` as it was, so a change can land between lookup and update. */
+  function staleLookup(row: Awaited<ReturnType<typeof membership>>, orgName: string, role = row.role) {
+    const stale = [{ id: row.id, orgId: row.orgId, orgName, role, pending: row.digestEmailPending, hash: row.digestEmailTokenHash, expiresAt: row.digestEmailTokenExpiresAt }]
+    const chain = { from: () => chain, innerJoin: () => chain, where: () => chain, limit: async () => stale }
+    vi.spyOn(getDb(), 'select').mockImplementationOnce((() => chain) as never)
+  }
+
+  it('expired-link cleanup only clears that token, never a newer pending request', async () => {
+    const { orgId, userId } = await owner()
+    const t0 = new Date('2026-11-04T00:00:00Z')
+    await requestDigestEmail(orgId, userId, 'old@contoso.example', t0)
+    const oldToken = tokenFrom(send)
+    const oldRow = await membership(orgId, userId)
+    // A newer request lands after the expired link was looked up.
+    const t1 = new Date(t0.getTime() + DIGEST_TOKEN_TTL_MS + 1)
+    await requestDigestEmail(orgId, userId, 'new@contoso.example', t1)
+    const newToken = tokenFrom(send)
+
+    staleLookup(oldRow, 'Digest')
+    await expect(confirmDigestEmail(userId, oldToken, t1)).rejects.toThrow(/expired/)
+    expect((await membership(orgId, userId)).digestEmailPending).toBe('new@contoso.example')
+    expect((await confirmDigestEmail(userId, newToken, t1)).email).toBe('new@contoso.example')
+  })
+
+  it('a demoted owner cannot confirm a live link or clear their contact', async () => {
+    const { orgId, userId } = await owner()
+    await requestDigestEmail(orgId, userId, 'first@contoso.example')
+    await confirmDigestEmail(userId, tokenFrom(send))
+
+    const t1 = new Date(Date.now() + DIGEST_RESEND_MS)
+    await requestDigestEmail(orgId, userId, 'second@contoso.example', t1)
+    const token = tokenFrom(send)
+    await setMemberRole(orgId, userId, 'analyst')
+
+    expect(await previewDigestEmail(userId, token, t1)).toMatchObject({ status: 'invalid', message: expect.stringMatching(/Only owners/) })
+    await expect(confirmDigestEmail(userId, token, t1)).rejects.toThrow(/Only owners/)
+    await expect(clearDigestEmail(orgId, userId)).rejects.toThrow(/Only owners/)
+    let row = await membership(orgId, userId)
+    expect(row.digestEmail).toBe('first@contoso.example')
+    expect(row.digestEmailPending).toBe('second@contoso.example')
+
+    // Demoted between the lookup and the update: the UPDATE's role check still refuses.
+    staleLookup(row, 'Digest', 'owner')
+    await expect(confirmDigestEmail(userId, token, t1)).rejects.toThrow(/not valid/)
+    row = await membership(orgId, userId)
+    expect(row.digestEmail).toBe('first@contoso.example')
+    expect(await auditFor(orgId, 'digest_email_confirmed')).toHaveLength(1)
+    expect(await auditFor(orgId, 'digest_email_cleared')).toHaveLength(0)
   })
 
   it('recipients are COALESCE(digest_email, user.email) per owner, scoped to the org', async () => {

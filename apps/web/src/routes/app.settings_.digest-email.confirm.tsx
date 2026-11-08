@@ -29,32 +29,43 @@ const CRUMBS = [{ label: 'Settings', to: '/app/settings' }, { label: 'Confirm di
 function ConfirmDigestEmail() {
   const preview = Route.useLoaderData()
   const { token } = Route.useSearch()
+  const { session } = Route.useRouteContext()
   const router = useRouter()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [confirmed, setConfirmed] = useState<string | null>(null)
+  const [confirmed, setConfirmed] = useState<{ orgId: string; orgName: string; email: string } | null>(null)
   const doneRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (confirmed) doneRef.current?.focus()
   }, [confirmed])
 
-  if (confirmed)
+  if (confirmed) {
+    // Settings always shows the current organisation (there is no org switcher), so say plainly
+    // when the confirmed address belongs to a different one.
+    const otherOrg = confirmed.orgId !== session.org.id
     return (
       <>
         <PageHead title="Digest email confirmed" crumbs={CRUMBS} />
         <div ref={doneRef} tabIndex={-1}>
           <Notice tone="ok" title="Address confirmed">
-            Daily digest email for this organisation now goes to <strong>{confirmed}</strong>.
+            Daily digest email for <strong>{confirmed.orgName}</strong> now goes to <strong>{confirmed.email}</strong>.
+            {otherOrg && (
+              <>
+                {' '}
+                This address applies to {confirmed.orgName} only. Settings shows your current organisation, {session.org.name}, whose digest address is unchanged.
+              </>
+            )}
           </Notice>
         </div>
         <p>
           <Link to="/app/settings" hash="digest-email">
-            Back to Settings
+            {otherOrg ? `Back to Settings for ${session.org.name}` : 'Back to Settings'}
           </Link>
         </p>
       </>
     )
+  }
 
   if (preview.status !== 'ready')
     return (
@@ -77,7 +88,7 @@ function ConfirmDigestEmail() {
     try {
       const r = await confirmDigestEmailFn({ data: { token: token ?? '' } })
       if (r.ok) {
-        setConfirmed(r.result.email)
+        setConfirmed(r.result)
         // The token is now spent; refresh cached loaders (Settings shows the new address).
         void router.invalidate()
       } else setError(r.error)

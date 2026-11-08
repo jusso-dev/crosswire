@@ -13,7 +13,7 @@ on:
         default: ''
     outputs:
       image:
-        description: Immutable image reference (sha tag)
+        description: Immutable image reference, pinned to the attested digest (repo@sha256:...)
         value: ${{ jobs.build.outputs.image }}
 
 permissions:
@@ -29,7 +29,7 @@ jobs:
       id-token: write # Sigstore signing certificate for attestations
       attestations: write
     outputs:
-      image: ${{ steps.meta.outputs.image }}
+      image: ${{ steps.meta.outputs.repo }}@${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -81,14 +81,10 @@ jobs:
           EXTRA_TAG: ${{ inputs.tags }}
         run: |
           docker tag crosswire:scan "$IMAGE"
-          docker push "$IMAGE"
-          if [ -n "$EXTRA_TAG" ]; then
-            docker tag crosswire:scan "$REPO:$EXTRA_TAG"
-            docker push "$REPO:$EXTRA_TAG"
-          fi
-          # Digest as served by the registry for the sha tag (what `oci://...:sha-<sha>` resolves to).
-          digest="$(docker buildx imagetools inspect "$IMAGE" --format '{{json .Manifest}}' | jq -r .digest)"
-          echo "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::could not resolve pushed digest ($digest)"; exit 1; }
+          # Digest reported by this push itself, so a concurrent build that re-pushes the same
+          # sha tag cannot swap the image these attestations are bound to.
+          digest="$(docker push "$IMAGE" | sed -nE 's/.*digest: (sha256:[0-9a-f]{64}).*/\1/p' | tail -n1)"
+          echo "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::could not read the digest from docker push ($digest)"; exit 1; }
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       # Signed SLSA provenance + SBOM attestations bound to the pushed digest (verify: docs/releasing.md).
       # actions/attest supersedes attest-build-provenance / attest-sbom (now thin wrappers over it).
@@ -108,3 +104,12 @@ jobs:
           sbom-path: sbom.spdx.json
           push-to-registry: true
           create-storage-record: false
+      # The version tag is published only after both attestations succeed, and points at the
+      # attested digest, so a release tag never exists without provenance.
+      - name: Publish version tag
+        if: inputs.tags != ''
+        env:
+          REPO: ${{ steps.meta.outputs.repo }}
+          EXTRA_TAG: ${{ inputs.tags }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: docker buildx imagetools create --tag "$REPO:$EXTRA_TAG" "$REPO@$DIGEST"

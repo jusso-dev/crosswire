@@ -10,6 +10,9 @@ import { listSchedules } from './schedules'
 export const REPORT_MAX_CHARS = 200_000
 const SAMPLE_ROWS = 5
 const SAMPLE_COLS = 8
+/** Scheduled runs that get a sample: only the most recent few, within their own share of the report. */
+export const SCHEDULED_SAMPLE_RUNS = 5
+export const SCHEDULED_SAMPLE_BUDGET = Math.floor(REPORT_MAX_CHARS * 0.3)
 
 const md = (s: unknown) => redactString(String(s ?? '')).replace(/\r?\n/g, ' ').replace(/\|/g, '\\|')
 const fence = (s: string) => {
@@ -104,12 +107,25 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
     const runs = evidence.filter((e) => e.type === 'scheduled_result' || e.type === 'scheduled_failed').slice(-20)
     if (runs.length) {
       out.push('', 'Recent scheduled results:', '')
+      // Issue #99: each run's own sample, indented under its bullet, same redaction and bounds. Only
+      // the most recent SCHEDULED_SAMPLE_RUNS results get one, within SCHEDULED_SAMPLE_BUDGET
+      // characters, so samples cannot crowd out the response proposals and timeline below.
+      const withSample = new Set(runs.filter((e) => e.type === 'scheduled_result').slice(-SCHEDULED_SAMPLE_RUNS).map((e) => e.id))
+      let budget = SCHEDULED_SAMPLE_BUDGET
+      let countsOnly = 0
       for (const e of runs) {
         const pl = e.payload as StoredSummary & { error?: string }
         out.push(`- ${iso(e.createdAt)} · ${e.type === 'scheduled_result' ? `${pl.rowCount ?? 0} rows${pl.mode === 'demo' ? ' · demo data' : ''}` : `failed: ${md(truncate(pl.error ?? '', 200))}`}`)
-        // Issue #99: each run's own sample, indented under its bullet, same redaction and bounds.
-        if (e.type === 'scheduled_result') out.push(...sampleBlock(pl).map((l) => (l ? `  ${l}` : l)))
+        if (e.type !== 'scheduled_result') continue
+        const block = sampleBlock(pl).map((l) => (l ? `  ${l}` : l))
+        if (!block.length) continue
+        const size = block.reduce((n, l) => n + l.length + 1, 0)
+        if (withSample.has(e.id) && size <= budget) {
+          out.push(...block)
+          budget -= size
+        } else countsOnly++
       }
+      if (countsOnly) out.push('', `_Samples are shown for the ${SCHEDULED_SAMPLE_RUNS} most recent runs at most, within a size limit; ${countsOnly} run${countsOnly === 1 ? ' is' : 's are'} listed with row counts only._`)
     }
     out.push('')
   }

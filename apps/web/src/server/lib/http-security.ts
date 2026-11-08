@@ -145,10 +145,11 @@ export class DbRateLimiter implements AsyncRateLimiter {
     const win = sql`(${this.windowMs}::int * interval '1 millisecond')`
     try {
       const res = (await getDb().execute(sql`
-        insert into app_rate_limits as r (key, count, window_started_at) values (${k}, 1, ${ts})
+        insert into app_rate_limits as r (key, count, window_started_at, expires_at) values (${k}, 1, ${ts}, ${ts} + ${win})
         on conflict (key) do update set
           count = case when r.window_started_at <= ${ts} - ${win} then 1 else r.count + 1 end,
-          window_started_at = case when r.window_started_at <= ${ts} - ${win} then ${ts} else r.window_started_at end
+          window_started_at = case when r.window_started_at <= ${ts} - ${win} then ${ts} else r.window_started_at end,
+          expires_at = case when r.window_started_at <= ${ts} - ${win} then ${ts} + ${win} else r.window_started_at + ${win} end
         returning count, ceil(extract(epoch from (window_started_at + ${win} - ${ts})))::int as retry_after_sec
       `)) as unknown as RateRow[] | { rows: RateRow[] }
       const row = Array.isArray(res) ? res[0] : res.rows[0]
@@ -161,10 +162,14 @@ export class DbRateLimiter implements AsyncRateLimiter {
     }
   }
 
-  /** Drop windows that ended long ago so the table stays small. Best effort. */
-  async sweep() {
+  /**
+   * Drop rows whose own window has ended, so the table stays small. Each row carries its expiry, so
+   * a short-window limiter never deletes a live bucket of a longer-window limiter. Best effort.
+   */
+  async sweep(now?: number) {
+    const ts = now === undefined ? sql`now()` : sql`${new Date(now).toISOString()}::timestamptz`
     try {
-      await getDb().execute(sql`delete from app_rate_limits where window_started_at < now() - (${this.windowMs * 2}::int * interval '1 millisecond')`)
+      await getDb().execute(sql`delete from app_rate_limits where expires_at < ${ts}`)
     } catch {
       /* best effort */
     }

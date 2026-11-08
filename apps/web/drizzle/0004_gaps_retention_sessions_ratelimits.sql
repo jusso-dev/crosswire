@@ -9,7 +9,8 @@ CREATE TABLE "rate_limit" (
 CREATE TABLE "app_rate_limits" (
 	"key" text PRIMARY KEY NOT NULL,
 	"count" integer NOT NULL,
-	"window_started_at" timestamp with time zone NOT NULL
+	"window_started_at" timestamp with time zone NOT NULL,
+	"expires_at" timestamp with time zone NOT NULL
 );
 --> statement-breakpoint
 ALTER TABLE "kql_proposals" ADD COLUMN "requested_by" text;--> statement-breakpoint
@@ -17,6 +18,7 @@ ALTER TABLE "org_memberships" ADD COLUMN "digest_email" text;--> statement-break
 ALTER TABLE "org_memberships" ADD COLUMN "digest_email_pending" text;--> statement-breakpoint
 ALTER TABLE "org_memberships" ADD COLUMN "digest_email_token_hash" text;--> statement-breakpoint
 ALTER TABLE "org_memberships" ADD COLUMN "digest_email_token_expires_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "org_memberships" ADD COLUMN "digest_email_requested_at" timestamp with time zone;--> statement-breakpoint
 CREATE INDEX "agent_decisions_created_idx" ON "agent_decisions" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "audit_events_created_idx" ON "audit_events" USING btree ("created_at");--> statement-breakpoint
 CREATE INDEX "chat_messages_created_idx" ON "chat_messages" USING btree ("created_at");--> statement-breakpoint

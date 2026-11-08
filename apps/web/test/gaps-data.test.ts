@@ -1,15 +1,15 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { getDb } from '../src/server/db/client'
 import { agentDecisions, auditEvents, chatMessages, chatThreads, huntEvidence, kqlProposals, messageFeedback, tiFetchCache } from '../src/server/db/schema'
 import { resetEnvForTests } from '../src/server/env'
 import { approveAndRunKql, createHunt, getHunt, proposeKql } from '../src/server/hunting/hunts'
 import { HuntingClient, setHuntingClient } from '../src/server/hunting/client'
-import { huntReportMarkdown, REPORT_MAX_CHARS } from '../src/server/hunting/report'
+import { huntReportMarkdown, REPORT_MAX_CHARS, SCHEDULED_SAMPLE_BUDGET, SCHEDULED_SAMPLE_RUNS } from '../src/server/hunting/report'
 import { createSchedule, runDueSchedules } from '../src/server/hunting/schedules'
 import { buildTools, withoutSamples } from '../src/server/agents/tools'
 import { loadDemoFixtures } from '../src/server/ops/fixtures'
-import { runRetention } from '../src/server/ops/retention'
+import { DECISION_SAMPLES_REMOVED, runRetention } from '../src/server/ops/retention'
 import { politeFetch } from '../src/server/ti/http'
 import { team } from './helpers'
 
@@ -159,6 +159,30 @@ describe('TI response size cap', () => {
     const r = await politeFetch(url(), { fetchImpl: fetchImpl as unknown as typeof fetch })
     expect(r.body).toBe(body)
   })
+
+  it('refuses an oversized cached body on the fresh-cache and 304 paths, and deletes the cache row', async () => {
+    withEnv({ TI_MAX_RESPONSE_BYTES: '100' })
+    const db = getDb()
+    const big = 'é'.repeat(60) // 120 bytes, 60 characters: the cap counts bytes
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 304 }))
+
+    const fresh = url()
+    await db.insert(tiFetchCache).values({ url: fresh, status: 200, body: big, fetchedAt: new Date() })
+    await expect(politeFetch(fresh, { fetchImpl: fetchImpl as unknown as typeof fetch })).rejects.toThrow('TI fetch refused: response larger than 100 bytes')
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(await db.select().from(tiFetchCache).where(eq(tiFetchCache.url, fresh))).toHaveLength(0)
+
+    const stale = url()
+    await db.insert(tiFetchCache).values({ url: stale, status: 200, etag: '"v1"', body: big, fetchedAt: ago(2) })
+    await expect(politeFetch(stale, { fetchImpl: fetchImpl as unknown as typeof fetch })).rejects.toThrow('TI fetch refused: response larger than 100 bytes')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(await db.select().from(tiFetchCache).where(eq(tiFetchCache.url, stale))).toHaveLength(0)
+
+    // At the cap, the cached body is still served.
+    const ok = url()
+    await db.insert(tiFetchCache).values({ url: ok, status: 200, body: 'x'.repeat(100), fetchedAt: new Date() })
+    expect((await politeFetch(ok, { fetchImpl: fetchImpl as unknown as typeof fetch })).fromCache).toBe(true)
+  })
 })
 
 describe('retention purge', () => {
@@ -183,6 +207,10 @@ describe('retention purge', () => {
     // Decisions and audit.
     const [oldDec] = await db.insert(agentDecisions).values({ orgId: t.orgId, actorType: 'agent', actorKey: 'lead', action: 'x', createdAt: ago(400) }).returning()
     const [newDec] = await db.insert(agentDecisions).values({ orgId: t.orgId, actorType: 'agent', actorKey: 'lead', action: 'y' }).returning()
+    // Historical get_hunt outputs logged with sample rows: one past the samples cutoff, one inside it.
+    const legacy = '{"proposals":[{"resultSummary":{"sample":[{"DeviceName":"wks-1"}]}}]}'
+    const [oldHunt] = await db.insert(agentDecisions).values({ orgId: t.orgId, actorType: 'agent', actorKey: 'hunter', action: 'tool:get_hunt', outputSummary: legacy, createdAt: ago(200) }).returning()
+    const [newHunt] = await db.insert(agentDecisions).values({ orgId: t.orgId, actorType: 'agent', actorKey: 'hunter', action: 'tool:get_hunt', outputSummary: legacy, createdAt: ago(10) }).returning()
     const [oldAudit] = await db.insert(auditEvents).values({ category: 'auth', action: 'old', actorType: 'system', createdAt: ago(800) }).returning()
     const [newAudit] = await db.insert(auditEvents).values({ category: 'auth', action: 'new', actorType: 'system', createdAt: ago(100) }).returning()
 
@@ -202,7 +230,9 @@ describe('retention purge', () => {
     // Small batches exercise the loop.
     const counts = await runRetention(new Date(), { batch: 1 })
     expect(counts.chatThreads).toBeGreaterThanOrEqual(1)
-    expect(counts.chatMessages).toBeGreaterThanOrEqual(1)
+    // The idle thread's message (cascade) and the active thread's old message.
+    expect(counts.chatMessages).toBeGreaterThanOrEqual(2)
+    expect(counts.decisionSamples).toBeGreaterThanOrEqual(1)
     expect(counts.agentDecisions).toBeGreaterThanOrEqual(1)
     expect(counts.auditEvents).toBeGreaterThanOrEqual(1)
     expect(counts.kqlSamples).toBeGreaterThanOrEqual(1)
@@ -216,6 +246,10 @@ describe('retention purge', () => {
     expect(await db.select().from(chatMessages).where(eq(chatMessages.id, newMsg!.id))).toHaveLength(1)
     expect(await db.select().from(agentDecisions).where(eq(agentDecisions.id, oldDec!.id))).toHaveLength(0)
     expect(await db.select().from(agentDecisions).where(eq(agentDecisions.id, newDec!.id))).toHaveLength(1)
+    const [oldHuntAfter] = await db.select().from(agentDecisions).where(eq(agentDecisions.id, oldHunt!.id))
+    expect(oldHuntAfter!.outputSummary).toBe(DECISION_SAMPLES_REMOVED)
+    const [newHuntAfter] = await db.select().from(agentDecisions).where(eq(agentDecisions.id, newHunt!.id))
+    expect(newHuntAfter!.outputSummary).toBe(legacy)
     expect(await db.select().from(auditEvents).where(eq(auditEvents.id, oldAudit!.id))).toHaveLength(0)
     expect(await db.select().from(auditEvents).where(eq(auditEvents.id, newAudit!.id))).toHaveLength(1)
 
@@ -235,6 +269,44 @@ describe('retention purge', () => {
     expect(again.kqlSamples).toBe(0)
     expect(again.evidenceSamples).toBe(0)
     expect(again.chatThreads).toBe(0)
+    expect(again.decisionSamples).toBe(0)
+  })
+
+  it('counts the messages a thread delete cascades to', async () => {
+    withEnv({ RETENTION_DECISIONS_DAYS: '0', RETENTION_SAMPLES_DAYS: '0', RETENTION_AUDIT_DAYS: '0' })
+    const t = await team()
+    const db = getDb()
+    // Clear out anything older tests left past the cutoff, so the counts below are exact.
+    await runRetention()
+    const [idle] = await db.insert(chatThreads).values({ orgId: t.orgId, userId: t.analyst, title: 'idle' }).returning()
+    // Recent messages in an idle thread: only the cascade removes them.
+    await db.insert(chatMessages).values([1, 2, 3].map((i) => ({ orgId: t.orgId, threadId: idle!.id, role: 'user' as const, content: `m${i}` })))
+    await db.update(chatThreads).set({ updatedAt: ago(400) }).where(eq(chatThreads.id, idle!.id))
+    const counts = await runRetention(new Date(), { batch: 10 })
+    expect(counts.chatThreads).toBe(1)
+    expect(counts.chatMessages).toBe(3)
+  })
+
+  it('a failing stage still writes the purge audit with the counts so far and partial: true, then rethrows', async () => {
+    withEnv({ RETENTION_SAMPLES_DAYS: '0', RETENTION_AUDIT_DAYS: '0' })
+    const t = await team()
+    const db = getDb()
+    await db.insert(agentDecisions).values({ orgId: t.orgId, actorType: 'agent', actorKey: 'lead', action: 'partial', createdAt: ago(400) })
+    // Chat succeeds (real), then the decisions stage fails.
+    const realDelete = db.delete.bind(db)
+    vi.spyOn(db, 'delete').mockImplementation(((table: unknown) => {
+      if (table === agentDecisions) throw new Error('decisions stage down')
+      return realDelete(table as never)
+    }) as never)
+    try {
+      await expect(runRetention()).rejects.toThrow('decisions stage down')
+    } finally {
+      vi.restoreAllMocks()
+    }
+    const rows = await db.select().from(auditEvents).where(and(eq(auditEvents.action, 'retention_purge'), sql`${auditEvents.data} @> '{"partial":true}'::jsonb`))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.result).toBe('failure')
+    expect(rows[0]!.data).toMatchObject({ partial: true, error: 'decisions stage down', agentDecisions: 0, chatThreads: expect.any(Number) })
   })
 
   it('a setting of 0 keeps that category forever', async () => {
@@ -243,7 +315,7 @@ describe('retention purge', () => {
     const [dec] = await getDb().insert(agentDecisions).values({ orgId: t.orgId, actorType: 'agent', actorKey: 'lead', action: 'ancient', createdAt: ago(5000) }).returning()
     const [aud] = await getDb().insert(auditEvents).values({ category: 'auth', action: 'ancient', actorType: 'system', createdAt: ago(5000) }).returning()
     const counts = await runRetention()
-    expect(counts).toEqual({ chatThreads: 0, chatMessages: 0, agentDecisions: 0, kqlSamples: 0, evidenceSamples: 0, auditEvents: 0 })
+    expect(counts).toEqual({ chatThreads: 0, chatMessages: 0, agentDecisions: 0, kqlSamples: 0, evidenceSamples: 0, decisionSamples: 0, auditEvents: 0 })
     expect(await getDb().select().from(agentDecisions).where(eq(agentDecisions.id, dec!.id))).toHaveLength(1)
     expect(await getDb().select().from(auditEvents).where(eq(auditEvents.id, aud!.id))).toHaveLength(1)
   })
@@ -284,6 +356,47 @@ describe('hunt report: repeat-search samples (#99)', () => {
   })
 })
 
+describe('hunt report: scheduled samples stay within their budget', () => {
+  it('samples only the most recent runs within their share; older runs keep counts; proposals and timeline still appear', async () => {
+    setHuntingClient(new HuntingClient())
+    const t = await team()
+    const hunt = await createHunt(t.orgId, t.analyst, { title: 'Many runs' })
+    const db = getDb()
+    // 12 runs with wide samples: each run's block is far larger than its share of the budget would allow for all.
+    const wide = 'w'.repeat(70)
+    const rows = Array.from({ length: 5 }, (_, i) => Object.fromEntries(Array.from({ length: 8 }, (_, c) => [`C${c}`, `${wide}-${i}`])))
+    for (let i = 0; i < 12; i++) {
+      await db.insert(huntEvidence).values({
+        orgId: t.orgId,
+        huntId: hunt.id,
+        type: 'scheduled_result',
+        payload: { scheduleId: 's', rowCount: 100 + i, columns: Array.from({ length: 8 }, (_, c) => `C${c}`), sample: rows.map((r) => ({ ...r, C0: `run-${i}` })) },
+        actorType: 'system',
+        createdAt: new Date(Date.now() - (12 - i) * 60_000),
+      })
+    }
+    // listSchedules must return something for the section to render.
+    const p = await proposeKql(t.orgId, { type: 'user', id: t.analyst }, { huntId: hunt.id, target: 'defender', kql: 'DeviceInfo | take 1' })
+    await approveAndRunKql(t.orgId, t.analyst, p.id)
+    await createSchedule(t.orgId, { userId: t.approver, role: 'approver' }, { proposalId: p.id, intervalMinutes: 60 })
+
+    const md = (await huntReportMarkdown(t.orgId, hunt.id, t.analyst))!.markdown
+    const section = md.slice(md.indexOf('Recent scheduled results:'), md.indexOf('## Response proposals'))
+    const sampled = Array.from({ length: 12 }, (_, i) => i).filter((i) => section.includes(`| run-${i} |`))
+    expect(sampled.length).toBeGreaterThan(0)
+    expect(sampled.length).toBeLessThanOrEqual(SCHEDULED_SAMPLE_RUNS)
+    // Only the most recent runs are sampled.
+    expect(Math.min(...sampled)).toBeGreaterThanOrEqual(12 - SCHEDULED_SAMPLE_RUNS)
+    expect(section.length).toBeLessThan(SCHEDULED_SAMPLE_BUDGET + 5000)
+    // Every run is still listed with its count.
+    for (let i = 0; i < 12; i++) expect(section).toContain(`${100 + i} rows`)
+    expect(section).toMatch(/listed with row counts only/)
+    expect(md).toContain('## Response proposals')
+    expect(md).toContain('## Evidence timeline')
+    expect(md).not.toContain('report truncated')
+  })
+})
+
 describe('review follow-ups', () => {
   it('demo data loads under every KQL approval policy', async () => {
     for (const policy of ['approver', 'second-person'] as const) {
@@ -300,6 +413,8 @@ describe('review follow-ups', () => {
   it('the decision log keeps row counts, never sample rows', () => {
     const out = withoutSamples({ proposals: [{ id: 'p', resultSummary: { rowCount: 3, sample: [{ a: 1 }, { a: 2 }] } }], rows: [{ x: 1 }] })
     expect(out).toEqual({ proposals: [{ id: 'p', resultSummary: { rowCount: 3, sampleRows: 2 } }], rowsOmitted: 1 })
+    // A sample retention already removed says why, rather than looking like an empty result.
+    expect(withoutSamples({ rowCount: 9, sample: [], sampleExpired: true })).toEqual({ rowCount: 9, sampleRows: 'removed (retention)', sampleExpired: true })
   })
 
   it('get_hunt tool output in agent_decisions has no sample rows', async () => {

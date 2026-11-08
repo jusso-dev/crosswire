@@ -29,14 +29,16 @@ export const EXECUTION_TOOL_NAMES: readonly string[] = []
 /**
  * Decision-log copy of a tool output with stored result rows replaced by their count, so query
  * results never outlive RETENTION_SAMPLES_DAYS inside agent_decisions (kept for the longer
- * RETENTION_DECISIONS_DAYS). The model still receives the full output.
+ * RETENTION_DECISIONS_DAYS). The model still receives the full output. A sample that retention
+ * already removed is logged as 'removed (retention)', not 0, so the reason survives truncation.
  */
 export function withoutSamples(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(withoutSamples)
   if (!value || typeof value !== 'object' || value instanceof Date) return value
+  const expired = (value as { sampleExpired?: unknown }).sampleExpired === true
   const out: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(value)) {
-    if (k === 'sample' && Array.isArray(v)) out.sampleRows = v.length
+    if (k === 'sample' && Array.isArray(v)) out.sampleRows = expired ? 'removed (retention)' : v.length
     else if (k === 'rows' && Array.isArray(v)) out.rowsOmitted = v.length
     else out[k] = withoutSamples(v)
   }

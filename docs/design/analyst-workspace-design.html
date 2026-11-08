@@ -245,7 +245,7 @@
     <tr><td><code>server/agents/*</code></td><td>Charters, tool registry, memory, decision log, runtime, model adapter</td><td><code>EXECUTION_TOOL_NAMES</code> must stay empty (tested); Azure OpenAI or OpenAI-compatible</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
     <tr><td><code>server/chat/*</code></td><td>Threads, messages, feedback, SSE handler</td><td>Threads scoped by org and user; history assembled server-side</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
     <tr><td><code>server/notify/notify.ts</code></td><td>Teams and Slack webhooks</td><td>URL validation and encryption at rest; payloads exclude query results and secrets</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
-    <tr><td><code>server/lib/*</code></td><td>AES-256-GCM secret encryption with key rotation, nonce-based CSP and security headers, CORS, rate limiter, JSON logger, redaction</td><td>Rate limits are stored in Postgres and shared by every replica (<code>RATE_LIMIT_STORAGE=database</code>)</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+    <tr><td><code>server/lib/*</code></td><td>AES-256-GCM secret encryption with key rotation, nonce-based CSP and security headers, CORS, rate limiter, JSON logger, redaction</td><td>Rate limits are stored in Postgres and shared by every replica with the default <code>RATE_LIMIT_STORAGE=database</code>; <code>memory</code> keeps per-replica counters</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
     <tr><td><code>server/ops/*</code></td><td>Bootstrap first org and admin, setup checklist, demo fixtures, migration status, control-panel overview queries, daily retention purge</td><td>Bootstrap refuses if an org exists or live execution is enabled</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
     <tr><td><code>server/cli/*</code></td><td>Worker, migrate, bootstrap, ingest, match, digest, expire, compact, fixtures, retention, rotate-secrets, <code>model:check</code></td><td>Run as one-off container jobs in Azure</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
     <tr><td>Observability</td><td>JSON logs with request id; Azure Monitor OpenTelemetry when <code>APPLICATIONINSIGHTS_CONNECTION_STRING</code> is set; alert rules in Bicep</td><td><code>apps/web/telemetry.mjs</code>, <code>infra/azure/modules/alerts.bicep</code></td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
@@ -388,7 +388,7 @@
 <ul>
   <li>Result samples are small (at most 20 rows); filtering and sorting are client-side over the sample.</li>
   <li>Lists are capped server-side (hunts 200, hits 100, or 500 when scoped to a watch or day; decision log paged in 100s).</li>
-  <li><span class="tag t-impl">IMPLEMENTED</span> Rate limits are stored in Postgres and shared by every web replica. Repeat-search claims are atomic, so extra workers are safe.</li>
+  <li><span class="tag t-impl">IMPLEMENTED</span> With the default <code>RATE_LIMIT_STORAGE=database</code>, rate limits are stored in Postgres and shared by every web replica; with <code>memory</code> each replica keeps its own counters. Repeat-search claims are atomic, so extra workers are safe.</li>
   <li><span class="tag t-gap">GAP</span> No load test has been run. No pagination on the hunts list beyond 200.</li>
 </ul>
 
@@ -455,7 +455,7 @@
     <tr><td>T6</td><td>XSS from feed content, results or model output</td><td>TB2, TB4</td><td>React escaping; markdown without raw HTML; no <code>dangerouslySetInnerHTML</code> on untrusted data; CSP with <code>default-src 'self'</code>, <code>object-src 'none'</code>, <code>frame-ancestors 'none'</code></td><td>Production CSP uses a per-request script nonce; <code>style-src</code> still allows inline styles</td></tr>
     <tr><td>T7</td><td>Prompt injection through feed text, results or chat</td><td>TB4</td><td>Agents can only read and propose; every action needs a person; tool allowlists; tool arguments validated by zod; decisions logged</td><td>A model can still produce misleading text or proposals; reviewers must read them</td></tr>
     <tr><td>T8</td><td>Secret disclosure in logs, memory or UI</td><td>All</td><td>Redaction of tokens, JWTs, keys and secret-named fields in logs, audit, decisions and memory; secrets never returned to the browser; Key Vault references in Azure</td><td>Pattern-based redaction can miss novel formats</td></tr>
-    <tr><td>T9</td><td>Supply-chain compromise</td><td>Build</td><td>Pinned actions by SHA; frozen lockfile; SBOM (SPDX); Trivy gate on fixable critical CVEs; non-root container</td><td>Attestations are verified manually (<code>gh attestation verify</code>); deploys do not yet enforce them</td></tr>
+    <tr><td>T9</td><td>Supply-chain compromise</td><td>Build</td><td>Pinned actions by SHA; frozen lockfile; SBOM (SPDX); Trivy gate on fixable critical CVEs; non-root container</td><td>Deploys run images by digest; a promoted release is verified (<code>gh attestation verify</code>, source ref) before deploy. Images built inside the same deploy run are trusted from that run</td></tr>
     <tr><td>T10</td><td>Denial of service</td><td>TB1, TB4</td><td>Per-IP chat limit; Better Auth limits; message size cap; agent timeout; model iterations capped</td><td>Limits are shared through Postgres; the chat limiter fails open if the database errors; no WAF</td></tr>
     <tr><td>T11</td><td>Unauthorised live containment</td><td>TB3</td><td>Dry-run default; executor flags; target cap; allowlisted playbooks; per-call audit; rollback as proposal</td><td>Requires operational change control to stay effective</td></tr>
     <tr><td>T12</td><td>Account takeover via email claim</td><td>TB1</td><td>Entra UPN fallback always unverified; Microsoft provider not trusted for implicit linking; org placement by tenant id</td><td>Local accounts can exist if email sign-up is enabled (off in Azure)</td></tr>
@@ -516,7 +516,7 @@
   <li>GitHub-hosted runners; actions pinned to commit SHAs; <code>pnpm install --frozen-lockfile</code>; lint, typecheck, tests, build and migration drift check on every PR.</li>
   <li>Image job: build, SBOM (Anchore, SPDX), Trivy gate failing on fixable critical CVEs; image pushed to GHCR by immutable SHA tag.</li>
   <li>Container runs as the <code>node</code> user with a health check.</li>
-  <li><span class="tag t-impl">IMPLEMENTED</span> Dependabot (Actions, npm, Docker, weekly); CodeQL for TypeScript and workflow files on every PR, push and weekly; signed build provenance and SBOM attestations on every pushed image (<code>docs/releasing.md</code>).</li>
+  <li><span class="tag t-impl">IMPLEMENTED</span> Dependabot (Actions, npm, Docker, weekly); CodeQL for TypeScript and workflow files on every PR, push and weekly; signed build provenance and SBOM attestations bound to the pushed digest; release tags are published only after both attestations succeed (<code>docs/releasing.md</code>).</li>
 </ul>
 
 <h2 id="s13">13. AI agent safety</h2>
@@ -546,7 +546,7 @@
     <tr><td><code>RESPONSE_EXECUTOR_SENTINEL|LOGICAPP|GRAPH</code></td><td><code>off</code></td><td><code>off</code>, <code>dry-run</code> or <code>on</code></td></tr>
     <tr><td><code>RESPONSE_ALLOW_SELF_APPROVAL</code>, <code>RESPONSE_MAX_LIVE_TARGETS</code>, <code>RESPONSE_PROPOSAL_TTL_HOURS</code></td><td><code>false</code>, 10, 24</td><td>Decision rules and caps</td></tr>
     <tr><td><code>MODEL_PROVIDER</code>, <code>AZURE_OPENAI_ENDPOINT</code>, <code>AZURE_OPENAI_DEPLOYMENT</code>, <code>AZURE_CLIENT_ID</code></td><td><code>off</code></td><td>Chat model; keyless via managed identity</td></tr>
-    <tr><td><code>AGENT_TIMEOUT_MS</code>, <code>RATE_LIMIT_CHAT_PER_MIN</code>, <code>RATE_LIMIT_STORAGE</code></td><td>90 s, 20, <code>database</code></td><td>Chat limits; limiter counters shared across replicas</td></tr>
+    <tr><td><code>AGENT_TIMEOUT_MS</code>, <code>RATE_LIMIT_CHAT_PER_MIN</code>, <code>RATE_LIMIT_STORAGE</code></td><td>90 s, 20, <code>database</code></td><td>Chat limits; <code>database</code> shares counters across replicas, <code>memory</code> keeps them per replica</td></tr>
     <tr><td><code>KQL_APPROVAL_POLICY</code></td><td><code>member</code></td><td><code>member</code>, <code>approver</code> or <code>second-person</code></td></tr>
     <tr><td><code>SESSION_IDLE_MINUTES</code>, <code>SESSION_MAX_AGE_HOURS</code></td><td>60, 12</td><td>Idle timeout and absolute session cap</td></tr>
     <tr><td><code>RETENTION_CHAT_DAYS</code>, <code>RETENTION_DECISIONS_DAYS</code>, <code>RETENTION_SAMPLES_DAYS</code>, <code>RETENTION_AUDIT_DAYS</code></td><td>365, 365, 180, 730</td><td>Daily purge; 0 keeps forever</td></tr>
@@ -602,7 +602,7 @@
 <h2 id="s16">16. Testing and acceptance criteria</h2>
 <h3>16.1 Test inventory at the commit</h3>
 <ul>
-  <li>Unit and integration (Vitest, real migrations on PGlite): 189 tests in 21 files; 187 pass and 2 are skipped (run locally on 8 November 2026); covers auth, RBAC, tenant isolation, hunting safety, schedules, response gates, notifications, TI, digests and time zones, agents and chat with a mock model.</li>
+  <li>Unit and integration (Vitest, real migrations on PGlite): 197 tests in 21 files; 195 pass and 2 are skipped (run locally on 8 November 2026); covers auth, RBAC, tenant isolation, hunting safety, schedules, response gates, notifications, TI, digests and time zones, agents and chat with a mock model.</li>
   <li>End to end (Playwright, local, not in PR CI): golden path, hunt workspace (keyboard, filters, history, theme, 390 px and 1000 px dialogs), chat streaming (deterministic mock), axe scan.</li>
   <li>End to end on a local production build of this branch (8 November 2026): all 6 Playwright specs pass with the nonce CSP active and no CSP violations, including the axe WCAG 2.2 AA scan.</li>
   <li>Live lab check (8 November 2026): smoke test, in-container Azure OpenAI call via managed identity, Entra sign-in, hunt run, analyst read-only approval, streamed chat with a tool call.</li>
@@ -652,10 +652,10 @@
     <tr><td>CSP script policy</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Per-request nonce; verified in a production build with no violations</td><td>Done</td></tr>
     <tr><td>Feed size limit</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>TI_MAX_RESPONSE_BYTES</code></td><td>Done</td></tr>
     <tr><td>Key rotation</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>APP_ENCRYPTION_KEY_PREVIOUS</code> plus <code>pnpm rotate-secrets</code></td><td>Done</td></tr>
-    <tr><td>Supply chain</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Dependabot, CodeQL, provenance and SBOM attestations. Enforcing verification at deploy time is a follow-up</td><td>Done</td></tr>
+    <tr><td>Supply chain</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Dependabot, CodeQL, provenance and SBOM attestations; release promotion verifies attestations and deploys the verified digest</td><td>Done</td></tr>
     <tr><td>Private networking</td><td><span class="tag t-part">PARTIAL</span></td><td>Opt-in <code>privateNetworking</code> Bicep mode added and linted, not yet deployed; the lab keeps public access. Key Vault private endpoint and NSGs are follow-ups</td><td>Before production</td></tr>
     <tr><td>Screen-reader testing</td><td><span class="tag t-gap">GAP</span></td><td>Manual NVDA and VoiceOver passes</td><td>1</td></tr>
-    <tr><td>Load testing</td><td><span class="tag t-gap">GAP</span></td><td>No measured capacity. Rate limits are now shared across replicas</td><td>2</td></tr>
+    <tr><td>Load testing</td><td><span class="tag t-gap">GAP</span></td><td>No measured capacity. Rate limits are shared across replicas when stored in the database (the default)</td><td>2</td></tr>
     <tr><td>KQL approval role</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Decided 08-11-2026: configurable <code>KQL_APPROVAL_POLICY</code>, default <code>member</code></td><td>Done</td></tr>
     <tr><td>Session lifetime</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Decided 08-11-2026: 1 hour idle, 12 hours absolute, configurable</td><td>Done</td></tr>
     <tr><td>Repeat-run samples in report</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td>Issue #99: five redacted rows per run</td><td>Done</td></tr>

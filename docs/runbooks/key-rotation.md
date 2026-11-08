@@ -147,11 +147,16 @@ The result has, per table (`orgConnectors`, `orgResponseConnectors`, `orgNotific
    ```
 
 2. Restart the web and worker revisions. Check a connector and a channel again.
-3. Delete the Key Vault secret `app-encryption-key-previous` (`az keyvault secret delete`).
+3. Keep the Key Vault secret `app-encryption-key-previous`; do not delete it. Key Vault keeps a
+   deleted secret's name reserved during soft delete (90 days by default), which would block step 1
+   of the next rotation. The next rotation overwrites it with `az keyvault secret set`. If an earlier
+   rotation already deleted it, recover it with
+   `az keyvault secret recover --vault-name <vault> --name app-encryption-key-previous`, then set the
+   new value.
 
 **Keep the old key for restores.** Database backups taken before the rotation hold values
 encrypted with the old key. Do not purge the earlier version of `app-encryption-key` (or the
-soft-deleted `app-encryption-key-previous`) until the backup retention period has passed. To use
+earlier versions of `app-encryption-key-previous`) until the backup retention period has passed. To use
 such a backup, restore it, then set the old key as `APP_ENCRYPTION_KEY_PREVIOUS` and run step 2
 again. See [backup and restore](backup-restore.md).
 

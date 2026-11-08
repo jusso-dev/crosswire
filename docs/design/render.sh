@@ -28,6 +28,6 @@ trap 'rm -rf "$profile"' EXIT
 "$chrome" --headless=new --disable-gpu --no-first-run --no-default-browser-check \
   --user-data-dir="$profile" \
   --no-pdf-header-footer --generate-pdf-document-outline \
-  --print-to-pdf="$out" "file://$src" >/dev/null 2>&1
+  --print-to-pdf="$out" "$(python3 -c 'import pathlib,sys;print(pathlib.Path(sys.argv[1]).as_uri())' "$src")" >/dev/null 2>&1
 
 echo "Wrote $out"
