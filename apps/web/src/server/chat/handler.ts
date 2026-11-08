@@ -64,6 +64,8 @@ export async function handleChat(request: Request): Promise<Response> {
   const history = await threadMessagesForModel(org.id, user.id, threadId)
 
   const abortController = new AbortController()
+  // The abort listener can fire before the run assigns handle, so it stays a let.
+  // eslint-disable-next-line prefer-const
   let handle: AgentRunHandle | undefined
   request.signal.addEventListener('abort', () => {
     abortController.abort()
@@ -82,7 +84,7 @@ export async function handleChat(request: Request): Promise<Response> {
   async function* persisted(): AsyncIterable<StreamChunk> {
     let reply = ''
     let error: string | null = null
-    let interrupted = false
+    let interrupted: boolean
     try {
       for await (const chunk of withTimeout(active.stream, agentTimeoutMs(), abortController)) {
         if (chunk.type === EventType.TEXT_MESSAGE_CONTENT && 'delta' in chunk && typeof chunk.delta === 'string') reply += chunk.delta
