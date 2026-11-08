@@ -1,8 +1,8 @@
-import { sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { getDb } from '../db/client'
-import { agentUsage } from '../db/schema'
+import { agentRuns, agentUsage } from '../db/schema'
 import { env } from '../env'
-import { assessSquadContext, recordSquadUsage } from './squad-sdk'
+import { assessContextWindow, recordSquadUsage } from './squad-sdk'
 
 export class BudgetError extends Error {}
 
@@ -19,10 +19,20 @@ export function outputCharCap() {
  * Dollar cost from a configured rate. Returns null when the operator did not set a rate.
  * Crosswire does not invent a price for a customer Azure deployment.
  */
+const PG_INT_MAX = 2_147_483_647
+
+function fitsPgInt(value: number) {
+  return Number.isInteger(value) && value >= 0 && value <= PG_INT_MAX
+}
+
 export function costMicros(inputTokens: number, outputTokens: number): number | null {
   const rate = env().BUDGET_USD_PER_MILLION_TOKENS
   if (!rate) return null
-  return Math.round(rate * (inputTokens + outputTokens))
+  const product = rate * (inputTokens + outputTokens)
+  if (!Number.isFinite(product)) return null
+  const micros = Math.round(product)
+  if (!fitsPgInt(micros)) return null
+  return micros
 }
 
 export interface BudgetDecision {
@@ -49,9 +59,8 @@ export async function checkBudget(orgId: string, input: { sessionId: string; mod
   }
   let snapshot
   try {
-    snapshot = await assessSquadContext({
+    snapshot = assessContextWindow({
       sessionId: input.sessionId,
-      model: input.model,
       inputTokens: estimatedInputTokens,
       outputTokens: 0,
       contextWindowTokens: e.BUDGET_CONTEXT_WINDOW_TOKENS,
@@ -63,26 +72,81 @@ export async function checkBudget(orgId: string, input: { sessionId: string; mod
     return { ok: false, reason: `Context utilization ${snapshot.utilization.toFixed(2)} is at the ${snapshot.warningThreshold} warning. The SDK does not block; Crosswire does.`, estimatedInputTokens, utilization: snapshot.utilization, warning: snapshot.warning }
   }
   const spent = await observedToday(orgId)
+  const refused = refuseFromSpent(spent, estimatedInputTokens)
+  if (refused) return refused
+  return { ok: true, estimatedInputTokens, utilization: snapshot.utilization, warning: snapshot.warning }
+}
+
+function refuseFromSpent(spent: { inputTokens: number; costMicros: number; unpriced: number; unmeasured: number }, estimatedInputTokens: number): BudgetDecision | null {
+  const e = env()
+  if (spent.unmeasured > 0) {
+    return { ok: false, reason: 'Daily usage includes a call with no token count. The daily cap cannot be checked, so the model call is refused.', estimatedInputTokens }
+  }
   if (spent.inputTokens + estimatedInputTokens > e.BUDGET_DAILY_INPUT_TOKENS) {
     return { ok: false, reason: 'Daily input token budget is exhausted.', estimatedInputTokens }
+  }
+  if (e.BUDGET_MAX_SPEND_MICROS !== undefined && spent.unpriced > 0) {
+    return { ok: false, reason: 'Daily usage includes unpriced calls. A spend cap cannot be checked, so the model call is refused.', estimatedInputTokens }
   }
   if (e.BUDGET_MAX_SPEND_MICROS !== undefined && spent.costMicros + (costMicros(estimatedInputTokens, 0) ?? 0) > e.BUDGET_MAX_SPEND_MICROS) {
     return { ok: false, reason: 'Daily spend budget is exhausted.', estimatedInputTokens }
   }
-  return { ok: true, estimatedInputTokens, utilization: snapshot.utilization, warning: snapshot.warning }
+  return null
 }
 
-async function observedToday(orgId: string) {
-  const res = (await getDb().execute(sql`
+/**
+ * Re-check the daily sums under a per-org row lock and store this run's input estimate.
+ * Parallel calls then see the reservation. The row is replaced when the provider reports usage.
+ */
+export async function claimDailyBudget(orgId: string, runId: string, input: { sessionId: string; model: string; text: string; agentKey: string; provider: string }): Promise<BudgetDecision> {
+  const preview = await checkBudget(orgId, input)
+  if (!preview.ok) return preview
+  return getDb().transaction(async (tx) => {
+    await tx.execute(sql`insert into agent_capacity (org_id, inflight) values (${orgId}, 0) on conflict (org_id) do nothing`)
+    await tx.execute(sql`select inflight from agent_capacity where org_id = ${orgId} for update`)
+    const spent = await observedToday(orgId, tx)
+    const refused = refuseFromSpent(spent, preview.estimatedInputTokens)
+    if (refused) return refused
+    await tx.delete(agentUsage).where(and(eq(agentUsage.orgId, orgId), eq(agentUsage.runId, runId), eq(agentUsage.observed, false)))
+    await tx.insert(agentUsage).values({
+      orgId,
+      runId,
+      agentKey: input.agentKey,
+      provider: input.provider,
+      model: input.model,
+      inputTokens: preview.estimatedInputTokens,
+      outputTokens: 0,
+      estimatedCostMicros: costMicros(preview.estimatedInputTokens, 0),
+      observed: false,
+    })
+    return preview
+  })
+}
+
+/** Drop a reservation when the model call does not start. */
+export async function releaseDailyClaim(orgId: string, runId: string) {
+  await getDb().delete(agentUsage).where(and(eq(agentUsage.orgId, orgId), eq(agentUsage.runId, runId), eq(agentUsage.observed, false)))
+}
+
+async function observedToday(orgId: string, exec: { execute: ReturnType<typeof getDb>['execute'] } = getDb()) {
+  const res = (await exec.execute(sql`
     select coalesce(sum(input_tokens), 0)::int as input_tokens,
            coalesce(sum(output_tokens), 0)::int as output_tokens,
-           coalesce(sum(estimated_cost_micros), 0)::int as cost_micros
+           coalesce(sum(estimated_cost_micros), 0)::int as cost_micros,
+           coalesce(sum(case when estimated_cost_micros is null then 1 else 0 end), 0)::int as unpriced,
+           coalesce(sum(case when input_tokens is null then 1 else 0 end), 0)::int as unmeasured
     from agent_usage
-    where org_id = ${orgId} and observed = true
+    where org_id = ${orgId}
       and created_at >= (date_trunc('day', now() at time zone 'utc') at time zone 'utc')
-  `)) as unknown as Array<{ input_tokens: number; output_tokens: number; cost_micros: number }> | { rows: Array<{ input_tokens: number; output_tokens: number; cost_micros: number }> }
+  `)) as unknown as Array<{ input_tokens: number; output_tokens: number; cost_micros: number; unpriced: number; unmeasured: number }> | { rows: Array<{ input_tokens: number; output_tokens: number; cost_micros: number; unpriced: number; unmeasured: number }> }
   const row = Array.isArray(res) ? res[0] : res.rows[0]
-  return { inputTokens: Number(row?.input_tokens ?? 0), outputTokens: Number(row?.output_tokens ?? 0), costMicros: Number(row?.cost_micros ?? 0) }
+  return {
+    inputTokens: Number(row?.input_tokens ?? 0),
+    outputTokens: Number(row?.output_tokens ?? 0),
+    costMicros: Number(row?.cost_micros ?? 0),
+    unpriced: Number(row?.unpriced ?? 0),
+    unmeasured: Number(row?.unmeasured ?? 0),
+  }
 }
 
 /** Atomic shared slot. A database error refuses the call. */
@@ -108,6 +172,64 @@ export async function releaseSlot(orgId: string) {
   await getDb().execute(sql`update agent_capacity set inflight = greatest(inflight - 1, 0) where org_id = ${orgId}`)
 }
 
+/** Mark the run as the owner of a slot. Returns false when the row is missing or already claimed. */
+async function markSlotHeld(orgId: string, runId: string) {
+  const [row] = await getDb()
+    .update(agentRuns)
+    .set({ slotHeld: true })
+    .where(and(eq(agentRuns.orgId, orgId), eq(agentRuns.id, runId), eq(agentRuns.slotHeld, false), eq(agentRuns.slotReleased, false)))
+    .returning({ id: agentRuns.id })
+  return Boolean(row)
+}
+
+/**
+ * Return this run's slot at most once, including when another process already returned it.
+ * A run that never held a slot does not decrement.
+ */
+export async function releaseRunSlot(orgId: string, runId: string) {
+  const [row] = await getDb()
+    .update(agentRuns)
+    .set({ slotReleased: true })
+    .where(and(eq(agentRuns.orgId, orgId), eq(agentRuns.id, runId), eq(agentRuns.slotHeld, true), eq(agentRuns.slotReleased, false)))
+    .returning({ id: agentRuns.id })
+  if (row) await releaseSlot(orgId)
+  return Boolean(row)
+}
+
+/** Take a capacity slot. When a run id is known, the row records that it holds the slot. */
+export async function acquireRunSlot(orgId: string, runId?: string | null) {
+  const slot = await acquireSlot(orgId)
+  if (!runId) return slot
+  try {
+    const marked = await markSlotHeld(orgId, runId)
+    if (!marked) {
+      await releaseSlot(orgId)
+      throw new BudgetError('Run slot could not be claimed.')
+    }
+  } catch (err) {
+    if (err instanceof BudgetError) throw err
+    await releaseSlot(orgId)
+    throw new BudgetError(`Run slot could not be claimed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  return slot
+}
+
+/**
+ * One acquisition, one decrement. A second call, including one already in flight, waits on the same release.
+ * With a run id, the decrement is the row claim, so another process cannot decrement it again.
+ * Without a run id (legacy ledger, no row), only this closure decrements. A crash can leave that slot taken.
+ */
+export function releaseOnce(orgId: string, runId?: string | null) {
+  let started = false
+  let pending: Promise<void> | undefined
+  return () => {
+    if (started) return pending ?? Promise.resolve()
+    started = true
+    pending = (runId ? releaseRunSlot(orgId, runId) : releaseSlot(orgId)).then(() => undefined)
+    return pending
+  }
+}
+
 export interface ObservedUsage {
   orgId: string
   runId?: string | null
@@ -118,34 +240,93 @@ export interface ObservedUsage {
   outputTokens: number
 }
 
-/** Persist provider-reported tokens only. Missing usage is not filled in. */
+/**
+ * Persist provider-reported tokens only. One observed row per run: a later cumulative report replaces the earlier one.
+ * A missing rate stores null. It does not store 0, and it does not tell CostTracker the call was free.
+ * Counts that do not fit in a Postgres integer become the unmeasured marker when a run id is known.
+ */
 export async function recordObservedUsage(usage: ObservedUsage) {
-  if (!Number.isInteger(usage.inputTokens) || !Number.isInteger(usage.outputTokens) || usage.inputTokens < 0 || usage.outputTokens < 0) return null
+  if (!fitsPgInt(usage.inputTokens) || !fitsPgInt(usage.outputTokens)) {
+    if (!usage.runId) return null
+    return recordUnmeasuredUsage({ orgId: usage.orgId, runId: usage.runId, agentKey: usage.agentKey, provider: usage.provider, model: usage.model })
+  }
   const micros = costMicros(usage.inputTokens, usage.outputTokens)
+  const db = getDb()
+  if (usage.runId) await db.delete(agentUsage).where(and(eq(agentUsage.orgId, usage.orgId), eq(agentUsage.runId, usage.runId), eq(agentUsage.observed, false)))
+  const [existing] = usage.runId
+    ? await db
+        .select()
+        .from(agentUsage)
+        .where(and(eq(agentUsage.orgId, usage.orgId), eq(agentUsage.runId, usage.runId), eq(agentUsage.observed, true)))
+        .limit(1)
+    : []
+  const [row] = existing
+    ? await db
+        .update(agentUsage)
+        .set({ agentKey: usage.agentKey, provider: usage.provider, model: usage.model, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, estimatedCostMicros: micros })
+        .where(eq(agentUsage.id, existing.id))
+        .returning()
+    : await db
+        .insert(agentUsage)
+        .values({
+          orgId: usage.orgId,
+          runId: usage.runId ?? null,
+          agentKey: usage.agentKey,
+          provider: usage.provider,
+          model: usage.model,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          estimatedCostMicros: micros,
+          observed: true,
+        })
+        .returning()
+  const previousIn = existing?.inputTokens ?? 0
+  const previousOut = existing?.outputTokens ?? 0
+  const deltaIn = usage.inputTokens - previousIn
+  const deltaOut = usage.outputTokens - previousOut
+  const deltaMicros = deltaIn >= 0 && deltaOut >= 0 ? costMicros(deltaIn, deltaOut) : null
+  if (deltaMicros !== null && (deltaIn > 0 || deltaOut > 0)) {
+    recordSquadUsage({
+      orgId: usage.orgId,
+      sessionId: usage.runId ?? usage.orgId,
+      agentName: usage.agentKey,
+      model: usage.model,
+      inputTokens: deltaIn,
+      outputTokens: deltaOut,
+      estimatedCost: deltaMicros / 1_000_000,
+    })
+  }
+  return row!
+}
+
+/**
+ * A model call started and the provider reported no usable token counts. Nulls keep the daily cap
+ * fail-closed. This is not written for a refusal that happened before the call. Explicit 0 from
+ * recordObservedUsage is a real count. A 0/0 report on a turn that already has assistant text is this marker.
+ * A reservation for the same run is removed so the estimate is not counted as well.
+ */
+export async function recordUnmeasuredUsage(usage: { orgId: string; runId: string; agentKey: string; provider: string; model: string }) {
+  const db = getDb()
+  await db.delete(agentUsage).where(and(eq(agentUsage.orgId, usage.orgId), eq(agentUsage.runId, usage.runId), eq(agentUsage.observed, false)))
+  const existing = (await db.execute(sql`
+    select 1 as ok from agent_usage where run_id = ${usage.runId} and org_id = ${usage.orgId} and observed = true limit 1
+  `)) as unknown as Array<{ ok: number }> | { rows: Array<{ ok: number }> }
+  const found = Array.isArray(existing) ? existing[0] : existing.rows[0]
+  if (found) return null
   const [row] = await getDb()
     .insert(agentUsage)
     .values({
       orgId: usage.orgId,
-      runId: usage.runId ?? null,
+      runId: usage.runId,
       agentKey: usage.agentKey,
       provider: usage.provider,
       model: usage.model,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      estimatedCostMicros: micros,
+      inputTokens: null,
+      outputTokens: null,
+      estimatedCostMicros: null,
       observed: true,
     })
     .returning()
-  await recordSquadUsage({
-    type: 'usage',
-    sessionId: usage.runId ?? usage.orgId,
-    agentName: usage.agentKey,
-    model: usage.model,
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    estimatedCost: micros === null ? 0 : micros / 1_000_000,
-    timestamp: new Date(),
-  })
   return row!
 }
 

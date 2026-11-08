@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import { getDb } from '../src/server/db/client'
-import { agentDecisions, auditEvents, chatMessages, chatThreads, huntEvidence, kqlProposals, messageFeedback, tiFetchCache } from '../src/server/db/schema'
+import { agentDecisions, agentRunOutputs, auditEvents, chatMessages, chatThreads, huntEvidence, kqlProposals, messageFeedback, tiFetchCache } from '../src/server/db/schema'
 import { resetEnvForTests } from '../src/server/env'
 import { approveAndRunKql, createHunt, getHunt, proposeKql } from '../src/server/hunting/hunts'
 import { HuntingClient, setHuntingClient } from '../src/server/hunting/client'
 import { huntReportMarkdown, REPORT_MAX_CHARS, SCHEDULED_SAMPLE_BUDGET, SCHEDULED_SAMPLE_RUNS } from '../src/server/hunting/report'
 import { createSchedule, runDueSchedules } from '../src/server/hunting/schedules'
+import { exportOrgBundle } from '../src/server/agents/export-bundle'
+import { recordRunOutput, startRun } from '../src/server/agents/runs'
 import { buildTools, withoutSamples } from '../src/server/agents/tools'
 import { loadDemoFixtures } from '../src/server/ops/fixtures'
 import { DECISION_SAMPLES_REMOVED, runRetention } from '../src/server/ops/retention'
@@ -223,6 +225,13 @@ describe('retention purge', () => {
     await db.update(kqlProposals).set({ ranAt: ago(200) }).where(eq(kqlProposals.id, oldP.id))
     const [oldEv] = await db.select().from(huntEvidence).where(and(eq(huntEvidence.huntId, hunt.id), eq(huntEvidence.type, 'kql_result'), sql`${huntEvidence.payload} ->> 'proposalId' = ${oldP.id}`))
     await db.update(huntEvidence).set({ createdAt: ago(200) }).where(eq(huntEvidence.id, oldEv!.id))
+    const oldRun = await startRun({ orgId: t.orgId, agentKey: 'hunter' })
+    await recordRunOutput(oldRun!.id, t.orgId, 'tool:get_hunt', { rowCount: 2, sample: [{ DeviceName: 'wks-1' }], note: 'keep me' })
+    const [oldOut] = await db.select().from(agentRunOutputs).where(eq(agentRunOutputs.runId, oldRun!.id))
+    await db.update(agentRunOutputs).set({ createdAt: ago(200) }).where(eq(agentRunOutputs.id, oldOut!.id))
+    const freshRun = await startRun({ orgId: t.orgId, agentKey: 'hunter' })
+    await recordRunOutput(freshRun!.id, t.orgId, 'tool:get_hunt', { rowCount: 1, sample: [{ DeviceName: 'wks-fresh' }], note: 'fresh' })
+
     const [before] = await db.select().from(kqlProposals).where(eq(kqlProposals.id, oldP.id))
     const beforeSummary = before!.resultSummary as { rowCount: number; sample: unknown[]; columns: string[] }
     expect(beforeSummary.sample.length).toBeGreaterThan(0)
@@ -237,6 +246,7 @@ describe('retention purge', () => {
     expect(counts.auditEvents).toBeGreaterThanOrEqual(1)
     expect(counts.kqlSamples).toBeGreaterThanOrEqual(1)
     expect(counts.evidenceSamples).toBeGreaterThanOrEqual(1)
+    expect(counts.runOutputSamples).toBeGreaterThanOrEqual(1)
 
     expect(await db.select().from(chatThreads).where(eq(chatThreads.id, idle!.id))).toHaveLength(0)
     expect(await db.select().from(chatMessages).where(eq(chatMessages.id, idleMsg!.id))).toHaveLength(0)
@@ -259,6 +269,16 @@ describe('retention purge', () => {
     expect((fresh!.resultSummary as { sample: unknown[]; sampleExpired?: boolean }).sampleExpired).toBeUndefined()
     const [ev] = await db.select().from(huntEvidence).where(eq(huntEvidence.id, oldEv!.id))
     expect(ev!.payload).toMatchObject({ sample: [], sampleExpired: true, proposalId: oldP.id })
+    const [oldOutAfter] = await db.select().from(agentRunOutputs).where(eq(agentRunOutputs.id, oldOut!.id))
+    expect(JSON.parse(oldOutAfter!.body)).toMatchObject({ sample: [], sampleExpired: true, sampleRetentionDays: 180, rowCount: 2, note: 'keep me' })
+    expect(oldOutAfter!.body).not.toContain('wks-1')
+    expect(oldOutAfter!.contentSha256).not.toBe(oldOut!.contentSha256)
+    const bundle = await exportOrgBundle(t.orgId)
+    const bundledOld = bundle.runs.find((run) => run.id === oldRun!.id)?.outputs.find((output) => output.kind === 'tool:get_hunt')
+    expect(bundledOld?.body).not.toContain('wks-1')
+    expect(bundledOld?.body).toContain('keep me')
+    const [freshOut] = await db.select().from(agentRunOutputs).where(eq(agentRunOutputs.runId, freshRun!.id))
+    expect(freshOut!.body).toContain('wks-fresh')
 
     const [audit] = await db.select().from(auditEvents).where(eq(auditEvents.action, 'retention_purge'))
     expect(audit!.category).toBe('system')
@@ -270,6 +290,7 @@ describe('retention purge', () => {
     expect(again.evidenceSamples).toBe(0)
     expect(again.chatThreads).toBe(0)
     expect(again.decisionSamples).toBe(0)
+    expect(again.runOutputSamples).toBe(0)
   })
 
   it('counts the messages a thread delete cascades to', async () => {
@@ -315,7 +336,7 @@ describe('retention purge', () => {
     const [dec] = await getDb().insert(agentDecisions).values({ orgId: t.orgId, actorType: 'agent', actorKey: 'lead', action: 'ancient', createdAt: ago(5000) }).returning()
     const [aud] = await getDb().insert(auditEvents).values({ category: 'auth', action: 'ancient', actorType: 'system', createdAt: ago(5000) }).returning()
     const counts = await runRetention()
-    expect(counts).toEqual({ chatThreads: 0, chatMessages: 0, agentDecisions: 0, kqlSamples: 0, evidenceSamples: 0, decisionSamples: 0, auditEvents: 0 })
+    expect(counts).toEqual({ chatThreads: 0, chatMessages: 0, agentDecisions: 0, kqlSamples: 0, evidenceSamples: 0, decisionSamples: 0, runOutputSamples: 0, auditEvents: 0 })
     expect(await getDb().select().from(agentDecisions).where(eq(agentDecisions.id, dec!.id))).toHaveLength(1)
     expect(await getDb().select().from(auditEvents).where(eq(auditEvents.id, aud!.id))).toHaveLength(1)
   })

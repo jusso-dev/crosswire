@@ -1,7 +1,7 @@
 import { Link, createFileRoute, useNavigate, useRouter } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import { z } from 'zod'
-import { fetchActivity, fetchMemory, runCompaction } from '../fns/agents'
+import { fetchActivity, fetchMemory, fetchRunReplay, runCompaction } from '../fns/agents'
 import { AGENT_KEYS, AGENT_LABELS, isAgentKey, type AgentKey } from '../shared/agents'
 import { fmtTime } from '../components/format'
 import { Notice, PageHead, TableWrap } from '../components/ui'
@@ -22,13 +22,15 @@ const ACTION_WORDS: Record<string, string> = {
 }
 
 export const Route = createFileRoute('/app/agents')({
-  validateSearch: z.object({ agent: z.string().optional(), actor: z.string().optional(), q: z.string().optional(), before: z.string().optional() }),
-  loaderDeps: ({ search }) => ({ q: search.q, actor: search.actor, before: search.before }),
+  validateSearch: z.object({ agent: z.string().optional(), actor: z.string().optional(), q: z.string().optional(), before: z.string().optional(), run: z.uuid().optional() }),
+  loaderDeps: ({ search }) => ({ q: search.q, actor: search.actor, before: search.before, run: search.run }),
   // Search and paging run on the server over the whole log, not just the newest page.
-  loader: ({ deps }) => {
+  loader: async ({ deps }) => {
     const q = deps.q?.trim().toLowerCase()
     const actions = q ? Object.entries(ACTION_WORDS).filter(([, label]) => label.toLowerCase().includes(q)).map(([key]) => key) : undefined
-    return fetchActivity({ data: { q: deps.q || undefined, actor: deps.actor || undefined, before: deps.before || undefined, actions } })
+    const activity = await fetchActivity({ data: { q: deps.q || undefined, actor: deps.actor || undefined, before: deps.before || undefined, actions } })
+    const replay = deps.run ? await fetchRunReplay({ data: { runId: deps.run } }) : null
+    return { ...activity, replay }
   },
   pendingComponent: () => <p className="cw-muted">Loading agents…</p>,
   errorComponent: ({ error }) => (
@@ -40,7 +42,7 @@ export const Route = createFileRoute('/app/agents')({
 })
 
 function Agents() {
-  const { rows: activity, hasMore, actors } = Route.useLoaderData()
+  const { rows: activity, hasMore, actors, recentRuns, replay } = Route.useLoaderData()
   const sp = Route.useSearch()
   const navigate = useNavigate({ from: '/app/agents' })
   const set = (patch: Partial<typeof sp>) => navigate({ search: (prev) => ({ ...prev, ...patch }), replace: true })
@@ -89,7 +91,9 @@ function Agents() {
         <h2 id="log-title" className="cw-h2-compact">
           Decision log
         </h2>
-        <p className="cw-muted">Every agent step, hand-off, search decision and response decision for this organisation. Secrets and personal details are removed before logging.</p>
+        <p className="cw-muted">
+          Every agent step, hand-off, search decision and response decision for this organisation. Secrets and personal details are removed before logging. Each input and output keeps the first 1000 characters. Longer text then adds a marker such as <code>… [truncated 42 chars]</code>. The full redacted text stays on the run record. Open that run below. This table is the summary, and the tooltip shows that same summary.
+        </p>
         <div className="cw-tablewrap" style={{ overflow: 'visible' }}>
           <div className="cw-toolbar" style={{ borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0' }}>
             <label className="cw-search">
@@ -172,6 +176,50 @@ function Agents() {
             </div>
           )}
         </div>
+      </section>
+
+      <section aria-labelledby="replay-title">
+        <h2 id="replay-title" className="cw-h2-compact">
+          Run replay
+        </h2>
+        <p className="cw-muted">Full redacted output for one run in this organisation. Another organisation cannot open it.</p>
+        {recentRuns.length === 0 ? (
+          <p className="cw-empty">No runs yet.</p>
+        ) : (
+          <ul className="cw-agentlist">
+            {recentRuns.map((run) => (
+              <li key={run.id}>
+                <button type="button" className="cw-agentbtn" aria-pressed={sp.run === run.id} onClick={() => set({ run: sp.run === run.id ? undefined : run.id })}>
+                  <strong>{isAgentKey(run.agentKey) ? AGENT_LABELS[run.agentKey].name : run.agentKey}</strong>
+                  <span className="cw-muted">{run.status}</span>
+                  <span className="cw-agentbtn-cta">{fmtTime(run.startedAt)}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {sp.run && !replay && <p className="cw-empty">That run is not in this organisation.</p>}
+        {replay && (
+          <div className="cw-panel2">
+            <div className="cw-panel2-head">
+              <h3>
+                {isAgentKey(replay.agentKey) ? AGENT_LABELS[replay.agentKey].name : replay.agentKey} {replay.status}
+              </h3>
+            </div>
+            <div className="cw-panel2-body">
+              {replay.outputs.length === 0 ? (
+                <p className="cw-empty">This run has no stored output.</p>
+              ) : (
+                replay.outputs.map((output) => (
+                  <article key={output.id}>
+                    <h3 className="cw-h2-compact">{output.kind}</h3>
+                    <pre>{output.body}</pre>
+                  </article>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </section>
     </>
   )

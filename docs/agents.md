@@ -22,11 +22,15 @@ checks the rule list. It does not steer a live turn.
 2. Builds the system prompt: charter, approved org directives, eligible org memory, and the global safety rule. Quarantine, tombstones and injection text stay out.
 3. Opens an `agent_runs` row (charter, policy, toolset and memory hashes, SDK pin `1.1.0`) unless `RUN_LEDGER=legacy`.
 4. Registers only that agent's tools (`AGENT_TOOLS`, re-exported from `policy.ts` by `tools.ts`).
-5. Refuses the call when the token, context, daily, spend or inflight budget says no. The slot is taken only after the model adapter exists, and released when the stream finishes.
+5. Refuses the call when the token, context, daily, spend or inflight budget says no. When a run row exists, the turn first claims its input estimate under a per-org lock. Parallel estimates that together exceed the remaining daily budget admit only what still fits. A finished call with no token count, or a 0/0 report on a turn that already has assistant text, is stored as null tokens and null micros and blocks the next check, including when no spend cap is set. A direct ledger write of explicit zeroes is a real count. One observed row is kept per run. A cost that does not fit in a Postgres integer is stored as null micros. Context refusal is local at 0.8 of `BUDGET_CONTEXT_WINDOW_TOKENS`. The unexported Squad tracker is not called. The slot is taken only after the model adapter exists, then `slot_held` is set on the run. Each acquisition has its own `releaseOnce` closure. With a run id, the closure claims `slot_released` so another process cannot decrement it again. The parent stream wrapper and the chat handler share the parent's closure. A specialist has its own. A specialist that cannot take a slot is finished `failed` and its daily claim is dropped.
 6. Streams through TanStack AI `chat()` with the model from `model.ts`: `MODEL_PROVIDER=azure`
    (Azure OpenAI, Entra ID sign-in) or `openai-compatible`. See [chat-model.md](chat-model.md).
    `modelOptions.max_tokens` plus a character stop enforce the output budget. There is no Copilot provider.
-7. Enforces `AGENT_TIMEOUT_MS`. The worker also marks old or cancelled `running` rows `interrupted`. If both the web process and the worker are down, those rows stay `running` until one of them starts. `server.mjs` and `start.ts` do not reconcile.
+7. Enforces `AGENT_TIMEOUT_MS`. The worker, and the start of the next turn, mark a `running` row `interrupted` when `started_at` is older than that timeout, or when cancel was already requested, then return that row's slot only if `slot_held` is set and `slot_released` is not. Reconcile does not rewrite inflight from the rows still running. A row that is both stale and cancelled is interrupted once. If both the web process and the worker are down, those rows stay `running` until one of them starts. `server.mjs` and `start.ts` do not reconcile. `RUN_LEDGER=legacy` has no row to claim, so a crash can leave that in-memory slot taken.
+
+Abort during a stream uses the same `AbortController`. `requestRunCancel` sets `cancel_requested_at` when the row is `running`, or when it is already `interrupted` and that timestamp is still null. The `cancel_requested` event is written only when the update matches a row. The chat handler's abort listener releases the shared closure, and so does a request that is already aborted when `run()` returns. The handler awaits the cancel mark, when the turn was interrupted, before it stores the assistant text already pulled and calls `finishRun`. `boundStream` stops waiting on the model iterator when the abort signal fires, then releases the slot. `withTimeout` reports a timeout only for the timer abort. A client abort is not stored as a timeout. The owning process also polls `cancel_requested_at` every 500 ms and aborts the live model call with reason `cancelled` when another caller set that timestamp. That abort is not a timeout. A specialist shares the turn controller, so cancelling the child also stops the parent stream. A failed poll retries and does not abort a healthy turn. There is no poll when the run row was not opened. The specialist path races the non-streaming `chat()` promise with the same abort signal. Regressions cover a held stream and a held specialist. Those tests do not abort the controller themselves. The run-row cancel does. The streaming `handleChat` regression and the specialist hold regression both cover the client abort path.
+
+`@bradygaster/squad-sdk@1.1.0` is called for the builders, `classify()` / `write()`, and `CostTracker` only when `BUDGET_USD_PER_MILLION_TOKENS` is set. Totals are kept per organisation. `UsageLedger` and `ContextUtilizationTracker` are not package exports and are not loaded by file URL. The supported subpath graph does not import `@github/copilot-sdk`, `./client`, `./backend`, `usage-ledger.js`, or `context-utilization.js`. The client-boundary test is not imported from `src/`. An unset rate stores `estimated_cost_micros` as null and does not call `CostTracker`. The configuration diagnostic says `unpriced`. A spend cap without a rate refuses before the call. A spend cap also refuses when today's rows include a null cost. A call that finished with no token count, or with a 0/0 report after assistant text, refuses the daily cap as well. `SquadClient` is not used for a SOC turn. A constructor-only test stays disconnected. Live `connect()` / `createSession()` was not run.
 
 **Lead (orchestrate squad):** selecting it gives Lead two tools. `delegate` runs one specialist
 (non-streaming) and returns its answer. `delegate_parallel` (v2, #93) runs up to 4 *different*
@@ -62,18 +66,29 @@ executes KQL or a response proposal; `EXECUTION_TOOL_NAMES` must stay empty (tes
   does not restore `approved` directives or reviewed trust, except operator safety sentences that are
   not injection. A second import skips the same content hash. A hash mismatch is refused.
 - Hunt results are stored as summaries on hunt cases, never as raw tables in memory. The model copy
-  of a tool result drops `sample` rows (`EGRESS_FILTER=enforced`). The run output keeps the full value.
+  of a tool result drops `sample` rows (`EGRESS_FILTER=enforced`). The run output redacts secrets and keeps the rest, including samples, until sample retention clears those arrays. There is no screen that reads `agent_run_outputs`.
 
 ## Decision log (issue #33)
 
 `agent_decisions` records every turn, tool call, delegation, KQL proposal/approval/run and
 response decision: actor, action, redacted and truncated input/output summaries, thread and hunt
-ids. Indexed on `(org_id, created_at)`. Summaries are cut at 1000 characters and then a truncation
-marker is appended, so the stored summary can be a little longer than 1000. **Agents → Decision log**
-lists them. This is not the approval record; response approvals live in `response_events`.
+ids. Indexed on `(org_id, created_at)`. `decisionSummary` redacts, then keeps the first 1000
+characters (`DECISION_SUMMARY_LIMIT`). Text of exactly 1000 characters is stored unchanged. Longer
+text is those 1000 characters plus `… [truncated N chars]`, where N is the number of characters not
+kept. The marker says "chars" even when N is 1. **Agents → Decision log** shows that summary in the
+table and in the tooltip. **Agents → Run replay** opens one run for the signed-in organisation and
+shows the full redacted output. Another organisation gets nothing. This is not the approval record;
+response approvals live in `response_events`.
 
-The replay record is `agent_run_outputs.body`. It is not cut to 1000 characters. `agent_runs` and
-`agent_run_events` hold status, parent run, policy and charter hashes, and cancel or timeout recovery.
+The replay record is `agent_run_outputs.body`. It is not passed through `truncate`, and a decision
+summary marker is not written into it. Secrets in that body are redacted. Sample arrays remain
+until `RETENTION_SAMPLES_DAYS`, which empties them, sets `sampleExpired`, and recomputes the
+content hash. The cleared sample is absent from the org bundle. A tool error is stored redacted,
+and the decision summary is the truncation of that redacted text. The other fields stay.
+`RUN_LEDGER=legacy` is an explicit rollback and does not write the row. `agent_runs` and
+`agent_run_events` hold status, parent run, policy and charter hashes, `slot_held`,
+`slot_released`, and cancel or timeout recovery. Lineage stays on those rows when the summary is
+shortened. Concurrent `appendRunEvent` calls can still lose a sequence number. That race is open.
 
 ## Learning loop (issue #35)
 

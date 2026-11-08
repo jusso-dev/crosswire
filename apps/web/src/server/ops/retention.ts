@@ -1,8 +1,9 @@
-import { and, eq, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm'
+import { and, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from 'drizzle-orm'
 import type { PgColumn, PgTable } from 'drizzle-orm/pg-core'
 import { getDb } from '../db/client'
-import { agentDecisions, auditEvents, chatMessages, chatThreads, huntEvidence, kqlProposals } from '../db/schema'
+import { agentDecisions, agentRunOutputs, auditEvents, chatMessages, chatThreads, huntEvidence, kqlProposals } from '../db/schema'
 import { env } from '../env'
+import { canonicalJson, sha256 } from '../agents/canonical'
 import { writeAudit } from '../audit'
 import { logger } from '../lib/logger'
 
@@ -18,6 +19,8 @@ export interface RetentionCounts {
   evidenceSamples: number
   /** tool:get_hunt decision rows whose stored output (logged before withoutSamples) was replaced. */
   decisionSamples: number
+  /** agent_run_outputs bodies whose sample arrays were cleared. The rest of the replay stays. */
+  runOutputSamples: number
   auditEvents: number
 }
 
@@ -84,7 +87,7 @@ const strippedSample = (column: PgColumn, days: number) =>
 /** Has a sample key and has not already been stripped (so a re-run touches nothing). */
 const hasLiveSample = (column: PgColumn) => sql`(${column} -> 'sample') is not null and not (${column} @> '{"sampleExpired":true}'::jsonb)`
 
-const zeroCounts = (): RetentionCounts => ({ chatThreads: 0, chatMessages: 0, agentDecisions: 0, kqlSamples: 0, evidenceSamples: 0, decisionSamples: 0, auditEvents: 0 })
+const zeroCounts = (): RetentionCounts => ({ chatThreads: 0, chatMessages: 0, agentDecisions: 0, kqlSamples: 0, evidenceSamples: 0, decisionSamples: 0, runOutputSamples: 0, auditEvents: 0 })
 
 /**
  * Data retention purge (design doc gaps). Global maintenance job: runs across every org, which is
@@ -96,6 +99,8 @@ const zeroCounts = (): RetentionCounts => ({ chatThreads: 0, chatMessages: 0, ag
  *   evidence are replaced by an empty sample with sampleExpired: true. Row counts are kept.
  *   tool:get_hunt decision rows logged before withoutSamples existed may hold result rows, so their
  *   output_summary is replaced with DECISION_SAMPLES_REMOVED.
+ *   agent_run_outputs keeps the replay, but sample arrays older than the cutoff are emptied and marked
+ *   sampleExpired. Secrets are already redacted at write time. The content hash is recomputed.
  * - audit: audit_events past the cutoff. The retention_purge event itself is written afterwards.
  *
  * If a stage fails, the retention_purge event is still written with the counts so far and
@@ -123,6 +128,70 @@ export async function runRetention(now = new Date(), opts: { batch?: number } = 
   return counts
 }
 
+/** Replace live `sample` arrays and mark the object expired. Other fields stay. */
+function expireSamples(value: unknown, days: number): { value: unknown; changed: boolean } {
+  if (Array.isArray(value)) {
+    let changed = false
+    const next = value.map((item) => {
+      const child = expireSamples(item, days)
+      if (child.changed) changed = true
+      return child.value
+    })
+    return changed ? { value: next, changed: true } : { value, changed: false }
+  }
+  if (!value || typeof value !== 'object' || value instanceof Date) return { value, changed: false }
+  const record = value as Record<string, unknown>
+  let changed = false
+  let expiredHere = false
+  const out: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(record)) {
+    if (key === 'sample' && Array.isArray(child) && record.sampleExpired !== true) {
+      out.sample = []
+      expiredHere = true
+      changed = true
+      continue
+    }
+    const walked = expireSamples(child, days)
+    out[key] = walked.value
+    if (walked.changed) changed = true
+  }
+  if (expiredHere) {
+    out.sampleExpired = true
+    out.sampleRetentionDays = days
+  }
+  return changed ? { value: out, changed: true } : { value, changed: false }
+}
+
+function expireSampleBody(body: string, days: number) {
+  if (body[0] !== '{' && body[0] !== '[') return null
+  try {
+    const next = expireSamples(JSON.parse(body), days)
+    return next.changed ? canonicalJson(next.value) : null
+  } catch {
+    return null
+  }
+}
+
+/** One pass over outputs older than the cutoff. A second run finds sampleExpired and changes nothing. */
+async function expireRunOutputSamples(cutoff: Date, days: number, batch: number) {
+  const db = getDb()
+  let total = 0
+  let cursor: string | null = null
+  for (;;) {
+    const where: SQL = cursor ? and(lt(agentRunOutputs.createdAt, cutoff), gt(agentRunOutputs.id, cursor))! : lt(agentRunOutputs.createdAt, cutoff)
+    const rows = await db.select({ id: agentRunOutputs.id, body: agentRunOutputs.body }).from(agentRunOutputs).where(where).orderBy(agentRunOutputs.id).limit(batch)
+    if (rows.length === 0) return total
+    for (const row of rows) {
+      const body = expireSampleBody(row.body, days)
+      if (!body) continue
+      await db.update(agentRunOutputs).set({ body, contentSha256: sha256(body) }).where(eq(agentRunOutputs.id, row.id))
+      total += 1
+    }
+    cursor = rows.at(-1)!.id
+    if (rows.length < batch) return total
+  }
+}
+
 /** The purge stages, in order. Writes into `counts` as each stage finishes, so a failure keeps the progress so far. */
 async function purge(now: Date, batch: number, counts: RetentionCounts) {
   const e = env()
@@ -148,6 +217,7 @@ async function purge(now: Date, batch: number, counts: RetentionCounts) {
     // Already-replaced rows are skipped, so a re-run touches nothing.
     const decWhere = and(eq(agentDecisions.action, 'tool:get_hunt'), lt(agentDecisions.createdAt, samplesCutoff), ne(agentDecisions.outputSummary, DECISION_SAMPLES_REMOVED))!
     counts.decisionSamples = await updateInBatches(agentDecisions, decWhere, { outputSummary: sql`${DECISION_SAMPLES_REMOVED}` }, batch)
+    counts.runOutputSamples = await expireRunOutputSamples(samplesCutoff, days, batch)
   }
 
   const auditCutoff = cutoffFor(now, e.RETENTION_AUDIT_DAYS)
