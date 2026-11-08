@@ -90,3 +90,13 @@ No em dashes. Times in `APP_TIMEZONE` (default Australia/Sydney); stored UTC.
 - Motion: colour only, 120–180 ms; reduced motion removes it.
 - Tables: sticky headers, sortable where the data is local, row numbers, truncation with a "wrap" toggle
   and full value in the inspector.
+
+## 7. Agent and approval controls the UI sits on
+
+Verified in the server and in Vitest on 08-11-2026 (`apps/web/test/squad-sdk-runtime.test.ts`, `apps/web/test/squad-sdk-governance.test.ts`, and the existing web suite). The screen does not enforce these.
+
+- Agents propose. `EXECUTION_TOOL_NAMES` stays empty. A different person approves. Live execution stays off unless dry-run is explicitly false and that executor is on.
+- Each new proposal stores a sha256 of the canonical title, action, targets, blast radius and payload (schema version 1). Execution compares that hash before the atomic claim. A missing hash, a changed payload, or an expired window is refused and does not start execution. `APPROVAL_BINDING=legacy` skips the hash check. The default is `enforced`.
+- Text sent to the model excludes quarantined memory, tombstones and injection text. Operator safety sentences stay. Chat, import, remember, tool output, feedback and scribe notes are quarantined until a different person promotes them. Injection text cannot be promoted. Squad `classify()` does not stop a generic "ignore previous instructions" note.
+- Chat uses Azure OpenAI or an OpenAI-compatible endpoint. A GitHub Copilot seat is not required. `@bradygaster/squad-sdk@1.1.0` validates the cast, classifies memory, and records cost and context. It does not run the SOC turn. Preview `2.0.0-preview.3` and `HarnessAdapter` are not used.
+- Token, context, output and shared inflight budgets can refuse a model call. The decision log still shortens summaries to 1000 characters plus a truncation marker. The run output row keeps the full text.

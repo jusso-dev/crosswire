@@ -35,3 +35,13 @@ chat shows a setup message.
 - The app identity needs the Cognitive Services OpenAI User role on the Azure OpenAI resource.
 - Foundry persistent agents or a Teams bot can be added later behind the same `AgentRuntime`
   interface without changing the chat UI.
+
+## SDK boundary (2026-11-08)
+
+This decision stands. SOC turns were not moved onto `SquadClient` or a Copilot session.
+
+`@bradygaster/squad-sdk@1.1.0` is installed and called for the typed cast (`defineAgent`, `defineRouting`, `defineSkill`, `defineSquad`), memory `classify()` / `write()`, `CostTracker`, and the unexported `UsageLedger` and `ContextUtilizationTracker`. Those calls do not choose the chat provider. `model.ts` still has Azure and OpenAI-compatible only. Provider fallback does not switch vendor and does not select Copilot.
+
+TanStack AI 1.2.0 `chat()` has no dedicated output-cap field. The runtime passes `modelOptions.max_tokens` (accepted by `tsc` as `{ max_tokens: number }` when `stream` is a literal) and also stops the stream after `BUDGET_MAX_OUTPUT_TOKENS * 4` characters.
+
+Preview `2.0.0-preview.3` and `HarnessAdapter` are deferred. The 1.1.0 package has no `./backend` export. A Copilot seat is not required for the adopted calls. The earlier prototype that completed with a customer model and no GitHub account was not re-run in this change.

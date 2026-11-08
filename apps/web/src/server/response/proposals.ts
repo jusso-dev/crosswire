@@ -6,6 +6,7 @@ import { env } from '../env'
 import { writeAudit } from '../audit'
 import { recordDecision } from '../agents/decisions'
 import { redactValue } from '../lib/redact'
+import { canonicalJson, sha256 } from '../agents/canonical'
 import { RESPONSE_ACTION_TYPES, type ResponseProposalView } from '../../shared/response'
 import type { OrgRole } from '../orgs'
 import { asJson } from '../../shared/json'
@@ -16,6 +17,32 @@ import { notify } from '../notify/notify'
 
 export class ProposalStateError extends Error {}
 export class ProposalNotFoundError extends Error {}
+
+const APPROVAL_SCHEMA_VERSION = 1
+
+/** Content the approval is bound to. Key order does not change the digest. */
+export function approvalContentHash(content: { title: string; actionType: string; targets: unknown; blastRadius: unknown; payload: unknown }) {
+  return sha256(
+    canonicalJson({
+      schemaVersion: APPROVAL_SCHEMA_VERSION,
+      title: content.title,
+      actionType: content.actionType,
+      targets: content.targets,
+      blastRadius: content.blastRadius,
+      payload: content.payload,
+    }),
+  )
+}
+
+function assertApprovalBound(p: Row) {
+  if (env().APPROVAL_BINDING === 'legacy') return
+  if (!p.payloadSha256 || p.payloadSchemaVersion !== APPROVAL_SCHEMA_VERSION) {
+    throw new ProposalStateError('Approval is not bound to the current content hash. Create a new proposal.')
+  }
+  if (approvalContentHash(p) !== p.payloadSha256) {
+    throw new ProposalStateError('Approved content no longer matches the stored hash. Create a new proposal.')
+  }
+}
 
 const identifier = z.string().trim().min(1).max(200)
 const targetList = z
@@ -61,6 +88,8 @@ export function toView(r: Row): ResponseProposalView {
     execution: r.execution ? asJson(r.execution) : null,
     rollbackNotes: r.rollbackNotes,
     rollbackOfId: r.rollbackOfId,
+    payloadSha256: r.payloadSha256,
+    payloadSchemaVersion: r.payloadSchemaVersion,
   }
 }
 
@@ -86,6 +115,7 @@ export async function createProposal(
   const expiresAt = new Date(Date.now() + (input.expiresInHours ?? env().RESPONSE_PROPOSAL_TTL_HOURS) * 3600_000)
   const requesterId = requester.type === 'user' ? requester.userId : requester.agentKey
   const requestedByUserId = requester.type === 'user' ? requester.userId : requester.onBehalfOfUserId
+  const payload = redactValue(input.payload) as Record<string, unknown>
   const [row] = await getDb()
     .insert(responseProposals)
     .values({
@@ -95,7 +125,9 @@ export async function createProposal(
       actionType: input.actionType,
       targets: t,
       blastRadius,
-      payload: redactValue(input.payload) as Record<string, unknown>,
+      payload,
+      payloadSha256: approvalContentHash({ title: input.title, actionType: input.actionType, targets: t, blastRadius, payload }),
+      payloadSchemaVersion: APPROVAL_SCHEMA_VERSION,
       requesterType: requester.type,
       requesterId,
       requestedByUserId,
@@ -207,6 +239,7 @@ export async function executeProposal(orgId: string, actor: { userId: string; ro
     await event(orgId, id, 'expired', { type: 'system', id: null })
     throw new ProposalStateError('Approval window has expired; create a new proposal.')
   }
+  assertApprovalBound(p)
   const mode = executorMode(p.actionType)
   if (mode === 'off') throw new ProposalStateError(`The ${p.actionType} executor is off. Set RESPONSE_EXECUTOR_* to dry-run or on.`)
   if (mode === 'dry-run') return dryRunProposal(orgId, actor, id)

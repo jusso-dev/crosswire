@@ -10,12 +10,18 @@ import { listWatchHits } from '../ti/watchlists'
 import { getHunt, proposeKql } from '../hunting/hunts'
 import { huntingClient } from '../hunting/client'
 import { createProposal } from '../response/proposals'
+import { redactValue } from '../lib/redact'
+import { AGENT_TOOLS } from './policy'
+import { recordRunOutput } from './runs'
+
+export { AGENT_TOOLS }
 
 export interface ToolContext {
   orgId: string
   userId: string
   agentKey: AgentKey
   threadId: string | null
+  runId?: string
   /** Collected tool traces, surfaced in message metadata. */
   traces: Array<{ tool: string; input: unknown; output: unknown; error?: string }>
 }
@@ -29,7 +35,8 @@ export const EXECUTION_TOOL_NAMES: readonly string[] = []
 /**
  * Decision-log copy of a tool output with stored result rows replaced by their count, so query
  * results never outlive RETENTION_SAMPLES_DAYS inside agent_decisions (kept for the longer
- * RETENTION_DECISIONS_DAYS). The model still receives the full output. A sample that retention
+ * RETENTION_DECISIONS_DAYS). The model receives prepareToolResult, which drops sample rows.
+ * A sample that retention
  * already removed is logged as 'removed (retention)', not 0, so the reason survives truncation.
  */
 export function withoutSamples(value: unknown): unknown {
@@ -45,12 +52,20 @@ export function withoutSamples(value: unknown): unknown {
   return out
 }
 
+/** What the model is allowed to see. Raw rows stay in the hunt tables and, when a run is open, in agent_run_outputs. */
+export function prepareToolResult(value: unknown): unknown {
+  if (env().EGRESS_FILTER === 'legacy') return value
+  return redactValue(withoutSamples(value))
+}
+
 async function traced<T>(ctx: ToolContext, tool: string, input: unknown, fn: () => Promise<T>, forLog: (output: T) => unknown = (o) => o): Promise<T | { error: string }> {
   try {
     const output = await fn()
-    ctx.traces.push({ tool, input, output })
+    if (ctx.runId) await recordRunOutput(ctx.runId, ctx.orgId, `tool:${tool}`, output)
+    const forModel = prepareToolResult(output) as T
+    ctx.traces.push({ tool, input, output: forModel })
     await recordDecision({ orgId: ctx.orgId, actorType: 'agent', actorKey: ctx.agentKey, action: `tool:${tool}`, input, output: forLog(output), threadId: ctx.threadId })
-    return output
+    return forModel
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err)
     ctx.traces.push({ tool, input, output: null, error })
@@ -66,7 +81,7 @@ export function buildTools(ctx: ToolContext): Record<string, AnyTool> {
     name: 'memory_search',
     description: "Search this org's agent memory for prior facts, feedback and safety notes.",
     inputSchema: z.object({ query: z.string().min(2).max(200) }),
-  }).server(async ({ query }) => traced(ctx, 'memory_search', { query }, () => searchMemory(ctx.orgId, query)))
+  }).server(async ({ query }) => traced(ctx, 'memory_search', { query }, () => searchMemory(ctx.orgId, query, 10, ctx.agentKey)))
 
   const remember = toolDefinition({
     name: 'remember',
@@ -74,7 +89,7 @@ export function buildTools(ctx: ToolContext): Record<string, AnyTool> {
     inputSchema: z.object({ fact: z.string().min(5).max(500), agent: z.enum(['lead', 'hunter', 'intel', 'responder', 'scribe']).optional() }),
   }).server(async ({ fact, agent }) =>
     traced(ctx, 'remember', { fact, agent }, async () => {
-      const row = await appendMemory({ orgId: ctx.orgId, agentKey: agent ?? ctx.agentKey, body: fact, sourceType: 'thread', sourceId: ctx.threadId ?? undefined })
+      const row = await appendMemory({ orgId: ctx.orgId, agentKey: agent ?? ctx.agentKey, body: fact, sourceType: 'remember', sourceId: ctx.threadId ?? undefined, authorId: ctx.userId })
       return { id: row.id, kind: row.kind, redacted: row.redacted }
     }),
   )
@@ -163,15 +178,7 @@ export function buildTools(ctx: ToolContext): Record<string, AnyTool> {
   }
 }
 
-/** Per-agent tool allowlist (#30, #56). Only Responder (and Lead) can propose responses. */
-export const AGENT_TOOLS: Record<AgentKey, string[]> = {
-  lead: ['memory_search', 'search_intel', 'list_watch_hits', 'get_hunt', 'propose_response'],
-  hunter: ['memory_search', 'get_hunt', 'propose_kql', 'list_sentinel_incidents'],
-  intel: ['memory_search', 'search_intel', 'compare_cve', 'list_watch_hits'],
-  responder: ['memory_search', 'get_hunt', 'propose_response'],
-  scribe: ['memory_search', 'remember'],
-}
-
+/** Per-agent tool allowlist (#30, #56). The registry in policy.ts is the source. */
 export function toolsFor(agentKey: AgentKey, ctx: ToolContext): AnyTool[] {
   const all = buildTools(ctx)
   return AGENT_TOOLS[agentKey].map((name) => all[name]!).filter(Boolean)

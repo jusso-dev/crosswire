@@ -169,6 +169,17 @@ export const agentMemoryEntries = pgTable(
     sourceType: text('source_type'),
     sourceId: text('source_id'),
     redacted: boolean('redacted').notNull().default(false),
+    /** operator: written by a person or a safety rule. quarantine: not for the model. reviewed: a different person promoted it. */
+    trust: text('trust', { enum: ['operator', 'quarantine', 'reviewed'] }).notNull().default('operator'),
+    visibility: text('visibility', { enum: ['private_case', 'org'] }).notNull().default('org'),
+    sdkClass: text('sdk_class'),
+    sdkAllowed: boolean('sdk_allowed'),
+    authorId: text('author_id'),
+    promotedBy: text('promoted_by'),
+    promotedAt: timestamp('promoted_at', { withTimezone: true }),
+    supersededBy: text('superseded_by'),
+    tombstonedAt: timestamp('tombstoned_at', { withTimezone: true }),
+    contentSha256: text('content_sha256'),
     compactedAt: timestamp('compacted_at', { withTimezone: true }),
     createdAt: createdAt(),
   },
@@ -447,6 +458,9 @@ export const responseProposals = pgTable(
     targets: jsonb('targets').$type<{ devices?: string[]; users?: string[]; incidents?: string[] }>().notNull(),
     blastRadius: jsonb('blast_radius').$type<{ summary: string; devices: number; users: number; incidents: number }>().notNull(),
     payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+    /** sha256 of canonical approval content (schema, title, action, targets, blast radius, payload). Execution refuses a mismatch when APPROVAL_BINDING=enforced. */
+    payloadSha256: text('payload_sha256'),
+    payloadSchemaVersion: integer('payload_schema_version').notNull().default(1),
     requesterType: text('requester_type', { enum: ['user', 'agent'] }).notNull(),
     requesterId: text('requester_id').notNull(),
     requestedByUserId: text('requested_by_user_id'),
@@ -577,4 +591,126 @@ export const appRateLimits = pgTable('app_rate_limits', {
   windowStartedAt: timestamp('window_started_at', { withTimezone: true }).notNull(),
   /** End of this row's own window. The sweep deletes by it, so limiters with different windows can share the table. */
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+})
+
+// ---------- Squad governance: runs, budgets, directives (CW-SDK-003, 005, 007, 008) ----------
+export const agentRuns = pgTable(
+  'agent_runs',
+  {
+    id: id(),
+    orgId: orgRef(),
+    parentRunId: text('parent_run_id').references((): AnyPgColumn => agentRuns.id, { onDelete: 'set null' }),
+    threadId: text('thread_id'),
+    agentKey: text('agent_key').notNull(),
+    status: text('status', { enum: ['running', 'completed', 'failed', 'interrupted'] }).notNull().default('running'),
+    modelProvider: text('model_provider'),
+    modelName: text('model_name'),
+    charterSha256: text('charter_sha256'),
+    policySha256: text('policy_sha256'),
+    toolsetSha256: text('toolset_sha256'),
+    memorySha256: text('memory_sha256'),
+    sdkVersion: text('sdk_version'),
+    cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
+    error: text('error'),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+  },
+  (t) => [index('agent_runs_org_status_idx').on(t.orgId, t.status, t.startedAt), index('agent_runs_parent_idx').on(t.parentRunId)],
+)
+
+export const agentRunEvents = pgTable(
+  'agent_run_events',
+  {
+    id: id(),
+    orgId: orgRef(),
+    runId: text('run_id')
+      .notNull()
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
+    seq: integer('seq').notNull(),
+    kind: text('kind').notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('agent_run_events_run_seq_uq').on(t.runId, t.seq)],
+)
+
+export const agentRunOutputs = pgTable(
+  'agent_run_outputs',
+  {
+    id: id(),
+    orgId: orgRef(),
+    runId: text('run_id')
+      .notNull()
+      .references(() => agentRuns.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    body: text('body').notNull(),
+    contentSha256: text('content_sha256').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('agent_run_outputs_run_idx').on(t.runId, t.createdAt)],
+)
+
+export const agentUsage = pgTable(
+  'agent_usage',
+  {
+    id: id(),
+    orgId: orgRef(),
+    runId: text('run_id').references(() => agentRuns.id, { onDelete: 'set null' }),
+    agentKey: text('agent_key').notNull(),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    inputTokens: integer('input_tokens'),
+    outputTokens: integer('output_tokens'),
+    estimatedCostMicros: integer('estimated_cost_micros'),
+    observed: boolean('observed').notNull().default(false),
+    createdAt: createdAt(),
+  },
+  (t) => [index('agent_usage_org_created_idx').on(t.orgId, t.createdAt)],
+)
+
+/** Shared inflight count. Acquire is one conditional update so replicas cannot oversubscribe. */
+export const agentCapacity = pgTable('agent_capacity', {
+  orgId: text('org_id')
+    .primaryKey()
+    .references(() => orgs.id, { onDelete: 'cascade' }),
+  inflight: integer('inflight').notNull().default(0),
+})
+
+export const orgDirectives = pgTable(
+  'org_directives',
+  {
+    id: id(),
+    orgId: orgRef(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    version: integer('version').notNull().default(1),
+    contentSha256: text('content_sha256').notNull(),
+    status: text('status', { enum: ['draft', 'approved', 'retired'] }).notNull().default('draft'),
+    source: text('source', { enum: ['operator', 'lesson', 'review', 'import'] }).notNull().default('operator'),
+    createdBy: text('created_by'),
+    approvedBy: text('approved_by'),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    supersedes: text('supersedes'),
+    provenance: jsonb('provenance').$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: createdAt(),
+  },
+  (t) => [index('org_directives_org_status_idx').on(t.orgId, t.status, t.createdAt)],
+)
+
+export const socReviews = pgTable('soc_reviews', {
+  id: id(),
+  orgId: orgRef(),
+  incidentRef: text('incident_ref').notNull(),
+  body: text('body').notNull(),
+  createdBy: text('created_by'),
+  createdAt: createdAt(),
+})
+
+export const socHandovers = pgTable('soc_handovers', {
+  id: id(),
+  orgId: orgRef(),
+  shiftLabel: text('shift_label').notNull(),
+  body: text('body').notNull(),
+  createdBy: text('created_by'),
+  createdAt: createdAt(),
 })

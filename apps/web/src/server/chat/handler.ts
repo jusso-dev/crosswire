@@ -1,7 +1,8 @@
 import { EventType, chatParamsFromRequestBody, toServerSentEventsResponse, type StreamChunk } from '@tanstack/ai'
 import { toAgentSelection, selectionAgent, type AgentSelection } from '../../shared/agents'
 import { requireApiSession, HttpError } from '../auth/session'
-import { agentRuntime, agentTimeoutMs, withTimeout } from '../agents/runtime'
+import { agentRuntime, agentTimeoutMs, cancelAgentRun, withTimeout, type AgentRunHandle } from '../agents/runtime'
+import { finishRun, recordRunOutput } from '../agents/runs'
 import { appendMessage, listMessages, requireThread, threadMessagesForModel, touchThread, ThreadNotFoundError } from './threads'
 import { logger } from '../lib/logger'
 
@@ -63,17 +64,37 @@ export async function handleChat(request: Request): Promise<Response> {
   const history = await threadMessagesForModel(org.id, user.id, threadId)
 
   const abortController = new AbortController()
-  request.signal.addEventListener('abort', () => abortController.abort())
-  const handle = await agentRuntime().run({ orgId: org.id, userId: user.id, selection, threadId, messages: history, abortController })
+  let handle: AgentRunHandle | undefined
+  request.signal.addEventListener('abort', () => {
+    abortController.abort()
+    if (handle?.runId) void cancelAgentRun(org.id, handle.runId)
+  })
+  handle = await agentRuntime().run({ orgId: org.id, userId: user.id, selection, threadId, messages: history, abortController })
+  const active = handle
   const agentKey = selectionAgent(selection)
 
   async function* persisted(): AsyncIterable<StreamChunk> {
     let reply = ''
     let error: string | null = null
-    for await (const chunk of withTimeout(handle.stream, agentTimeoutMs(), abortController)) {
-      if (chunk.type === EventType.TEXT_MESSAGE_CONTENT && 'delta' in chunk && typeof chunk.delta === 'string') reply += chunk.delta
-      if (chunk.type === EventType.RUN_ERROR) error = (chunk as { message?: string }).message ?? 'Agent error'
-      yield chunk
+    let interrupted = false
+    try {
+      for await (const chunk of withTimeout(active.stream, agentTimeoutMs(), abortController)) {
+        if (chunk.type === EventType.TEXT_MESSAGE_CONTENT && 'delta' in chunk && typeof chunk.delta === 'string') reply += chunk.delta
+        if (chunk.type === EventType.RUN_ERROR) error = (chunk as { message?: string }).message ?? 'Agent error'
+        yield chunk
+      }
+    } finally {
+      interrupted = abortController.signal.aborted
+      if (active.runId) {
+        try {
+          if (reply) await recordRunOutput(active.runId, org.id, 'assistant', reply)
+          const status = interrupted ? 'interrupted' : error ? 'failed' : 'completed'
+          await finishRun(org.id, active.runId, status, error)
+        } catch (err) {
+          logger.error('failed to finish agent run', { threadId, error: err instanceof Error ? err.message : String(err) })
+        }
+      }
+      await active.release?.()
     }
     const content = reply || (error ? `⚠️ ${error}` : '(no response)')
     try {
@@ -81,7 +102,7 @@ export async function handleChat(request: Request): Promise<Response> {
         role: 'assistant',
         content,
         agentKey: selection,
-        metadata: { agent: agentKey, selection, tools: handle.traces.map((t) => ({ tool: t.tool, error: t.error ?? null })), error },
+        metadata: { agent: agentKey, selection, runId: active.runId ?? null, tools: active.traces.map((t) => ({ tool: t.tool, error: t.error ?? null })), error },
       })
     } catch (err) {
       logger.error('failed to persist assistant message', { threadId, error: err instanceof Error ? err.message : String(err) })

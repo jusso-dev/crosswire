@@ -36,6 +36,13 @@
       "when": 1794128871856,
       "tag": "0004_gaps_retention_sessions_ratelimits",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794300000000,
+      "tag": "0005_squad_governance",
+      "breakpoints": true
     }
   ]
 }

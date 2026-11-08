@@ -6,6 +6,7 @@ import { expireProposals } from '../response/proposals'
 import { expireKqlProposals } from '../hunting/hunts'
 import { runDueSchedules } from '../hunting/schedules'
 import { runRetention } from '../ops/retention'
+import { reconcileStaleRuns } from '../agents/runs'
 import { logger } from '../lib/logger'
 import { closeDb } from '../db/client'
 
@@ -58,6 +59,7 @@ async function tick() {
 }
 
 async function tickBody() {
+  await safe('runs:reconcile', () => reconcileStaleRuns())
   await safe('expire', async () => ({ response: await expireProposals(), kql: await expireKqlProposals() }))
   // Approved scheduled hunts (#92); claims are atomic, so extra replicas are safe.
   await safe('hunts:scheduled', () => runDueSchedules())
@@ -90,6 +92,7 @@ async function tickBody() {
 
 async function main() {
   logger.info('worker started')
+  await safe('runs:reconcile', () => reconcileStaleRuns())
   await ingestCycle()
   const ingestTimer = setInterval(() => void ingestCycle(), HOUR)
   const tickTimer = setInterval(() => void tick(), 60_000)

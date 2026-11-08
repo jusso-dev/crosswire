@@ -145,6 +145,26 @@ const schema = z.object({
 
   /** Application Insights (#73). When set, OpenTelemetry exports traces/logs to Azure Monitor. */
   APPLICATIONINSIGHTS_CONNECTION_STRING: z.string().optional(),
+
+  /** Squad governance. `enforced` is the default. `legacy` is the previous behaviour, for a rollback of one control. */
+  MEMORY_GOVERNANCE: z.enum(['enforced', 'legacy']).default('enforced'),
+  RUN_LEDGER: z.enum(['enforced', 'legacy']).default('enforced'),
+  EGRESS_FILTER: z.enum(['enforced', 'legacy']).default('enforced'),
+  APPROVAL_BINDING: z.enum(['enforced', 'legacy']).default('enforced'),
+  /** Per-call input estimate cap (characters / 4). Not a provider token count. */
+  BUDGET_MAX_INPUT_TOKENS: z.coerce.number().int().positive().default(24_000),
+  BUDGET_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4_000),
+  /** Parent turn plus up to 4 specialist calls, with headroom. */
+  BUDGET_MAX_INFLIGHT: z.coerce.number().int().positive().default(8),
+  BUDGET_CONTEXT_WINDOW_TOKENS: z.coerce.number().int().positive().default(128_000),
+  BUDGET_DAILY_INPUT_TOKENS: z.coerce.number().int().positive().default(200_000),
+  /**
+   * Optional dollar cap, in micros (1 USD = 1_000_000). Requires BUDGET_USD_PER_MILLION_TOKENS.
+   * Unset means there is no dollar cap. Token and inflight caps still apply. A cap without a rate fails closed.
+   */
+  BUDGET_MAX_SPEND_MICROS: z.coerce.number().int().nonnegative().optional(),
+  /** Customer-supplied price. Crosswire does not invent a price for an Azure deployment. */
+  BUDGET_USD_PER_MILLION_TOKENS: z.coerce.number().positive().optional(),
 })
 
 export type Env = z.infer<typeof schema>

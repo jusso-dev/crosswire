@@ -2,6 +2,7 @@ import { and, asc, desc, eq } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { chatMessages, chatThreads, messageFeedback } from '../db/schema'
 import { appendMemory } from '../agents/memory'
+import { prepareModelMessages } from '../agents/egress'
 import { writeAudit } from '../audit'
 import { isAgentKey, type AgentSelection } from '../../shared/agents'
 
@@ -76,7 +77,8 @@ export async function deleteThread(orgId: string, userId: string, threadId: stri
 
 export async function threadMessagesForModel(orgId: string, userId: string, threadId: string, limit = 40) {
   const msgs = await listMessages(orgId, userId, threadId, limit)
-  return msgs.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+  const raw = msgs.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+  return prepareModelMessages(raw)
 }
 
 /** Feedback (#35): store rating, append a structured memory entry for the agent, audit it. */
@@ -102,6 +104,7 @@ export async function submitFeedback(orgId: string, userId: string, messageId: s
     body: `Analyst marked an answer "${rating}"${rationale ? `: ${rationale.trim().slice(0, 300)}` : ''} (answer: "${excerpt}")`,
     sourceType: 'message',
     sourceId: messageId,
+    authorId: userId,
   })
   await writeAudit({ category: 'memory', action: 'feedback', actorType: 'user', actorId: userId, orgId, targetType: 'chat_message', targetId: messageId, data: { rating, memoryEntryId: entry.id } })
   return { rating, memoryEntryId: entry.id }

@@ -1,15 +1,45 @@
-import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, isNull, ne, or, sql } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { agentMemories, agentMemoryEntries } from '../db/schema'
 import { looksSecret, redactString, truncate } from '../lib/redact'
 import { writeAudit } from '../audit'
+import { env } from '../env'
 import type { AgentKey } from '../../shared/agents'
+import { sha256 } from './canonical'
+import { classifyWithSquad } from './squad-sdk'
 
 export type MemoryKind = (typeof agentMemoryEntries.$inferInsert)['kind']
 
 const SAFETY_RE = /\b(do not|don't|never|must not)\b/i
+const INJECTION_RE = /\b(ignore|disregard|forget)\b.{0,80}\b(instruction|instructions|above|prior|previous)\b|\byou are now\b|\b(system prompt|developer message)\b/i
+const UNTRUSTED_SOURCES = new Set(['thread', 'message', 'import', 'remember', 'tool', 'feedback', 'scribe'])
 
-/** Append a memory entry (#31). Secrets are redacted before storage and the entry is flagged. */
+export class MemoryRefusedError extends Error {}
+
+export function isPersistentInjection(body: string) {
+  return INJECTION_RE.test(body)
+}
+
+function governanceEnforced() {
+  return env().MEMORY_GOVERNANCE !== 'legacy'
+}
+
+type MemoryRow = typeof agentMemoryEntries.$inferSelect
+
+function promptEligible(row: Pick<MemoryRow, 'trust' | 'tombstonedAt' | 'body'>) {
+  if (!governanceEnforced()) return true
+  if (row.tombstonedAt) return false
+  if (row.trust === 'quarantine') return false
+  if (isPersistentInjection(row.body)) return false
+  return true
+}
+
+/**
+ * Append a memory entry (#31). Secrets are redacted before storage.
+ * Squad classify() runs on the redacted body. FORBIDDEN and TRANSIENT are refused.
+ * classify() does not stop generic instruction injection, so untrusted sources and injection
+ * text are quarantined here. Operator safety sentences stay live so compaction can keep them.
+ */
 export async function appendMemory(input: {
   orgId: string
   agentKey: AgentKey
@@ -17,15 +47,50 @@ export async function appendMemory(input: {
   kind?: MemoryKind
   sourceType?: string
   sourceId?: string
+  authorId?: string | null
 }) {
   const raw = input.body.trim()
   if (!raw) throw new Error('memory body is empty')
   const redacted = looksSecret(raw)
   const body = truncate(redactString(raw), 2000)
   const kind = input.kind ?? (SAFETY_RE.test(body) ? 'safety' : 'fact')
+  const source = input.sourceType ?? null
+  const untrusted = source !== null && UNTRUSTED_SOURCES.has(source)
+  const injection = isPersistentInjection(body)
+  let sdkClass: string | null = null
+  let sdkAllowed: boolean | null = null
+  if (governanceEnforced()) {
+    let classification
+    try {
+      classification = await classifyWithSquad(body)
+    } catch (err) {
+      throw new MemoryRefusedError(`Memory governance unavailable: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    sdkClass = classification.class
+    sdkAllowed = classification.allowed
+    if (!classification.allowed || classification.class === 'FORBIDDEN' || classification.class === 'TRANSIENT') {
+      throw new MemoryRefusedError(`Memory refused (${classification.class}).`)
+    }
+  }
+  const safetyKeep = kind === 'safety' && !untrusted && !injection
+  const quarantine = governanceEnforced() && (injection || untrusted || ((sdkClass === 'POLICY' || sdkClass === 'DECISION') && !safetyKeep))
   const [row] = await getDb()
     .insert(agentMemoryEntries)
-    .values({ orgId: input.orgId, agentKey: input.agentKey, kind, body, sourceType: input.sourceType, sourceId: input.sourceId, redacted })
+    .values({
+      orgId: input.orgId,
+      agentKey: input.agentKey,
+      kind,
+      body,
+      sourceType: source,
+      sourceId: input.sourceId,
+      authorId: input.authorId ?? null,
+      redacted,
+      trust: quarantine ? 'quarantine' : 'operator',
+      visibility: quarantine ? 'private_case' : 'org',
+      sdkClass,
+      sdkAllowed,
+      contentSha256: sha256(body),
+    })
     .returning()
   return row!
 }
@@ -51,24 +116,35 @@ export async function getMemory(orgId: string, agentKey: AgentKey) {
   return row ?? null
 }
 
-/** Build the memory block injected into an agent's system prompt. */
+/** Build the memory block injected into an agent's system prompt. Quarantine, tombstones, and injection stay out. Safety is not limited to the newest 20. */
 export async function memoryContext(orgId: string, agentKey: AgentKey) {
-  const [mem, recent] = await Promise.all([getMemory(orgId, agentKey), listMemoryEntries(orgId, agentKey, { limit: 20 })])
-  const lines = recent.reverse().map((e) => `- ${e.kind === 'safety' ? '[safety] ' : ''}${e.body}`)
+  const [mem, live] = await Promise.all([getMemory(orgId, agentKey), listMemoryEntries(orgId, agentKey, { limit: 200 })])
+  const eligible = live.filter(promptEligible)
+  const safety = eligible.filter((e) => e.kind === 'safety')
+  const recent = eligible.filter((e) => e.kind !== 'safety').slice(0, 20)
+  const lines = [...safety, ...recent].reverse().map((e) => `- ${e.kind === 'safety' ? '[safety] ' : ''}${e.body}`)
   const parts = []
-  if (mem?.body) parts.push(`Compacted org memory (v${mem.version}):\n${mem.body}`)
+  const body = mem?.body ? (governanceEnforced() ? mem.body.split('\n').filter((line) => !isPersistentInjection(line)).join('\n') : mem.body) : ''
+  if (body.trim()) parts.push(`Compacted org memory (v${mem!.version}):\n${body}`)
   if (lines.length) parts.push(`Recent memory entries:\n${lines.join('\n')}`)
   return parts.join('\n\n')
 }
 
-export async function searchMemory(orgId: string, query: string, limit = 10) {
+export async function searchMemory(orgId: string, query: string, limit = 10, agentKey?: AgentKey) {
   const q = `%${query.replace(/[%_\\]/g, (c) => `\\${c}`)}%`
-  return getDb()
-    .select({ agentKey: agentMemoryEntries.agentKey, kind: agentMemoryEntries.kind, body: agentMemoryEntries.body, createdAt: agentMemoryEntries.createdAt })
+  const conds = [eq(agentMemoryEntries.orgId, orgId), sql`${agentMemoryEntries.body} ilike ${q}`]
+  if (governanceEnforced()) {
+    conds.push(ne(agentMemoryEntries.trust, 'quarantine'))
+    conds.push(isNull(agentMemoryEntries.tombstonedAt))
+    conds.push(agentKey ? or(eq(agentMemoryEntries.visibility, 'org'), eq(agentMemoryEntries.agentKey, agentKey))! : eq(agentMemoryEntries.visibility, 'org'))
+  }
+  const rows = await getDb()
+    .select({ agentKey: agentMemoryEntries.agentKey, kind: agentMemoryEntries.kind, body: agentMemoryEntries.body, createdAt: agentMemoryEntries.createdAt, trust: agentMemoryEntries.trust, tombstonedAt: agentMemoryEntries.tombstonedAt })
     .from(agentMemoryEntries)
-    .where(and(eq(agentMemoryEntries.orgId, orgId), sql`${agentMemoryEntries.body} ilike ${q}`))
+    .where(and(...conds))
     .orderBy(desc(agentMemoryEntries.createdAt))
     .limit(limit)
+  return rows.filter((row) => promptEligible(row)).map(({ agentKey: key, kind, body, createdAt }) => ({ agentKey: key, kind, body, createdAt }))
 }
 
 /** Export memory as a Squad-style history.md for git-centric workflows. */
@@ -128,8 +204,9 @@ export async function compactMemory(
   const mem = await getMemory(orgId, agentKey)
   const bytesBefore = (mem?.body.length ?? 0) + live.reduce((n, e) => n + e.body.length, 0)
 
-  const fold = live.slice(keep).filter((e) => e.kind !== 'safety')
-  const safety = live.filter((e) => e.kind === 'safety')
+  const trusted = (e: MemoryRow) => !governanceEnforced() || (e.trust !== 'quarantine' && !e.tombstonedAt && !isPersistentInjection(e.body))
+  const fold = live.slice(keep).filter((e) => e.kind !== 'safety' && trusted(e))
+  const safety = live.filter((e) => e.kind === 'safety' && trusted(e))
   const existing = (mem?.body ?? '').split('\n').filter((l) => l.startsWith('- '))
   const existingSafety = existing.filter((l) => l.startsWith('- [safety]'))
   const existingOther = existing.filter((l) => !l.startsWith('- [safety]'))
@@ -156,4 +233,36 @@ export async function compactMemory(
   const bytesAfter = body.length + live.filter((e) => !fold.includes(e)).reduce((n, e) => n + e.body.length, 0)
   await writeAudit({ category: 'memory', action: 'compact', actorType: 'system', orgId, data: { agentKey, before: live.length, after, version } })
   return { agentKey, before: live.length, after, version, bytesBefore, bytesAfter }
+}
+
+/** A different person promotes a quarantined note. Injection text cannot be promoted. */
+export async function promoteMemory(orgId: string, entryId: string, approverUserId: string) {
+  const [row] = await getDb()
+    .select()
+    .from(agentMemoryEntries)
+    .where(and(eq(agentMemoryEntries.orgId, orgId), eq(agentMemoryEntries.id, entryId)))
+    .limit(1)
+  if (!row) throw new Error('Memory entry not found.')
+  if (!row.authorId) throw new Error('Memory has no author, so it cannot be promoted.')
+  if (row.authorId === approverUserId) throw new Error('You cannot promote your own memory.')
+  if (isPersistentInjection(row.body)) throw new Error('Injection text cannot be promoted.')
+  const [updated] = await getDb()
+    .update(agentMemoryEntries)
+    .set({ trust: 'reviewed', visibility: 'org', promotedBy: approverUserId, promotedAt: new Date() })
+    .where(and(eq(agentMemoryEntries.id, entryId), eq(agentMemoryEntries.orgId, orgId)))
+    .returning()
+  await writeAudit({ category: 'memory', action: 'promote', actorType: 'user', actorId: approverUserId, orgId, targetType: 'agent_memory_entry', targetId: entryId })
+  return updated!
+}
+
+/** Keep the old row and point it at the replacement. Tombstoned rows stay out of the prompt. */
+export async function supersedeMemory(orgId: string, entryId: string, replacementId: string) {
+  if (entryId === replacementId) throw new Error('A memory entry cannot supersede itself.')
+  const [updated] = await getDb()
+    .update(agentMemoryEntries)
+    .set({ supersededBy: replacementId, tombstonedAt: new Date() })
+    .where(and(eq(agentMemoryEntries.orgId, orgId), eq(agentMemoryEntries.id, entryId)))
+    .returning()
+  if (!updated) throw new Error('Memory entry not found.')
+  return updated
 }

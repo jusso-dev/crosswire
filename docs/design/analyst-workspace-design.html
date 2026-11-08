@@ -196,7 +196,7 @@
     <tr><td>TB1</td><td>Internet to application</td><td>Browser requests, cookies, chat messages, form input</td><td>TLS only (ingress <code>allowInsecure: false</code>), HSTS, CSP, CORS allowlist, Better Auth sessions, <code>authed</code> middleware, zod validation, rate limits</td></tr>
     <tr><td>TB2</td><td>Application to public internet</td><td>Feed JSON from pwn.watch and CISA KEV</td><td>Fixed feed URLs from configuration, identifiable User-Agent, timeouts, bounded retries, cache with TTL, schema parsing (zod), rendered as text</td></tr>
     <tr><td>TB3</td><td>Application to customer tenant</td><td>KQL queries and results; response API calls</td><td>Separate least-privilege apps per org, request allowlists (host + path + method), KQL safety filter, row and time caps, human approval, dry-run default</td></tr>
-    <tr><td>TB4</td><td>Application to model provider</td><td>System prompt, conversation, tool results</td><td>Entra ID token (managed identity; no stored key), server-chosen model and tools, tool allowlist per agent, no execute tools, output rendered as escaped markdown</td></tr>
+    <tr><td>TB4</td><td>Application to model provider</td><td>System prompt, conversation, tool results</td><td>Azure via Entra ID (managed identity; API key only as fallback) or an OpenAI-compatible endpoint. Server-chosen model and tools. Egress filter redacts secrets and drops hunt samples from the model copy. No execute tools. No Copilot seat. Output rendered as escaped markdown</td></tr>
     <tr><td>TB5</td><td>Application to chat-ops endpoints</td><td>Notification payloads</td><td>HTTPS, default port, no credentials in URL, host allowlist per kind, <code>redirect: 'error'</code>, 5 s timeout, payloads carry titles, counts and links only</td></tr>
     <tr><td>TB6</td><td>Organisation to organisation (logical)</td><td>All tenant data in one database</td><td><code>org_id</code> on every org-owned row; server code always filters by the session's org; cross-org tests</td></tr>
   </tbody>
@@ -222,13 +222,15 @@
   <li>A proposal (<code>response_proposals</code>) holds targets, a blast-radius summary and payload. Agents may create proposals only through <code>propose_response</code>, on behalf of a member.</li>
   <li>An approver dry-runs it: executors compute the exact calls and any blockers without sending anything.</li>
   <li>A different approver approves (self-approval is refused unless <code>RESPONSE_ALLOW_SELF_APPROVAL=true</code>).</li>
+  <li><span class="tag t-impl">IMPLEMENTED</span> <code>createProposal</code> stores <code>payload_sha256</code> over the canonical title, action, targets, blast radius and redacted payload (schema version 1). With <code>APPROVAL_BINDING=enforced</code> (the default), execution recomputes that hash and refuses a missing hash, a mismatch, or an expired window before the atomic claim. The claim is unchanged: one update sets <code>execution</code> only while status is <code>approved</code> and <code>execution</code> is null.</li>
   <li>Execution happens only if <code>RESPONSE_DRY_RUN=false</code> <em>and</em> the executor flag for that action type is <code>on</code>. Calls are checked against <code>RESPONSE_ALLOWLIST</code>, capped by <code>RESPONSE_MAX_LIVE_TARGETS</code>, and recorded per call. Rollback is a new proposal through the same gates.</li>
 </ol>
 <h3>4.4 Chat (W6)</h3>
 <ol>
   <li><code>POST /api/chat</code> (<code>server/chat/handler.ts</code>) authenticates, rate-limits per IP, loads the thread for that user and org, appends the user message and builds history from the database (the client never supplies history).</li>
-  <li><code>server/agents/runtime.ts</code> builds the system prompt from the agent's charter plus org memory and runs the TanStack AI tool loop (at most 6 iterations; 4 for delegated specialists) with only that agent's tools.</li>
-  <li>The model is Azure OpenAI via <code>server/agents/model.ts</code>, signed in with <code>DefaultAzureCredential</code> (managed identity). The response streams to the browser as Server-Sent Events and is persisted on completion; every turn and tool call writes an <code>agent_decisions</code> row.</li>
+  <li><code>server/agents/runtime.ts</code> loads charters fail-closed, builds the system prompt from the charter, approved directives and eligible memory, and runs the TanStack AI tool loop (at most 6 iterations; 4 for delegated specialists) with only that agent's tools. Quarantined and injection memory is not placed in the prompt.</li>
+  <li>The model is Azure OpenAI or an OpenAI-compatible endpoint via <code>server/agents/model.ts</code>. Azure sign-in is <code>DefaultAzureCredential</code> (managed identity) with an API key only as a fallback. A Copilot seat is not required. <code>@bradygaster/squad-sdk@1.1.0</code> validates the cast and classifies memory. It does not host the turn. Preview <code>2.0.0-preview.3</code> and <code>HarnessAdapter</code> are not imported.</li>
+  <li>The response streams to the browser as Server-Sent Events and is persisted on completion. Every turn and tool call writes an <code>agent_decisions</code> summary. The full tool and assistant text is stored on <code>agent_run_outputs</code> when a run is open. Token, context, output and shared inflight budgets can refuse the call. Secrets and hunt <code>sample</code> rows are removed from the model copy. The raw chat row stays in the database.</li>
 </ol>
 
 <h2 id="s5">5. Backend components</h2>
@@ -242,7 +244,7 @@
     <tr><td><code>server/ti/*</code></td><td>Feed ingest, cache, matching, digests, compare, optional Cloudflare Radar enrichment</td><td>Global TI tables (not org-scoped); org-scoped watches, hits, digests</td><td><span class="tag t-impl">IMPLEMENTED</span> (Radar flag-off)</td></tr>
     <tr><td><code>server/hunting/*</code></td><td>Hunts, KQL proposals, safety filter, token broker, hunting client, schedules, report export</td><td>Request allowlist; row cap at most 1000; timeout at most 120 s; demo fixtures when no connector</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
     <tr><td><code>server/response/*</code></td><td>Proposals, RBAC, executors (Sentinel playbook, Logic App, Defender isolate), response connector</td><td>Dry-run default; two switches for live; per-call results; rollback as proposal</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
-    <tr><td><code>server/agents/*</code></td><td>Charters, tool registry, memory, decision log, runtime, model adapter</td><td><code>EXECUTION_TOOL_NAMES</code> must stay empty (tested); Azure OpenAI or OpenAI-compatible</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
+    <tr><td><code>server/agents/*</code></td><td>Fail-closed charters and policy, tool allowlists, governed memory, run ledger, budgets, egress filter, directives, Squad SDK 1.1.0 boundary, runtime, model adapter</td><td><code>EXECUTION_TOOL_NAMES</code> must stay empty (tested). Model is Azure OpenAI or OpenAI-compatible. SDK subpaths do not start Copilot. <code>UsageLedger</code> and <code>ContextUtilizationTracker</code> load from the installed dist because 1.1.0 does not export them</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
     <tr><td><code>server/chat/*</code></td><td>Threads, messages, feedback, SSE handler</td><td>Threads scoped by org and user; history assembled server-side</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
     <tr><td><code>server/notify/notify.ts</code></td><td>Teams and Slack webhooks</td><td>URL validation and encryption at rest; payloads exclude query results and secrets</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
     <tr><td><code>server/lib/*</code></td><td>AES-256-GCM secret encryption with key rotation, nonce-based CSP and security headers, CORS, rate limiter, JSON logger, redaction</td><td>Rate limits are stored in Postgres and shared by every replica with the default <code>RATE_LIMIT_STORAGE=database</code>; <code>memory</code> keeps per-replica counters</td><td><span class="tag t-impl">IMPLEMENTED</span></td></tr>
@@ -266,7 +268,7 @@
 </table>
 
 <h2 id="s6">6. Data model and storage</h2>
-<p>PostgreSQL holds all state (34 tables; schema in <code>apps/web/src/server/db/schema/</code>, migrations in <code>apps/web/drizzle/</code>, latest <code>0004_gaps_retention_sessions_ratelimits</code>). Tests run the real migrations against in-process PGlite.</p>
+<p>PostgreSQL holds all state (42 tables; schema in <code>apps/web/src/server/db/schema/</code>, migrations in <code>apps/web/drizzle/</code>, latest <code>0005_squad_governance</code>). Tests run the real migrations against in-process PGlite.</p>
 <table>
   <thead><tr><th>Group</th><th>Tables</th><th>Scope</th><th>Sensitive fields and handling</th></tr></thead>
   <tbody>
@@ -277,7 +279,7 @@
     <tr><td>Watching</td><td><code>watch_entries</code>, <code>watch_hits</code>, <code>digests</code></td><td>Org</td><td>None secret</td></tr>
     <tr><td>Hunting</td><td><code>hunt_cases</code>, <code>hunt_evidence</code>, <code>kql_proposals</code>, <code>hunt_schedules</code>, <code>org_connectors</code></td><td>Org</td><td>Result samples (at most 20 rows) may hold tenant data; connector client secret AES-256-GCM encrypted or an <code>env:</code> reference</td></tr>
     <tr><td>Response</td><td><code>response_proposals</code>, <code>response_events</code>, <code>org_response_connectors</code></td><td>Org</td><td>Response secret encrypted; playbook allowlist</td></tr>
-    <tr><td>Agents and chat</td><td><code>agent_memories</code>, <code>agent_memory_entries</code>, <code>chat_threads</code>, <code>chat_messages</code>, <code>message_feedback</code></td><td>Org (threads also by user)</td><td>Memory entries redacted; chat content may contain tenant data</td></tr>
+    <tr><td>Agents and chat</td><td><code>agent_memories</code>, <code>agent_memory_entries</code>, <code>agent_runs</code>, <code>agent_run_events</code>, <code>agent_run_outputs</code>, <code>agent_usage</code>, <code>agent_capacity</code>, <code>org_directives</code>, <code>soc_reviews</code>, <code>soc_handovers</code>, <code>chat_threads</code>, <code>chat_messages</code>, <code>message_feedback</code></td><td>Org (threads also by user)</td><td>Memory redacted, then classified. Quarantine is not sent to the model. Run outputs keep full text. Chat content may contain tenant data. The SDK memory store is process-local and is not the tenant archive</td></tr>
     <tr><td>Notify</td><td><code>org_notification_channels</code></td><td>Org</td><td>Webhook URL encrypted; only the host is shown</td></tr>
   </tbody>
 </table>
@@ -526,10 +528,12 @@
     <tr><td>No excessive agency</td><td>Tools can read and propose only; <code>EXECUTION_TOOL_NAMES</code> empty and tested; lint blocks agents from importing executors or decision functions</td><td>OWASP LLM06 Excessive Agency</td></tr>
     <tr><td>Per-agent allowlist</td><td><code>AGENT_TOOLS</code> in <code>server/agents/tools.ts</code></td><td>OWASP LLM06</td></tr>
     <tr><td>Authorisation outside the model</td><td>Every tool re-checks org from server context; approvals by people only</td><td>OWASP LLM06</td></tr>
-    <tr><td>Prompt injection tolerance</td><td>Feed text, results and chat cannot trigger execution; outputs rendered as escaped markdown</td><td>OWASP LLM01, LLM05</td></tr>
-    <tr><td>Sensitive data</td><td>Memory and decisions redacted; model credentials never reach the browser</td><td>OWASP LLM02</td></tr>
-    <tr><td>Unbounded consumption</td><td>Iteration caps, timeout, per-IP limit, message size cap</td><td>OWASP LLM10</td></tr>
-    <tr><td>Model access</td><td>Azure OpenAI via managed identity; deployment chosen server-side</td><td>ADR 0004</td></tr>
+    <tr><td>Prompt injection tolerance</td><td>Feed text, results and chat cannot trigger execution; outputs rendered as escaped markdown. Instruction text that Squad <code>classify()</code> marks <code>LOCAL</code> is still quarantined and kept out of the prompt, including after a different person tries to promote it</td><td>OWASP LLM01, LLM05</td></tr>
+    <tr><td>Sensitive data</td><td>Memory and decisions redacted; model copy of history and tool results redacted again and stripped of hunt samples; model credentials never reach the browser or the configuration diagnostic</td><td>OWASP LLM02</td></tr>
+    <tr><td>Unbounded consumption</td><td>Iteration caps, timeout, per-IP limit, message size cap, per-call and daily token caps, context warning treated as a refusal, output cap, shared inflight slots in <code>agent_capacity</code></td><td>OWASP LLM10</td></tr>
+    <tr><td>Model access</td><td>Azure OpenAI via managed identity, or an OpenAI-compatible endpoint. Deployment chosen server-side. No Copilot seat. Same-provider only: no silent vendor switch</td><td>ADR 0004</td></tr>
+    <tr><td>Content-bound approval</td><td><code>payload_sha256</code> checked before the atomic execution claim. Older rows with a null hash fail closed while <code>APPROVAL_BINDING=enforced</code></td><td>CW-SDK-009</td></tr>
+    <tr><td>Run record</td><td><code>agent_runs</code>, events and full outputs. Decision summaries stay truncated. Worker reconciles stale runs. Both processes down leaves rows <code>running</code> until one starts</td><td>CW-SDK-003</td></tr>
   </tbody>
 </table>
 
@@ -554,6 +558,9 @@
     <tr><td><code>APP_ENCRYPTION_KEY_PREVIOUS</code></td><td>unset</td><td>Old keys accepted for decryption during rotation</td></tr>
     <tr><td><code>APP_TIMEZONE</code></td><td><code>Australia/Sydney</code></td><td>Display and digest day</td></tr>
     <tr><td><code>ALLOW_DEMO_FIXTURES</code></td><td>unset</td><td>Allows demo data in production (labs only)</td></tr>
+    <tr><td><code>MEMORY_GOVERNANCE</code>, <code>RUN_LEDGER</code>, <code>EGRESS_FILTER</code>, <code>APPROVAL_BINDING</code></td><td><code>enforced</code></td><td><code>legacy</code> turns that one control off. Default is fail closed for new writes</td></tr>
+    <tr><td><code>BUDGET_MAX_INPUT_TOKENS</code>, <code>BUDGET_MAX_OUTPUT_TOKENS</code>, <code>BUDGET_MAX_INFLIGHT</code>, <code>BUDGET_CONTEXT_WINDOW_TOKENS</code>, <code>BUDGET_DAILY_INPUT_TOKENS</code></td><td>24000, 4000, 8, 128000, 200000</td><td>Pre-call gates. Estimates are not written as observed usage</td></tr>
+    <tr><td><code>BUDGET_MAX_SPEND_MICROS</code>, <code>BUDGET_USD_PER_MILLION_TOKENS</code></td><td>unset</td><td>Spend cap is off unless both are set. A cap without a rate refuses the call. No price is invented for a customer deployment</td></tr>
   </tbody>
 </table>
 <p>Full list: <code>.env.example</code> and <code>docs/configuration.md</code>.</p>
@@ -602,7 +609,7 @@
 <h2 id="s16">16. Testing and acceptance criteria</h2>
 <h3>16.1 Test inventory at the commit</h3>
 <ul>
-  <li>Unit and integration (Vitest, real migrations on PGlite): 197 tests in 21 files; 195 pass and 2 are skipped (run locally on 8 November 2026); covers auth, RBAC, tenant isolation, hunting safety, schedules, response gates, notifications, TI, digests and time zones, agents and chat with a mock model.</li>
+  <li>Unit and integration (Vitest, real migrations on PGlite): 214 tests in 23 files; 212 pass and 2 are skipped (one file, real Postgres, skipped without <code>PG_TEST_URL</code>). Re-run locally on 8 November 2026 after the Squad SDK boundary. Covers auth, RBAC, tenant isolation, hunting safety, schedules, response gates, notifications, TI, digests and time zones, agents and chat with a mock model, plus <code>squad-sdk-runtime</code> and <code>squad-sdk-governance</code>. <code>tsc --noEmit</code> passed on that tree. End-to-end Playwright was not re-run for this change.</li>
   <li>End to end (Playwright, local, not in PR CI): golden path, hunt workspace (keyboard, filters, history, theme, 390 px and 1000 px dialogs), chat streaming (deterministic mock), axe scan.</li>
   <li>End to end on a local production build of this branch (8 November 2026): all 6 Playwright specs pass with the nonce CSP active and no CSP violations, including the axe WCAG 2.2 AA scan.</li>
   <li>Live lab check (8 November 2026): smoke test, in-container Azure OpenAI call via managed identity, Entra sign-in, hunt run, analyst read-only approval, streamed chat with a tool call.</li>
@@ -668,6 +675,12 @@
     <tr><td>Retention query indexes</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>created_at</code> indexes on chat messages, evidence, decisions and audit events (migration 0004)</td><td>Done</td></tr>
     <tr><td>Data subject requests</td><td><span class="tag t-gap">GAP</span></td><td>No self-service export or erasure for one person's data</td><td>2</td></tr>
     <tr><td>Custom domain</td><td><span class="tag t-plan">PLANNED</span></td><td>Lab hostname change pending DNS records</td><td>1</td></tr>
+    <tr><td>Squad SDK pin</td><td><span class="tag t-impl">IMPLEMENTED</span></td><td><code>@bradygaster/squad-sdk@1.1.0</code> exact. npm <code>latest</code> on 08-11-2026 was 1.1.0. Preview 2.0.0-preview.3 and <code>HarnessAdapter</code> are not adopted. Package has no <code>./backend</code> export</td><td>Done</td></tr>
+    <tr><td>UsageLedger export</td><td><span class="tag t-part">PARTIAL</span></td><td>Present in the 1.1.0 dist, omitted from <code>package.json</code> exports. Loaded by file URL beside <code>runtime/cost-tracker</code>. Ledger path is <code>memory/usage.jsonl</code></td><td>Done, with that limit</td></tr>
+    <tr><td>OpenTelemetry peer</td><td><span class="tag t-part">PARTIAL</span></td><td>pnpm warns that <code>@opentelemetry/api@1.10.0</code> does not satisfy the SDK peer range below 1.10.0. The SOC import graph does not use those paths. The pin was not changed for the warning</td><td>Unresolved peer</td></tr>
+    <tr><td>Run reconcile when both processes are down</td><td><span class="tag t-part">PARTIAL</span></td><td>The worker reconciles on start and each minute. The next web turn also reconciles. <code>server.mjs</code> and <code>start.ts</code> do not. Rows stay <code>running</code> until one of those processes runs</td><td>Known gap</td></tr>
+    <tr><td>SquadClient BYOK and <code>loadConfig</code> charter check</td><td><span class="tag t-gap">GAP</span></td><td>Not re-executed. Crosswire does not route SOC turns through <code>SquadClient</code>. Charter failure is enforced by <code>loadCharters</code>, not by an untested SDK <code>loadConfig</code> claim</td><td>Do not assert</td></tr>
+    <tr><td>Storage barrel side effect</td><td><span class="tag t-part">PARTIAL</span></td><td>Importing <code>@bradygaster/squad-sdk/storage</code> evaluates the file and SQLite provider modules. Those classes are not constructed. <code>sql.js</code> loads only if <code>SQLiteStorageProvider.init()</code> runs, and this process does not call it</td><td>Accepted</td></tr>
   </tbody>
 </table>
 

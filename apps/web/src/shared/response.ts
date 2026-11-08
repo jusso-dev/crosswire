@@ -44,4 +44,7 @@ export interface ResponseProposalView {
   rollbackNotes: string | null
   /** v2 (#90): set when this proposal reverses another one. */
   rollbackOfId: string | null
+  /** sha256 of the canonical approval content. Null on rows created before binding. */
+  payloadSha256: string | null
+  payloadSchemaVersion: number
 }
