@@ -11,7 +11,8 @@ import { makeOrg, makeUser, member } from './helpers'
 /** Pull the token out of the confirmation link in the last email sent. */
 function tokenFrom(send: { mock: { calls: unknown[][] } }) {
   const text = send.mock.calls.at(-1)![2] as string
-  const m = text.match(new RegExp(`${DIGEST_CONFIRM_PATH.replace(/\//g, '\\/')}\\?token=([A-Za-z0-9_-]+)`))
+  const link = text.split(/\s+/).find((w) => w.includes(`${DIGEST_CONFIRM_PATH}?token=`))
+  const m = link ? /[?&]token=([A-Za-z0-9_-]+)/.exec(link) : null
   expect(m).not.toBeNull()
   return m![1]!
 }
