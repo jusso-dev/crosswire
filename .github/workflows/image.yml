@@ -1,5 +1,7 @@
 # Reusable: build the production image, generate an SBOM, fail on CRITICAL CVEs in the runtime
 # image (#85), then push to GHCR. Callers pass extra tags (e.g. the git tag); :sha-<sha> is always added.
+# After the push, signed build provenance and SBOM attestations are bound to the image digest.
+# Callers must grant packages: write, id-token: write and attestations: write.
 name: Image
 
 on:
@@ -24,6 +26,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write # Sigstore signing certificate for attestations
+      attestations: write
     outputs:
       image: ${{ steps.meta.outputs.image }}
     steps:
@@ -70,10 +74,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Push
+        id: push
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          REPO: ${{ steps.meta.outputs.repo }}
+          EXTRA_TAG: ${{ inputs.tags }}
         run: |
-          docker tag crosswire:scan "${{ steps.meta.outputs.image }}"
-          docker push "${{ steps.meta.outputs.image }}"
-          if [ -n "${{ inputs.tags }}" ]; then
-            docker tag crosswire:scan "${{ steps.meta.outputs.repo }}:${{ inputs.tags }}"
-            docker push "${{ steps.meta.outputs.repo }}:${{ inputs.tags }}"
+          docker tag crosswire:scan "$IMAGE"
+          docker push "$IMAGE"
+          if [ -n "$EXTRA_TAG" ]; then
+            docker tag crosswire:scan "$REPO:$EXTRA_TAG"
+            docker push "$REPO:$EXTRA_TAG"
           fi
+          # Digest as served by the registry for the sha tag (what `oci://...:sha-<sha>` resolves to).
+          digest="$(docker buildx imagetools inspect "$IMAGE" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::could not resolve pushed digest ($digest)"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      # Signed SLSA provenance + SBOM attestations bound to the pushed digest (verify: docs/releasing.md).
+      # actions/attest supersedes attest-build-provenance / attest-sbom (now thin wrappers over it).
+      # Storage records need an organisation-owned repo, so they are off.
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.meta.outputs.repo }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Attest SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.meta.outputs.repo }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+          create-storage-record: false

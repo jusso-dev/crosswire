@@ -29,6 +29,13 @@
       "when": 1794015323330,
       "tag": "0003_v2_response_notify_schedules",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794125628369,
+      "tag": "0004_gaps_retention_sessions_ratelimits",
+      "breakpoints": true
     }
   ]
 }

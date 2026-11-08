@@ -6,11 +6,22 @@ param postgresAdminLogin string
 @secure()
 param postgresAdminPassword string
 param postgresPublicAccess bool
+@description('Private networking: subnet delegated to Microsoft.DBforPostgreSQL/flexibleServers. Empty = public-access mode (the default). Fixed at creation.')
+param pgDelegatedSubnetId string = ''
+@description('Private networking: private DNS zone (linked to the VNet) for the server record.')
+param pgPrivateDnsZoneId string = ''
 param appIdentityPrincipalId string
 param operatorObjectId string
 
 var secretsUserRole = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 var secretsOfficerRole = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7')
+
+// VNet integration (private access) has no public endpoint and no firewall rules. main.bicep refuses
+// postgresPublicAccess together with private networking, so the firewall rule below never applies here.
+var pgPrivate = !empty(pgDelegatedSubnetId)
+var pgNetwork = pgPrivate
+  ? { delegatedSubnetResourceId: pgDelegatedSubnetId, privateDnsZoneArmResourceId: pgPrivateDnsZoneId, publicNetworkAccess: 'Disabled' }
+  : { publicNetworkAccess: postgresPublicAccess ? 'Enabled' : 'Disabled' }
 
 resource kv 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: kvName
@@ -49,7 +60,7 @@ resource pg 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
     storage: { storageSizeGB: 32, autoGrow: 'Enabled' }
     backup: { backupRetentionDays: 7, geoRedundantBackup: 'Disabled' }
     highAvailability: { mode: 'Disabled' }
-    network: { publicNetworkAccess: postgresPublicAccess ? 'Enabled' : 'Disabled' }
+    network: pgNetwork
   }
 }
 
@@ -59,7 +70,7 @@ resource pgDb 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' =
 }
 
 // Lab shortcut only: allows Azure-hosted services (including ACA) to connect. See runbook risk notes.
-resource pgAllowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2024-08-01' = if (postgresPublicAccess) {
+resource pgAllowAzure 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2024-08-01' = if (postgresPublicAccess && !pgPrivate) {
   parent: pg
   name: 'AllowAzureServices'
   properties: { startIpAddress: '0.0.0.0', endIpAddress: '0.0.0.0' }

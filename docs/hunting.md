@@ -60,14 +60,42 @@ and never logs them. Missing config raises "Hunting is not configured for this o
 1. Open or create a hunt case (**Hunts**). Watch hits have a "Start hunt" link.
 2. Hunter (via chat) or an analyst proposes KQL. `propose_kql` never executes.
 3. A person reviews the query on the case, edits it if needed, and clicks **Approve and run**.
-   The stored query is exactly what ran; the original proposal is kept.
+   Who may do this depends on `KQL_APPROVAL_POLICY` (below). The stored query is exactly what ran;
+   the original proposal is kept.
 4. Results are summarised onto the evidence trail (row count, columns, first 20 rows, who
-   approved). Raw result sets are not stored.
+   approved). Raw result sets are not stored. The stored sample rows are removed after
+   `RETENTION_SAMPLES_DAYS` (default 180); the row count and columns stay
+   ([data retention](runbooks/data-retention.md)).
 5. Proposals expire after `KQL_PROPOSAL_TTL_HOURS` (default 24) and can never run after that.
    Rejected proposals never run.
 
 Agent tools on Hunter: `propose_kql`, `get_hunt`, `list_sentinel_incidents`, `memory_search`.
 There is no `run_kql` tool; running requires a human user action (enforced server-side).
+
+### Approval policy (`KQL_APPROVAL_POLICY`)
+
+One setting for the whole deployment. Choose it before go-live.
+
+| Policy | Who may approve and run | Edits at approval |
+| --- | --- | --- |
+| `member` (default) | Any member of the org, including the person who proposed it | Allowed |
+| `approver` | Owners and approvers only | Allowed |
+| `second-person` | Owners and approvers, but not the person who asked for the search | Not allowed |
+
+- **Requester.** Each proposal records `requested_by`: the user who proposed it, or, for a Hunter
+  proposal made in chat, the chat user the agent was acting for. Under `second-person` that person
+  cannot run it, and nor can the user who proposed it.
+- **No edits under `second-person`.** The approver runs the KQL exactly as proposed. To change it,
+  click **Propose the edit as a new search**; another approver must then run the new proposal.
+- **Legacy rows.** Proposals created before `requested_by` existed have it empty. For a user
+  proposal the proposer counts as the requester. For a Hunter proposal the requester is unknown,
+  so any approver may run it.
+- **UI notice.** When the policy blocks the signed-in user, the case shows an info notice next to
+  **Approve and run** saying why (needs an approver, you asked for it, or the search was edited),
+  and the button is disabled. The server enforces the same rules (`src/shared/kql-approval.ts`); the
+  notice only explains them.
+- Any member can still **reject** a proposal under every policy.
+- Scheduling and re-approving schedules always need an owner or approver (3a).
 
 ## 3a. Scheduled hunts (v2, #92)
 
@@ -92,8 +120,10 @@ case, under the query card, pick an interval (hour, 6 hours, day, week) and clic
 
 **Export report (Markdown)** on any hunt case downloads a shareable report: hypothesis, origin
 watch hit, every query that ran (exact KQL, who approved it and when, row count, columns, a
-5-row × 8-column redacted sample), other proposals, schedules and recent scheduled results, linked
-response proposals (including rollbacks) and the evidence timeline. Any member of the org can
+5-row × 8-column redacted sample), other proposals, schedules and the last 20 scheduled results,
+linked response proposals (including rollbacks) and the evidence timeline. Each scheduled
+(repeat) run in the report has its own redacted sample, with the same 5-row × 8-column bounds
+(#99). Where retention has removed a sample, the report says so and keeps the row count. Any member of the org can
 export its hunts; exports are audited (`hunt_report_exported`). Reports are capped at 200,000
 characters. Full result sets stay in Defender / Sentinel.
 

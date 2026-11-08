@@ -1,7 +1,7 @@
 import { createFileRoute, useRouter } from '@tanstack/react-router'
-import { useId, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { fetchConnector, saveConnector } from '../fns/hunts'
-import { fetchAuthAudit, fetchMembers, setRoleFn } from '../fns/settings'
+import { clearDigestEmailFn, fetchAuthAudit, fetchDigestEmail, fetchMembers, requestDigestEmailFn, setRoleFn } from '../fns/settings'
 import { addChannelFn, deleteChannelFn, fetchChannels, fetchResponseConnector, saveResponseConnector, testChannelFn, updateChannelFn } from '../fns/notify'
 import { fmtTime } from '../components/format'
 import { Notice, PageHead, TableWrap } from '../components/ui'
@@ -13,8 +13,8 @@ import { Freshness } from '../components/signals'
  */
 export const Route = createFileRoute('/app/settings')({
   loader: async () => {
-    const [members, connector, audit, response, channels] = await Promise.all([fetchMembers(), fetchConnector(), fetchAuthAudit(), fetchResponseConnector(), fetchChannels()])
-    return { members, connector, audit, response, channels }
+    const [members, connector, audit, response, channels, digestEmail] = await Promise.all([fetchMembers(), fetchConnector(), fetchAuthAudit(), fetchResponseConnector(), fetchChannels(), fetchDigestEmail()])
+    return { members, connector, audit, response, channels, digestEmail }
   },
   pendingComponent: () => <p className="cw-muted">Loading settings…</p>,
   errorComponent: ({ error }) => (
@@ -30,18 +30,21 @@ const SECTIONS = [
   ['hunting', 'Defender and Sentinel'],
   ['response', 'Response connection'],
   ['alerts', 'Teams and Slack alerts'],
+  ['digest-email', 'Digest email'],
   ['audit', 'Audit log'],
 ] as const
 
 function Settings() {
-  const { members, connector, audit, response, channels } = Route.useLoaderData()
+  const { members, connector, audit, response, channels, digestEmail } = Route.useLoaderData()
+  // Only owners receive digest email, so only they see that section.
+  const sections = SECTIONS.filter(([id]) => id !== 'digest-email' || digestEmail.allowed)
   return (
     <>
       <PageHead title="Settings" intro="Who can do what, how Crosswire connects to Microsoft, and where alerts go. Owners change these; everyone can read them." />
       <div className="cw-settings">
         <nav aria-label="Settings sections" className="cw-toc">
           <ul>
-            {SECTIONS.map(([id, label]) => (
+            {sections.map(([id, label]) => (
               <li key={id}>
                 <a href={`#${id}`}>{label}</a>
               </li>
@@ -61,6 +64,11 @@ function Settings() {
           <Section id="alerts" title="Teams and Slack alerts" intro="Post a short message when something needs a decision or a repeat search finds results.">
             <Channels data={channels} />
           </Section>
+          {digestEmail.allowed && (
+            <Section id="digest-email" title="Digest email" intro="Where your daily watch digest is emailed. Use a confirmed contact address if your sign-in email has no mailbox.">
+              <DigestEmail data={digestEmail} />
+            </Section>
+          )}
           <Section id="audit" title="Audit log" intro="Sign-ins, role changes and response decisions, newest first.">
             {!audit.allowed ? (
               <p className="cw-muted">Only owners can view the audit log.</p>
@@ -384,9 +392,7 @@ function Channels({ data }: { data: Awaited<ReturnType<typeof fetchChannels>> })
                         {c.enabled ? 'Turn off' : 'Turn on'}
                         <span className="cw-sr-only"> {c.name}</span>
                       </button>
-                      <button type="button" className="cw-btn" data-variant="danger" data-size="sm" disabled={busy} onClick={() => run(() => deleteChannelFn({ data: { id: c.id } }), `${c.name} deleted.`)}>
-                        Delete<span className="cw-sr-only"> {c.name}</span>
-                      </button>
+                      <DeleteChannel name={c.name} busy={busy} onDelete={() => run(() => deleteChannelFn({ data: { id: c.id } }), `${c.name} deleted.`)} />
                     </div>
                   </td>
                 </tr>
@@ -442,6 +448,165 @@ function Channels({ data }: { data: Awaited<ReturnType<typeof fetchChannels>> })
             {busy ? 'Adding…' : 'Add channel'}
           </button>
         </div>
+      </form>
+    </>
+  )
+}
+
+/** Two-step delete: Delete shows Confirm and Cancel; focus moves to Confirm, and back to Delete on Cancel. */
+function DeleteChannel({ name, busy, onDelete }: { name: string; busy: boolean; onDelete: () => Promise<void> }) {
+  const [confirm, setConfirm] = useState(false)
+  const deleteRef = useRef<HTMLButtonElement>(null)
+  const confirmRef = useRef<HTMLButtonElement>(null)
+  const returnFocus = useRef(false)
+  useEffect(() => {
+    if (confirm) confirmRef.current?.focus()
+    else if (returnFocus.current) {
+      returnFocus.current = false
+      deleteRef.current?.focus()
+    }
+  }, [confirm])
+  const cancel = () => {
+    returnFocus.current = true
+    setConfirm(false)
+  }
+  if (!confirm)
+    return (
+      <button ref={deleteRef} type="button" className="cw-btn" data-variant="danger" data-size="sm" disabled={busy} onClick={() => setConfirm(true)}>
+        Delete<span className="cw-sr-only"> {name}</span>
+      </button>
+    )
+  return (
+    <span
+      className="cw-row"
+      data-center
+      style={{ flexWrap: 'nowrap' }}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') cancel()
+      }}
+    >
+      <button ref={confirmRef} type="button" className="cw-btn" data-variant="danger" data-size="sm" disabled={busy} onClick={() => void onDelete()}>
+        Confirm delete<span className="cw-sr-only"> {name}</span>
+      </button>
+      <button type="button" className="cw-btn" data-variant="quiet" data-size="sm" disabled={busy} onClick={cancel}>
+        Cancel<span className="cw-sr-only"> deleting {name}</span>
+      </button>
+    </span>
+  )
+}
+
+type DigestEmailData = Extract<Awaited<ReturnType<typeof fetchDigestEmail>>, { allowed: true }>
+
+/** Digest email address (#102): confirmed by a link sent to the new address. Owners only. */
+function DigestEmail({ data }: { data: DigestEmailData }) {
+  const router = useRouter()
+  const errId = useId()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [removeError, setRemoveError] = useState<string | null>(null)
+  const [done, setDone] = useState<string | null>(null)
+  const current = data.digestEmail ?? data.signInEmail
+
+  const send = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    const form = e.currentTarget
+    const email = String(new FormData(form).get('email') ?? '').trim()
+    setBusy(true)
+    setError(null)
+    setRemoveError(null)
+    setDone(null)
+    try {
+      const r = await requestDigestEmailFn({ data: { email } })
+      if (!r.ok) setError(r.error)
+      else {
+        form.reset()
+        setDone(`Confirmation link sent to ${r.result.pending}.`)
+      }
+      await router.invalidate()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async () => {
+    setBusy(true)
+    setError(null)
+    setRemoveError(null)
+    setDone(null)
+    try {
+      const r = await clearDigestEmailFn()
+      if (!r.ok) setRemoveError(r.error)
+      else setDone(`Digests go to your sign-in email, ${data.signInEmail}, again.`)
+      await router.invalidate()
+    } catch (err) {
+      setRemoveError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <p style={{ marginTop: 0 }}>
+        Digests go to <strong>{current}</strong>
+        {data.digestEmail ? ' (confirmed contact address).' : ' (your sign-in email).'}
+      </p>
+      {!data.digestEmail && data.signInMayBeUpn && (
+        <Notice tone="warn" title="Your sign-in email may not receive mail">
+          It came from your Microsoft sign-in name, which may have no mailbox. If digests do not arrive, add a contact address below.
+        </Notice>
+      )}
+      {!data.smtp && (
+        <Notice tone="info" title="Email is not set up">
+          This Crosswire server has no SMTP settings, so digests are not emailed and a new address cannot be confirmed yet. Digests are still on the Daily digests page.
+        </Notice>
+      )}
+      {data.pending && (
+        <Notice tone="info" title="Waiting for confirmation">
+          Check <strong>{data.pending.email}</strong> for a confirmation link; it expires in 24 hours ({fmtTime(data.pending.expiresAt)}). Open it while signed in to Crosswire as yourself.
+        </Notice>
+      )}
+      <form className="cw-form" onSubmit={send} noValidate>
+        <Field label={data.digestEmail || data.pending ? 'New digest email address' : 'Digest email address'} hint="We email a confirmation link to this address. Digests only go there after you open the link.">
+          {(p) => (
+            <input
+              {...p}
+              name="email"
+              type="email"
+              autoComplete="email"
+              inputMode="email"
+              maxLength={254}
+              required
+              aria-invalid={error ? true : undefined}
+              aria-describedby={[p['aria-describedby'], error ? errId : undefined].filter(Boolean).join(' ') || undefined}
+            />
+          )}
+        </Field>
+        {error && (
+          <p id={errId} className="cw-field-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="cw-row">
+          <button className="cw-btn" type="submit" disabled={busy}>
+            {busy ? 'Sending…' : 'Send confirmation link'}
+          </button>
+          {(data.digestEmail || data.pending) && (
+            <button type="button" className="cw-btn" data-variant="ghost" disabled={busy} onClick={() => void remove()}>
+              Remove<span className="cw-sr-only"> digest address and use your sign-in email</span>
+            </button>
+          )}
+        </div>
+        {removeError && (
+          <Notice tone="error" title="Not removed">
+            {removeError}
+          </Notice>
+        )}
+        <p className="cw-help" role="status" style={{ margin: 0 }}>
+          {done ?? ''}
+        </p>
       </form>
     </>
   )

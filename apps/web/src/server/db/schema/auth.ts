@@ -1,4 +1,4 @@
-import { boolean, index, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
+import { bigint, boolean, index, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
 
 // Better Auth core tables (better-auth 1.7). Property names match Better Auth field names.
 export const user = pgTable('user', {
@@ -73,4 +73,12 @@ export const ssoProvider = pgTable('sso_provider', {
   providerId: text('provider_id').notNull().unique(),
   organizationId: text('organization_id'),
   domain: text('domain').notNull(),
+})
+
+// Better Auth rate limiter storage (rateLimit.storage = 'database'), shared by every replica.
+export const rateLimit = pgTable('rate_limit', {
+  id: text('id').primaryKey(),
+  key: text('key').notNull().unique(),
+  count: integer('count').notNull(),
+  lastRequest: bigint('last_request', { mode: 'number' }).notNull(),
 })

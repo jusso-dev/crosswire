@@ -6,6 +6,8 @@ import { recordDecision } from '../agents/decisions'
 import { assertSafeKql } from './safety'
 import { huntingClient } from './client'
 import { logger } from '../lib/logger'
+import type { OrgRole } from '../orgs'
+import { KQL_APPROVAL_MESSAGES, kqlApprovalBlock, type KqlApprovalPolicy } from '../../shared/kql-approval'
 
 export type Actor = { type: 'user'; id: string } | { type: 'agent'; id: string }
 
@@ -69,14 +71,23 @@ async function requireHunt(orgId: string, huntId: string) {
   if (!hunt) throw new NotFoundError('Hunt not found.')
 }
 
-/** Propose KQL (#48). Never executes. Safety-checked up front so blocked queries never reach review. */
-export async function proposeKql(orgId: string, actor: Actor, input: { huntId: string; target: 'defender' | 'sentinel'; kql: string; rationale?: string; threadId?: string | null }) {
+/**
+ * Propose KQL (#48). Never executes. Safety-checked up front so blocked queries never reach review.
+ * `requestedBy` records the person behind the search: the user for a user actor, or the chat user an
+ * agent is acting for (`input.requestedBy`). It feeds the second-person approval policy.
+ */
+export async function proposeKql(
+  orgId: string,
+  actor: Actor,
+  input: { huntId: string; target: 'defender' | 'sentinel'; kql: string; rationale?: string; threadId?: string | null; requestedBy?: string | null },
+) {
   await requireHunt(orgId, input.huntId)
   const kql = assertSafeKql(input.kql)
   const expiresAt = new Date(Date.now() + env().KQL_PROPOSAL_TTL_HOURS * 3600_000)
+  const requestedBy = actor.type === 'user' ? actor.id : (input.requestedBy ?? null)
   const [p] = await getDb()
     .insert(kqlProposals)
-    .values({ orgId, huntId: input.huntId, target: input.target, kql, originalKql: kql, rationale: input.rationale ?? '', proposedByType: actor.type, proposedById: actor.id, expiresAt })
+    .values({ orgId, huntId: input.huntId, target: input.target, kql, originalKql: kql, rationale: input.rationale ?? '', proposedByType: actor.type, proposedById: actor.id, requestedBy, expiresAt })
     .returning()
   await addEvidence(orgId, input.huntId, 'kql_proposed', { proposalId: p!.id, target: input.target, kql, rationale: input.rationale ?? '' }, actor)
   await recordDecision({ orgId, actorType: actor.type, actorKey: actor.id, action: 'propose_kql', input: { target: input.target, kql }, output: { proposalId: p!.id }, huntId: input.huntId, threadId: input.threadId })
@@ -106,11 +117,25 @@ export async function rejectKql(orgId: string, userId: string, proposalId: strin
   return p
 }
 
+export type { KqlApprovalPolicy }
+
+/** KQL_APPROVAL_POLICY check, run before a proposal is claimed (rules in src/shared/kql-approval.ts). */
+export function assertMayApproveKql(
+  policy: KqlApprovalPolicy,
+  caller: { userId: string; role: OrgRole | undefined },
+  proposal: { requestedBy: string | null; proposedByType: 'user' | 'agent'; proposedById: string },
+  edited: boolean,
+) {
+  const block = kqlApprovalBlock(policy, caller, proposal, edited)
+  if (block) throw new StateError(KQL_APPROVAL_MESSAGES[block])
+}
+
 /**
  * Human approves (optionally editing) and runs a proposal. This is the ONLY path that executes KQL,
  * and it requires a human user id: agent tools cannot call it. The stored `kql` is exactly what ran.
+ * `role` is the caller's org role; KQL_APPROVAL_POLICY decides whether it is needed.
  */
-export async function approveAndRunKql(orgId: string, userId: string, proposalId: string, editedKql?: string) {
+export async function approveAndRunKql(orgId: string, userId: string, proposalId: string, editedKql?: string, role?: OrgRole) {
   const db = getDb()
   const [existing] = await db.select().from(kqlProposals).where(and(eq(kqlProposals.orgId, orgId), eq(kqlProposals.id, proposalId))).limit(1)
   if (!existing) throw new NotFoundError('Proposal not found.')
@@ -120,6 +145,7 @@ export async function approveAndRunKql(orgId: string, userId: string, proposalId
     throw new StateError('Proposal has expired. Propose it again to run it.')
   }
   const kql = assertSafeKql(editedKql ?? existing.kql)
+  assertMayApproveKql(env().KQL_APPROVAL_POLICY, { userId, role }, existing, kql !== existing.kql)
   // Claim atomically: only one approver can move proposed -> approved.
   const [claimed] = await db
     .update(kqlProposals)

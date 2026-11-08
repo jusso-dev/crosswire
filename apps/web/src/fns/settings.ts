@@ -4,6 +4,7 @@ import { authed } from './middleware'
 import { listOrgMembers, setMemberRole } from '../server/orgs'
 import { listAudit } from '../server/audit'
 import { writeAudit } from '../server/audit'
+import { clearDigestEmail, confirmDigestEmail, DigestEmailError, getDigestEmailView, previewDigestEmail, requestDigestEmail } from '../server/notify/digest-contact'
 
 export const fetchMembers = createServerFn({ method: 'GET' })
   .middleware([authed])
@@ -39,4 +40,53 @@ export const bindSamlProviderFn = createServerFn({ method: 'POST' })
     const { bindOwnProvider } = await import('../server/auth/saml')
     await bindOwnProvider(data.providerId, context.session.org.id, context.session.user.id, context.session.org.role)
     return { ok: true }
+  })
+
+// ---------- Digest email address (#102) ----------
+async function digestResult<T>(fn: () => Promise<T>) {
+  try {
+    return { ok: true as const, result: await fn() }
+  } catch (err) {
+    if (err instanceof DigestEmailError) return { ok: false as const, error: err.message }
+    throw err
+  }
+}
+
+export const fetchDigestEmail = createServerFn({ method: 'GET' })
+  .middleware([authed])
+  .handler(async ({ context }) => {
+    if (context.session.org.role !== 'owner') return { allowed: false as const }
+    const view = await getDigestEmailView(context.session.org.id, context.session.user.id)
+    return view ? { allowed: true as const, ...view } : { allowed: false as const }
+  })
+
+export const requestDigestEmailFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ email: z.string().max(320) }))
+  .handler(async ({ context, data }) => {
+    return digestResult(async () => {
+      const r = await requestDigestEmail(context.session.org.id, context.session.user.id, data.email)
+      return { pending: r.pending, expiresAt: r.expiresAt.toISOString() }
+    })
+  })
+
+export const clearDigestEmailFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .handler(async ({ context }) => {
+    return digestResult(() => clearDigestEmail(context.session.org.id, context.session.user.id))
+  })
+
+/** Read-only preview for the confirmation page. POST keeps the token out of server-function URLs and logs. */
+export const previewDigestEmailFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ token: z.string().max(200) }))
+  .handler(async ({ context, data }) => {
+    return previewDigestEmail(context.session.user.id, data.token)
+  })
+
+export const confirmDigestEmailFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ token: z.string().max(200) }))
+  .handler(async ({ context, data }) => {
+    return digestResult(() => confirmDigestEmail(context.session.user.id, data.token))
   })

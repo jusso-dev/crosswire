@@ -3,7 +3,11 @@
 Crosswire state (orgs, users, sessions, hunts, approvals, agent memory, audit) lives in Azure
 Database for PostgreSQL Flexible Server. **Key Vault secrets are separate**: restoring the database
 does not restore or rotate secrets, and `APP_ENCRYPTION_KEY` must match the one used when connector
-secrets were encrypted.
+secrets were encrypted. If the key was rotated after the restore point, set the old key as
+`APP_ENCRYPTION_KEY_PREVIOUS` and re-run the rotation ([key rotation](key-rotation.md)).
+
+Restored data includes rows the daily [retention purge](data-retention.md) has since removed. The
+next purge removes them again.
 
 ## Backups
 
@@ -29,10 +33,22 @@ secrets were encrypted.
 3. Build the new connection string and update the Key Vault secret `database-url` to point at the restored server.
 4. Restart the web and worker revisions so they pick up the secret.
 5. Verify: `/readyz` ready with the expected `migration`; sign in; open a known hunt case and approval.
-6. Record drill date, restore time taken (your RTO) and data age (your RPO) in the go-live checklist.
+6. Record the drill in the [drill log](#drill-log) below and the RPO/RTO in the go-live checklist.
 7. Decommission or keep: either keep the restored server and delete the old one, or point back and delete the restored one.
 
 Compose restore: `pg_restore -U crosswire -d crosswire --clean --if-exists < crosswire-YYYY-MM-DD.dump`
 inside the postgres container, then restart `web` and `worker`.
+
+## Drill log
+
+One row per drill, newest first. Dates `DD-MM-YYYY`. Time to restore is from starting step 1 to
+step 5 passing. RPO is the data age at the restore point; RTO is the time to restore achieved.
+Result is pass or fail, with a note for anything that went wrong.
+
+_No drills recorded yet. The lead engineer fills this in after the first drill._
+
+| Date | Operator | Restore point (UTC) | Time to restore | RPO | RTO | Result |
+| --- | --- | --- | --- | --- | --- | --- |
+| | | | | | | |
 
 Related: [migrations](migrations.md) (destructive migration recovery), [rollback](rollback.md).

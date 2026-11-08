@@ -33,6 +33,16 @@ function requestMeta(headers: Headers | undefined) {
   }
 }
 
+/**
+ * Better Auth session lifetime from SESSION_IDLE_MINUTES. updateAge is how often the expiry is
+ * pushed forward: about five minutes, never more than half the idle window, so an active user's
+ * session is always refreshed well before it lapses.
+ */
+export function sessionLifetime(idleMinutes: number) {
+  const expiresIn = idleMinutes * 60
+  return { expiresIn, updateAge: Math.min(5 * 60, Math.floor(expiresIn / 2)) }
+}
+
 function createAuth() {
   const e = env()
   const entraEnabled = Boolean(e.ENTRA_CLIENT_ID && e.ENTRA_CLIENT_SECRET)
@@ -53,7 +63,19 @@ function createAuth() {
         ...(e.TRUSTED_PROXIES ? { trustedProxies: e.TRUSTED_PROXIES.split(',').map((s) => s.trim()).filter(Boolean) } : {}),
       },
     },
-    rateLimit: { enabled: e.NODE_ENV !== 'test', window: 60, max: 30, customRules: { '/sign-in/email': { window: 60, max: 5 } } },
+    // Idle timeout: each authenticated request within updateAge of the last refresh slides the
+    // expiry forward, so inactivity for SESSION_IDLE_MINUTES ends the session. The absolute cap
+    // (SESSION_MAX_AGE_HOURS since sign-in) is enforced in getAppSession (session.ts).
+    session: sessionLifetime(e.SESSION_IDLE_MINUTES),
+    // Shared limiter: with storage 'database' every replica counts against the same rate_limit
+    // rows (the drizzle adapter finds the table by the `rateLimit` export in schema/auth.ts).
+    rateLimit: {
+      enabled: e.NODE_ENV !== 'test',
+      window: 60,
+      max: 30,
+      customRules: { '/sign-in/email': { window: 60, max: 5 } },
+      ...(e.RATE_LIMIT_STORAGE === 'database' && e.NODE_ENV !== 'test' ? { storage: 'database' as const, modelName: 'rateLimit' } : { storage: 'memory' as const }),
+    },
     emailAndPassword: { enabled: e.AUTH_EMAIL_PASSWORD, minPasswordLength: 12, autoSignIn: true },
     account: { encryptOAuthTokens: true },
     onAPIError: { errorURL: '/auth-error' },

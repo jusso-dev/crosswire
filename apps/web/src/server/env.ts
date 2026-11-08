@@ -114,6 +114,35 @@ const schema = z.object({
   /** Per-IP requests per minute for /api/chat (#74). */
   RATE_LIMIT_CHAT_PER_MIN: z.coerce.number().int().positive().default(20),
 
+  /**
+   * Who may approve and run a read-only KQL search. `member`: any org member (default).
+   * `approver`: owners and approvers only. `second-person`: an approver other than the person who
+   * asked for it (the proposer, or the chat user whose agent proposed it); no edits at approval.
+   */
+  KQL_APPROVAL_POLICY: z.enum(['member', 'approver', 'second-person']).default('member'),
+
+  /** Session lifetime: absolute cap since sign-in, and idle timeout since last activity. */
+  SESSION_MAX_AGE_HOURS: z.coerce.number().int().positive().max(24 * 30).default(12),
+  SESSION_IDLE_MINUTES: z.coerce.number().int().min(5).max(24 * 60).default(60),
+
+  /** Data retention in days, purged daily by the worker. 0 keeps that data forever. */
+  RETENTION_CHAT_DAYS: z.coerce.number().int().min(0).default(365),
+  RETENTION_DECISIONS_DAYS: z.coerce.number().int().min(0).default(365),
+  RETENTION_SAMPLES_DAYS: z.coerce.number().int().min(0).default(180),
+  RETENTION_AUDIT_DAYS: z.coerce.number().int().min(0).default(730),
+
+  /** Largest TI feed response accepted, in bytes (default 25 MB). Larger responses are refused. */
+  TI_MAX_RESPONSE_BYTES: z.coerce.number().int().positive().default(25 * 1024 * 1024),
+
+  /** Previous APP_ENCRYPTION_KEY values (comma-separated, 64 hex each), accepted for decryption during rotation. */
+  APP_ENCRYPTION_KEY_PREVIOUS: z
+    .string()
+    .regex(/^[0-9a-f]{64}(,[0-9a-f]{64})*$/i, 'APP_ENCRYPTION_KEY_PREVIOUS must be comma-separated 64-hex keys')
+    .optional(),
+
+  /** Rate-limit counters: `database` is shared by every replica (default); `memory` is per process. */
+  RATE_LIMIT_STORAGE: z.enum(['database', 'memory']).default('database'),
+
   /** Application Insights (#73). When set, OpenTelemetry exports traces/logs to Azure Monitor. */
   APPLICATIONINSIGHTS_CONNECTION_STRING: z.string().optional(),
 })

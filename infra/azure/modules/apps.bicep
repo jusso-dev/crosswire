@@ -27,6 +27,20 @@ param identityClientId string
 param entraClientId string = ''
 @description('Entra tenant id for SSO. Not a secret.')
 param entraTenantId string = ''
+@description('Private networking: subnet for the environment infrastructure (delegated to Microsoft.App/environments). Empty = no VNet (the default). Fixed at creation: an environment cannot gain or lose a VNet later.')
+param infrastructureSubnetId string = ''
+
+var vnetIntegrated = !empty(infrastructureSubnetId)
+// A delegated /27+ subnet needs a workload profiles environment (a Consumption-only one needs an
+// undelegated /23). The built-in Consumption profile keeps per-second billing. internal: false keeps
+// ingress public. Without a subnet the environment properties stay exactly as before.
+var envNetworking = vnetIntegrated
+  ? {
+      vnetConfiguration: { infrastructureSubnetId: infrastructureSubnetId, internal: false }
+      workloadProfiles: [{ name: 'Consumption', workloadProfileType: 'Consumption' }]
+    }
+  : {}
+var appProfile = vnetIntegrated ? { workloadProfileName: 'Consumption' } : {}
 
 // Key Vault secret name -> container secret name -> env var. Names match .env.example.
 var kvSecrets = [
@@ -67,6 +81,7 @@ resource env 'Microsoft.App/managedEnvironments@2024-03-01' = {
   location: location
   properties: {
     appLogsConfiguration: { destination: 'log-analytics', logAnalyticsConfiguration: { customerId: logsCustomerId, sharedKey: logsSharedKey } }
+    ...envNetworking
   }
 }
 
@@ -76,6 +91,7 @@ resource web 'Microsoft.App/containerApps@2024-03-01' = {
   identity: { type: 'UserAssigned', userAssignedIdentities: { '${identityId}': {} } }
   properties: {
     managedEnvironmentId: env.id
+    ...appProfile
     configuration: {
       ingress: { external: true, targetPort: 3000, transport: 'auto', allowInsecure: false }
       secrets: secrets
@@ -105,6 +121,7 @@ resource worker 'Microsoft.App/containerApps@2024-03-01' = {
   identity: { type: 'UserAssigned', userAssignedIdentities: { '${identityId}': {} } }
   properties: {
     managedEnvironmentId: env.id
+    ...appProfile
     configuration: { secrets: secrets }
     template: {
       containers: [
@@ -130,6 +147,7 @@ resource migrateJob 'Microsoft.App/jobs@2024-03-01' = {
   identity: { type: 'UserAssigned', userAssignedIdentities: { '${identityId}': {} } }
   properties: {
     environmentId: env.id
+    ...appProfile
     configuration: {
       triggerType: 'Manual'
       replicaTimeout: 600

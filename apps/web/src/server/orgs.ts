@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm'
+import { and, asc, eq, sql } from 'drizzle-orm'
 import { getDb } from './db/client'
 import { orgMemberships, orgs, user } from './db/schema'
 
@@ -74,11 +74,16 @@ export async function setMemberRole(orgId: string, userId: string, role: OrgRole
   await getDb().update(orgMemberships).set({ role }).where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
 }
 
+/**
+ * Digest recipients for one org: each owner's confirmed digest address (#102), or their sign-in
+ * email when they have not set one. Only that org's own owner memberships, de-duplicated.
+ */
 export async function listOrgOwnerEmails(orgId: string) {
   const rows = await getDb()
-    .select({ email: user.email })
+    .select({ email: sql<string>`coalesce(${orgMemberships.digestEmail}, ${user.email})` })
     .from(orgMemberships)
     .innerJoin(user, eq(user.id, orgMemberships.userId))
     .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.role, 'owner')))
-  return rows.map((r) => r.email)
+  // Case-insensitive: digest addresses are stored lowercased, sign-in emails may not be.
+  return [...new Map(rows.map((r) => [r.email.toLowerCase(), r.email])).values()]
 }

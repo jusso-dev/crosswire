@@ -39,6 +39,15 @@ function sampleTable(columns: string[], rows: Array<Record<string, unknown>>) {
   ].join('\n')
 }
 
+type StoredSummary = { mode?: string; rowCount?: number; truncated?: boolean; columns?: string[]; sample?: Array<Record<string, unknown>>; sampleExpired?: boolean; sampleRetentionDays?: number }
+
+/** Sample lines for one stored result (a query run or a repeat-search run). Empty when there is nothing to show. */
+function sampleBlock(r: StoredSummary): string[] {
+  if (r.sampleExpired) return [`_Sample removed${r.sampleRetentionDays ? ` after ${r.sampleRetentionDays} days` : ''} (retention); the row count is kept._`, '']
+  const t = sampleTable(r.columns ?? [], r.sample ?? [])
+  return t ? [`Sample (first ${SAMPLE_ROWS} rows, ${SAMPLE_COLS} columns, redacted):`, '', t, ''] : []
+}
+
 /**
  * Markdown hunt report (#94): title, hypothesis, origin, every query that ran (exact KQL, approver,
  * time, row count, columns), a small redacted sample, schedules, and linked response proposals.
@@ -72,13 +81,12 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
   out.push('## Queries that ran', '')
   if (!ran.length) out.push('_No query has run on this hunt._', '')
   for (const p of ran) {
-    const r = (p.resultSummary ?? {}) as { mode?: string; rowCount?: number; truncated?: boolean; columns?: string[]; sample?: Array<Record<string, unknown>> }
+    const r = (p.resultSummary ?? {}) as StoredSummary
     out.push(`### ${p.target === 'defender' ? 'Defender XDR' : 'Sentinel'} · ${iso(p.ranAt)}`, '')
     out.push(`- **Approved by:** ${who(p.decidedBy)} at ${iso(p.decidedAt)}`, `- **Proposed by:** ${p.proposedByType} ${md(p.proposedById)}${p.kql !== p.originalKql ? ' (edited before running)' : ''}`)
     out.push(`- **Result:** ${r.rowCount ?? 0} rows${r.truncated ? ' (truncated to cap)' : ''}${r.mode === 'demo' ? ' · demo data' : ''}`, `- **Columns:** ${(r.columns ?? []).map(md).join(', ')}`, '')
     out.push(fence(p.kql), '')
-    const t = sampleTable(r.columns ?? [], r.sample ?? [])
-    if (t) out.push(`Sample (first ${SAMPLE_ROWS} rows, ${SAMPLE_COLS} columns, redacted):`, '', t, '')
+    out.push(...sampleBlock(r))
   }
 
   const other = proposals.filter((p) => p.status !== 'run')
@@ -97,8 +105,10 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
     if (runs.length) {
       out.push('', 'Recent scheduled results:', '')
       for (const e of runs) {
-        const pl = e.payload as { rowCount?: number; error?: string }
-        out.push(`- ${iso(e.createdAt)} · ${e.type === 'scheduled_result' ? `${pl.rowCount ?? 0} rows` : `failed: ${md(truncate(pl.error ?? '', 200))}`}`)
+        const pl = e.payload as StoredSummary & { error?: string }
+        out.push(`- ${iso(e.createdAt)} · ${e.type === 'scheduled_result' ? `${pl.rowCount ?? 0} rows${pl.mode === 'demo' ? ' · demo data' : ''}` : `failed: ${md(truncate(pl.error ?? '', 200))}`}`)
+        // Issue #99: each run's own sample, indented under its bullet, same redaction and bounds.
+        if (e.type === 'scheduled_result') out.push(...sampleBlock(pl).map((l) => (l ? `  ${l}` : l)))
       }
     }
     out.push('')
