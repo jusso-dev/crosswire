@@ -4,8 +4,8 @@ import { z } from 'zod'
 import { addNote, approveKqlFn, createScheduleFn, disableScheduleFn, fetchHunt, huntReportFn, proposeKqlFn, reapproveScheduleFn, rejectKqlFn, setHuntStatusFn } from '../fns/hunts'
 import { fmtTime } from '../components/format'
 import { Notice, Term } from '../components/ui'
-import { kqlApprovalBlock } from '../shared/kql-approval'
-import { HIT_ANSWER, OUTCOME_LABEL, coverageOf } from '../shared/indicator-playbooks'
+import { canApproveEveryProposal, kqlApprovalBlock } from '../shared/kql-approval'
+import { HIT_ANSWER, OUTCOME_LABEL, answerText, coverageOf } from '../shared/indicator-playbooks'
 import { Freshness, ModeTag, StatusTag, TARGET_LABEL } from '../components/signals'
 import { FilterChips, Inspector, ResultGrid, applyFilters, decodeFilters, decodeSort, encodeFilters, encodeSort, kqlIdentifier, kqlLiteral, sortRows, summariseEntities, type Filter, type Row, type Sort } from '../components/results'
 
@@ -68,9 +68,8 @@ function approvalBlock(a: ApprovalContext, p: Proposal, edited: boolean): string
   return null
 }
 
-function CoverageSummary({ proposals }: { proposals: Proposal[] }) {
-  if (!proposals.length) return null
-  const coverage = coverageOf(
+function coverageFor(proposals: Proposal[]) {
+  return coverageOf(
     [...proposals].reverse().map((proposal) => ({
       rationale: proposal.rationale,
       kql: proposal.kql,
@@ -82,6 +81,11 @@ function CoverageSummary({ proposals }: { proposals: Proposal[] }) {
           : null,
     })),
   )
+}
+
+function CoverageSummary({ proposals }: { proposals: Proposal[] }) {
+  if (!proposals.length) return null
+  const coverage = coverageFor(proposals)
   return (
     <section aria-label="What was checked" style={{ marginTop: 'var(--space-sm)' }}>
       <p>
@@ -151,6 +155,10 @@ function HuntWorkspace() {
             <CoverageSummary proposals={proposals} />
           </div>
           <div className="cw-pagehead-actions">
+            {canApproveEveryProposal(data.kqlApprovalPolicy, { userId: data.userId, role: data.role }, proposals) && (
+              <ApproveAllButton proposals={proposals} onError={setError} />
+            )}
+            {proposals.length > 0 && <CopyAnswerButton proposals={proposals} onError={setError} />}
             <ExportButton huntId={hunt.id} onError={setError} />
             <button
               type="button"
@@ -934,6 +942,62 @@ function Schedules({ data, onError }: { data: Data; onError: (e: string | null) 
           ))}
       </div>
     </section>
+  )
+}
+
+function ApproveAllButton({ proposals, onError }: { proposals: Proposal[]; onError: (e: string | null) => void }) {
+  const router = useRouter()
+  const [busy, setBusy] = useState(false)
+  const pending = proposals.filter((proposal) => proposal.status === 'proposed')
+  return (
+    <button
+      type="button"
+      className="cw-btn"
+      disabled={busy}
+      onClick={async () => {
+        setBusy(true)
+        onError(null)
+        let failed: string | null = null
+        for (const proposal of [...pending].reverse()) {
+          const result = await approveKqlFn({ data: { proposalId: proposal.id, kql: proposal.kql } })
+          if (!result.ok) {
+            failed = result.error
+            break
+          }
+          if (result.status === 'failed') {
+            failed = result.error
+            break
+          }
+        }
+        setBusy(false)
+        onError(failed)
+        await router.invalidate()
+      }}
+    >
+      {busy ? 'Running…' : `Approve all checks (${pending.length})`}
+    </button>
+  )
+}
+
+function CopyAnswerButton({ proposals, onError }: { proposals: Proposal[]; onError: (e: string | null) => void }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <button
+      type="button"
+      className="cw-btn"
+      data-variant="ghost"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(answerText(coverageFor(proposals)))
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 2000)
+        } catch (err) {
+          onError(err instanceof Error ? err.message : String(err))
+        }
+      }}
+    >
+      {copied ? 'Copied' : 'Copy answer'}
+    </button>
   )
 }
 

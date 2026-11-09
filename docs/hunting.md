@@ -134,11 +134,16 @@ that is still waiting for approval is listed as not run.
 
 ## 3c. Indicator playbooks
 
-The Hunts page has **Check an indicator**. Pick a built-in pack (IP address, domain, or file
-hash) or a playbook saved for the organisation, enter one indicator, and click **Propose checks**.
+The Hunts page has one field, **Check an indicator**. Paste an IP address, domain, or file hash
+and click **Check this**. Crosswire detects the kind and proposes the built-in checks. A blank
+hunt, saved playbooks, and saving a new playbook sit under **Blank hunt and saved playbooks**.
 
-That click opens a hunt and proposes every check with the indicator filled in. It does not run
+**Check this** opens a hunt and proposes every check with the indicator filled in. It does not run
 KQL. Each check still needs a person to approve it (`approveAndRunKql` is the only execute path).
+On the hunt, **Approve all checks** runs every still-proposed search when this person may approve
+all of them. A second-person policy hides that button and keeps the per-check buttons. **Copy
+answer** puts the yes or no line and the check list on the clipboard.
+
 A saved playbook is a name plus up to eight Defender or Sentinel templates. Each template must
 contain `{{indicator}}` and must pass the same KQL blocklist as any other proposal. Built-in
 packs cannot be deleted. Another organisation cannot see or start a saved playbook.

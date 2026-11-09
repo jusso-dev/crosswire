@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { approveAndRunKql, getHunt } from '../src/server/hunting/hunts'
 import { deletePlaybook, savePlaybook, startPlaybook } from '../src/server/hunting/playbooks'
 import { huntReportMarkdown } from '../src/server/hunting/report'
-import { BUILTIN_PLAYBOOKS, coverageOf, fillIndicator, normaliseIndicator } from '../src/shared/indicator-playbooks'
+import { BUILTIN_PLAYBOOKS, answerText, builtinForKind, coverageOf, detectIndicator, fillIndicator, normaliseIndicator } from '../src/shared/indicator-playbooks'
+import { canApproveEveryProposal } from '../src/shared/kql-approval'
 import { assertSafeKql } from '../src/server/hunting/safety'
 import { makeOrg, makeUser, member } from './helpers'
 
@@ -17,6 +18,27 @@ describe('indicator playbooks', () => {
     expect(normaliseIndicator('ip', "203.0.113.10' or true")).toBeNull()
     expect(normaliseIndicator('domain', 'evil.example/path')).toBeNull()
     expect(normaliseIndicator('hash', 'zzzz')).toBeNull()
+  })
+
+  it('detects an IP, a hash, then a domain, and names the built-in playbook', () => {
+    expect(detectIndicator('203.0.113.10')).toEqual({ kind: 'ip', value: '203.0.113.10' })
+    expect(detectIndicator(HASH.toUpperCase())).toEqual({ kind: 'hash', value: HASH })
+    expect(detectIndicator('Evil.Example')).toEqual({ kind: 'domain', value: 'evil.example' })
+    expect(detectIndicator('not an indicator')).toBeNull()
+    expect(builtinForKind('domain')?.id).toBe('builtin:domain')
+  })
+
+  it('writes a clipboard answer and hides approve-all when a second person is required', () => {
+    const coverage = coverageOf([
+      { rationale: 'Check: Defender network events', kql: 'T | take 1', target: 'defender', status: 'run', resultSummary: { rowCount: 2 } },
+    ])
+    expect(answerText(coverage)).toBe('Any hits? Yes. At least one check returned rows.\n1 of 1 checks ran.\nDefender network events: Hit (2 rows)')
+    const pending = { status: 'proposed', requestedBy: 'user-a', proposedByType: 'user' as const, proposedById: 'user-a' }
+    expect(canApproveEveryProposal('member', { userId: 'user-a', role: 'analyst' }, [pending])).toBe(true)
+    expect(canApproveEveryProposal('second-person', { userId: 'user-b', role: 'approver' }, [pending])).toBe(false)
+    expect(canApproveEveryProposal('approver', { userId: 'user-b', role: 'analyst' }, [pending])).toBe(false)
+    expect(canApproveEveryProposal('approver', { userId: 'user-b', role: 'owner' }, [pending, { ...pending, status: 'run' }])).toBe(true)
+    expect(canApproveEveryProposal('member', { userId: 'user-a', role: 'analyst' }, [])).toBe(false)
   })
 
   it('built-in templates fill the indicator and stay inside the KQL blocklist', () => {

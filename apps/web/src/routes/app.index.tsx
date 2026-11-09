@@ -49,7 +49,7 @@ function ControlPanel() {
             <Link to="/app/chat" className="cw-btn" data-variant="ghost">
               Ask an agent
             </Link>
-            <Link to="/app/hunts" className="cw-btn">
+            <Link to="/app/hunts" search={{ check: '1' }} className="cw-btn">
               Start a hunt
             </Link>
           </>

@@ -7,9 +7,9 @@ import { fmtTime } from '../components/format'
 import { Notice, PageHead, TableWrap } from '../components/ui'
 
 /**
- * Agents and decision log. Agent selection, log filters and memory search live in the URL.
- * Memory is loaded on demand for the selected agent. Promote, replace, compact and directive
- * approval are approver actions enforced on the server.
+ * Agents page. Memory is the default view: one agent, its notes, a short usage strip,
+ * and collapsed directives. The log view holds the decision log and run replay.
+ * Promote, replace, compact and directive approval are approver actions enforced on the server.
  */
 const ACTION_WORDS: Record<string, string> = {
   propose_kql: 'Proposed a search',
@@ -23,16 +23,24 @@ const ACTION_WORDS: Record<string, string> = {
 }
 
 export const Route = createFileRoute('/app/agents')({
-  validateSearch: z.object({ agent: z.string().optional(), actor: z.string().optional(), q: z.string().optional(), mq: z.string().optional(), before: z.string().optional(), run: z.uuid().optional() }),
-  loaderDeps: ({ search }) => ({ q: search.q, actor: search.actor, before: search.before, run: search.run, mq: search.mq }),
-  // Search and paging run on the server over the whole log, not just the newest page.
+  validateSearch: z.object({
+    agent: z.string().optional(),
+    actor: z.string().optional(),
+    q: z.string().optional(),
+    before: z.string().optional(),
+    run: z.uuid().optional(),
+    view: z.enum(['log']).optional(),
+  }),
+  loaderDeps: ({ search }) => ({ q: search.q, actor: search.actor, before: search.before, run: search.run, view: search.view }),
+  // Log search and paging run on the server over the whole log, and only when that view is open.
   loader: async ({ deps }) => {
+    const desk = await fetchAgentDesk()
+    if (deps.view !== 'log') return { rows: [], hasMore: false, actors: [], recentRuns: [], replay: null, desk }
     const q = deps.q?.trim().toLowerCase()
     const actions = q ? Object.entries(ACTION_WORDS).filter(([, label]) => label.toLowerCase().includes(q)).map(([key]) => key) : undefined
-    const [activity, replay, desk] = await Promise.all([
+    const [activity, replay] = await Promise.all([
       fetchActivity({ data: { q: deps.q || undefined, actor: deps.actor || undefined, before: deps.before || undefined, actions } }),
       deps.run ? fetchRunReplay({ data: { runId: deps.run } }) : Promise.resolve(null),
-      fetchAgentDesk({ data: { q: deps.mq || undefined } }),
     ])
     return { ...activity, replay, desk }
   },
@@ -60,50 +68,59 @@ function Agents() {
     return () => clearTimeout(t)
   }, [q]) // eslint-disable-line react-hooks/exhaustive-deps
   const oldest = activity.at(-1)?.createdAt
+  const log = sp.view === 'log'
 
   return (
     <>
       <PageHead
         title="Agents and log"
-        intro="Your AI security team, what each one remembers, the rules in their prompt, and every step they took. Usage figures are read from this organisation's database."
+        intro={log ? 'Every agent step for this organisation. Secrets are removed before logging.' : 'Pick an agent to see its notes. Usage and directives sit with the team.'}
         actions={
           <Link to="/app/chat" className="cw-btn">
             Ask an agent
           </Link>
         }
       />
-      <BudgetMeter budget={desk.budget} />
+      <div className="cw-segmented" role="group" aria-label="Agents page">
+        <button type="button" aria-pressed={!log} onClick={() => set({ view: undefined })}>
+          Memory
+        </button>
+        <button type="button" aria-pressed={log} onClick={() => set({ view: 'log' })}>
+          Log
+        </button>
+      </div>
 
-      <section aria-labelledby="team-title">
-        <h2 id="team-title" className="cw-h2-compact">
-          Team
-        </h2>
-        <ul className="cw-agentlist">
-          {AGENT_KEYS.map((k) => (
-            <li key={k}>
-              <button type="button" className="cw-agentbtn" aria-pressed={agent === k} onClick={() => set({ agent: agent === k ? undefined : k })}>
-                <strong>{AGENT_LABELS[k].name}</strong>
-                <span className="cw-muted">{AGENT_LABELS[k].role}</span>
-                <span className="cw-agentbtn-cta">{agent === k ? 'Hide memory' : 'View memory'}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      </section>
+      {!log && (
+        <>
+          <BudgetMeter budget={desk.budget} />
+          <section aria-labelledby="team-title">
+            <h2 id="team-title" className="cw-h2-compact">
+              Team
+            </h2>
+            <ul className="cw-agentlist">
+              {AGENT_KEYS.map((k) => (
+                <li key={k}>
+                  <button type="button" className="cw-agentbtn" aria-pressed={agent === k} onClick={() => set({ agent: agent === k ? undefined : k })}>
+                    <strong>{AGENT_LABELS[k].name}</strong>
+                    <span className="cw-muted">{AGENT_LABELS[k].role}</span>
+                    <span className="cw-agentbtn-cta">{agent === k ? 'Hide notes' : 'Notes'}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+          {agent ? <Memory key={agent} agent={agent} /> : <p className="cw-empty">Pick an agent to see its notes.</p>}
+          <Directives directives={desk.directives} />
+        </>
+      )}
 
-      <MemorySearch query={sp.mq ?? ''} hits={desk.hits} onQuery={(mq) => set({ mq: mq || undefined })} onOpen={(agentKey) => set({ agent: agentKey })} />
-
-      {agent && <Memory key={agent} agent={agent} />}
-
-      <Directives directives={desk.directives} />
-
+      {log && (
+      <>
       <section aria-labelledby="log-title">
         <h2 id="log-title" className="cw-h2-compact">
           Decision log
         </h2>
-        <p className="cw-muted">
-          Every agent step, hand-off, search decision and response decision for this organisation. Secrets and personal details are removed before logging. Each input and output keeps the first 1000 characters. Longer text then adds a marker such as <code>… [truncated 42 chars]</code>. The full redacted text stays on the run record. Open that run below. This table is the summary, and the tooltip shows that same summary.
-        </p>
+        <p className="cw-muted">Each row is a summary. Open a run below for the full redacted output.</p>
         <div className="cw-tablewrap" style={{ overflow: 'visible' }}>
           <div className="cw-toolbar" style={{ borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0' }}>
             <label className="cw-search">
@@ -231,6 +248,8 @@ function Agents() {
           </div>
         )}
       </section>
+      </>
+      )}
     </>
   )
 }
@@ -266,6 +285,7 @@ function Memory({ agent }: { agent: AgentKey }) {
   const [kind, setKind] = useState<'fact' | 'safety'>('fact')
   const [replacing, setReplacing] = useState<string | null>(null)
   const [replacement, setReplacement] = useState('')
+  const [find, setFind] = useState('')
   const reload = async () => {
     const next = await fetchMemory({ data: { agentKey: agent } })
     setMemory(next)
@@ -316,160 +336,173 @@ function Memory({ agent }: { agent: AgentKey }) {
           {msg ?? ''}
         </p>
         {error && <Notice tone="error">{error}</Notice>}
-        <form
-          className="cw-form"
-          onSubmit={async (e) => {
-            e.preventDefault()
-            setBusy(true)
-            setError(null)
-            try {
-              const saved = await rememberFn({ data: { agentKey: agent, body: note, kind } })
-              setNote('')
-              setMsg(saved.trust === 'quarantine' ? 'Saved. Governance held it out of the prompt.' : 'Saved. It can enter the prompt.')
-              setMemory(await reload())
-            } catch (err) {
-              setError(err instanceof Error ? err.message : String(err))
-            } finally {
-              setBusy(false)
-            }
-          }}
-        >
-          <label>
-            Add a note
-            <span className="cw-help">An operator note. Forbidden text is refused. Text that looks like an instruction override is stored and kept out of the prompt.</span>
-            <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={2000} />
-          </label>
-          <div style={{ display: 'flex', gap: 'var(--space-xs)', flexWrap: 'wrap', alignItems: 'center' }}>
-            <label className="cw-inline">
-              Kind
-              <select value={kind} onChange={(e) => setKind(e.target.value as 'fact' | 'safety')}>
-                <option value="fact">Fact</option>
-                <option value="safety">Safety</option>
-              </select>
+        <label className="cw-search">
+          <span className="cw-sr-only">Find a memory</span>
+          <input type="search" placeholder="Find a memory" value={find} onChange={(e) => setFind(e.target.value)} />
+        </label>
+        <details>
+          <summary>Add a note</summary>
+          <form
+            className="cw-form"
+            onSubmit={async (e) => {
+              e.preventDefault()
+              setBusy(true)
+              setError(null)
+              try {
+                const saved = await rememberFn({ data: { agentKey: agent, body: note, kind } })
+                setNote('')
+                setMsg(saved.trust === 'quarantine' ? 'Saved. Governance held it out of the prompt.' : 'Saved. It can enter the prompt.')
+                setMemory(await reload())
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err))
+              } finally {
+                setBusy(false)
+              }
+            }}
+          >
+            <label>
+              Note
+              <span className="cw-help">An operator note. Forbidden text is refused. Text that looks like an instruction override is stored and kept out of the prompt.</span>
+              <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={2000} />
             </label>
-            <button className="cw-btn" type="submit" data-size="sm" disabled={busy || !note.trim()}>
-              {busy ? 'Saving…' : 'Save note'}
-            </button>
-          </div>
-        </form>
+            <div style={{ display: 'flex', gap: 'var(--space-xs)', flexWrap: 'wrap', alignItems: 'center' }}>
+              <label className="cw-inline">
+                Kind
+                <select value={kind} onChange={(e) => setKind(e.target.value as 'fact' | 'safety')}>
+                  <option value="fact">Fact</option>
+                  <option value="safety">Safety</option>
+                </select>
+              </label>
+              <button className="cw-btn" type="submit" data-size="sm" disabled={busy || !note.trim()}>
+                {busy ? 'Saving…' : 'Save note'}
+              </button>
+            </div>
+          </form>
+        </details>
         {!memory && !error && <p className="cw-muted">Loading memory…</p>}
         {memory && (
           <>
-            {memory.body && <pre>{memory.body}</pre>}
-            {memory.entries.length === 0 ? (
-              <p className="cw-empty">No live memory entries.</p>
-            ) : (
-              <TableWrap label={`${AGENT_LABELS[agent].name} memory entries`}>
-                <table className="cw-table">
-                  <thead>
-                    <tr>
-                      <th scope="col">Kind</th>
-                      <th scope="col">Trust</th>
-                      <th scope="col">Class</th>
-                      <th scope="col">Prompt</th>
-                      <th scope="col">Entry</th>
-                      <th scope="col">Added</th>
-                      {session.canApprove && <th scope="col">Actions</th>}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {memory.entries.map((e) => (
-                      <tr key={e.id}>
-                        <td>
-                          <span className="cw-badge">{e.kind}</span>
-                          {e.redacted && (
+            {memory.body && (
+              <details>
+                <summary>Core context</summary>
+                <pre>{memory.body}</pre>
+              </details>
+            )}
+            {(() => {
+              const needle = find.trim().toLowerCase()
+              const entries = needle.length < 2 ? memory.entries : memory.entries.filter((entry) => entry.body.toLowerCase().includes(needle))
+              if (memory.entries.length === 0) return <p className="cw-empty">No notes yet.</p>
+              if (entries.length === 0) return <p className="cw-empty">No notes match.</p>
+              return (
+                <ul className="cw-agentlist">
+                  {entries.map((entry) => {
+                    const canPromote = session.canApprove && entry.trust === 'quarantine' && Boolean(entry.authorId) && entry.authorId !== session.user.id
+                    return (
+                      <li key={entry.id}>
+                        <p>
+                          {entry.body}
+                          {entry.redacted && (
                             <span className="cw-badge" data-tone="warn" style={{ marginLeft: 4 }}>
                               redacted
                             </span>
                           )}
-                          {e.sourceType && <div className="cw-muted">{e.sourceType}</div>}
-                        </td>
-                        <td>{e.trust}</td>
-                        <td>{e.sdkClass ?? 'none'}</td>
-                        <td>
-                          {e.inPrompt ? 'In prompt' : 'Held back'}
-                          <div className="cw-muted">{e.reason}</div>
-                        </td>
-                        <td>
-                          {e.body}
-                          {e.authorLabel && <div className="cw-muted">by {e.authorLabel}</div>}
-                          {session.canApprove && replacing === e.id && (
-                            <form
-                              className="cw-form"
-                              onSubmit={async (ev) => {
-                                ev.preventDefault()
-                                setBusy(true)
-                                setError(null)
-                                try {
-                                  await replaceMemoryFn({ data: { entryId: e.id, body: replacement } })
-                                  setReplacing(null)
-                                  setReplacement('')
-                                  setMsg('Replaced. The old note is tombstoned and stays out of the prompt.')
-                                  setMemory(await reload())
-                                } catch (err) {
-                                  setError(err instanceof Error ? err.message : String(err))
-                                } finally {
-                                  setBusy(false)
-                                }
-                              }}
-                            >
-                              <label>
-                                Replacement
-                                <textarea value={replacement} onChange={(ev) => setReplacement(ev.target.value)} rows={2} maxLength={2000} required />
-                              </label>
-                              <button className="cw-btn" type="submit" data-size="sm" disabled={busy || !replacement.trim()}>
-                                Tombstone old note
-                              </button>
-                            </form>
-                          )}
-                        </td>
-                        <td className="num">{fmtTime(e.createdAt)}</td>
-                        {session.canApprove && (
-                          <td>
-                            {e.trust === 'quarantine' && e.authorId && e.authorId !== session.user.id && (
-                              <button
-                                type="button"
-                                className="cw-btn"
-                                data-variant="ghost"
-                                data-size="sm"
-                                disabled={busy}
-                                onClick={async () => {
-                                  setBusy(true)
-                                  setError(null)
-                                  try {
-                                    await promoteMemoryFn({ data: { entryId: e.id } })
-                                    setMsg('Promoted. A different person approved it for the prompt.')
-                                    setMemory(await reload())
-                                  } catch (err) {
-                                    setError(err instanceof Error ? err.message : String(err))
-                                  } finally {
-                                    setBusy(false)
-                                  }
-                                }}
-                              >
-                                Promote
-                              </button>
-                            )}
+                        </p>
+                        <p className="cw-muted">
+                          {entry.inPrompt ? 'In prompt' : 'Held back'}. {entry.reason}
+                        </p>
+                        {canPromote ? (
+                          <button
+                            type="button"
+                            className="cw-btn"
+                            data-variant="ghost"
+                            data-size="sm"
+                            disabled={busy}
+                            onClick={async () => {
+                              setBusy(true)
+                              setError(null)
+                              try {
+                                await promoteMemoryFn({ data: { entryId: entry.id } })
+                                setMsg('Promoted. A different person approved it for the prompt.')
+                                setMemory(await reload())
+                              } catch (err) {
+                                setError(err instanceof Error ? err.message : String(err))
+                              } finally {
+                                setBusy(false)
+                              }
+                            }}
+                          >
+                            Promote
+                          </button>
+                        ) : (
+                          session.canApprove && (
                             <button
                               type="button"
                               className="cw-btn"
                               data-variant="ghost"
                               data-size="sm"
                               onClick={() => {
-                                setReplacing(replacing === e.id ? null : e.id)
+                                setReplacing(replacing === entry.id ? null : entry.id)
                                 setReplacement('')
                               }}
                             >
                               Replace
                             </button>
-                          </td>
+                          )
                         )}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </TableWrap>
-            )}
+                        {session.canApprove && replacing === entry.id && (
+                          <form
+                            className="cw-form"
+                            onSubmit={async (ev) => {
+                              ev.preventDefault()
+                              setBusy(true)
+                              setError(null)
+                              try {
+                                await replaceMemoryFn({ data: { entryId: entry.id, body: replacement } })
+                                setReplacing(null)
+                                setReplacement('')
+                                setMsg('Replaced. The old note is tombstoned and stays out of the prompt.')
+                                setMemory(await reload())
+                              } catch (err) {
+                                setError(err instanceof Error ? err.message : String(err))
+                              } finally {
+                                setBusy(false)
+                              }
+                            }}
+                          >
+                            <label>
+                              Replacement
+                              <textarea value={replacement} onChange={(ev) => setReplacement(ev.target.value)} rows={2} maxLength={2000} required />
+                            </label>
+                            <button className="cw-btn" type="submit" data-size="sm" disabled={busy || !replacement.trim()}>
+                              Tombstone old note
+                            </button>
+                          </form>
+                        )}
+                        <details>
+                          <summary>Details</summary>
+                          <p className="cw-muted">
+                            Kind {entry.kind}. Trust {entry.trust}. Class {entry.sdkClass ?? 'none'}. Source {entry.sourceType ?? 'unknown'}. Added {fmtTime(entry.createdAt)}
+                            {entry.authorLabel ? ` by ${entry.authorLabel}` : ''}.
+                          </p>
+                          {canPromote && (
+                            <button
+                              type="button"
+                              className="cw-linkbtn"
+                              onClick={() => {
+                                setReplacing(replacing === entry.id ? null : entry.id)
+                                setReplacement('')
+                              }}
+                            >
+                              Replace
+                            </button>
+                          )}
+                        </details>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )
+            })()}
             <details>
               <summary>history.md export</summary>
               <pre>{memory.markdown}</pre>
@@ -492,10 +525,9 @@ function BudgetMeter({ budget }: { budget: Desk['budget'] }) {
   const percent = context ? Math.round(context.utilization * 100) : null
   return (
     <section aria-labelledby="budget-title">
-      <h2 id="budget-title" className="cw-h2-compact">
+      <h2 id="budget-title" className="cw-sr-only">
         Usage
       </h2>
-      <p className="cw-muted">Today is UTC and includes reservations that have not settled. The context figure is the last call that reported token counts. It is not a live window.</p>
       <dl className="cw-ctxbar" aria-label="Usage today">
         <div>
           <dt>Input tokens</dt>
@@ -542,63 +574,6 @@ function BudgetMeter({ budget }: { budget: Desk['budget'] }) {
   )
 }
 
-function MemorySearch({ query, hits, onQuery, onOpen }: { query: string; hits: Desk['hits']; onQuery: (query: string) => void; onOpen: (agentKey: AgentKey) => void }) {
-  const [text, setText] = useState(query)
-  useEffect(() => {
-    if (query === text) return
-    const t = setTimeout(() => onQuery(text.trim()), 300)
-    return () => clearTimeout(t)
-  }, [text]) // eslint-disable-line react-hooks/exhaustive-deps
-  return (
-    <section aria-labelledby="find-title">
-      <h2 id="find-title" className="cw-h2-compact">
-        Find memory
-      </h2>
-      <p className="cw-muted">Searches every agent in this organisation, including notes held out of the prompt. At least two characters.</p>
-      <label className="cw-search">
-        <span className="cw-sr-only">Find memory</span>
-        <input type="search" placeholder="Search memory" value={text} onChange={(e) => setText(e.target.value)} />
-      </label>
-      {query.trim().length >= 2 && hits.length === 0 && <p className="cw-empty">No memory matches.</p>}
-      {hits.length > 0 && (
-        <TableWrap label="Memory search results">
-          <table className="cw-table">
-            <thead>
-              <tr>
-                <th scope="col">Agent</th>
-                <th scope="col">Trust</th>
-                <th scope="col">Prompt</th>
-                <th scope="col">Entry</th>
-              </tr>
-            </thead>
-            <tbody>
-              {hits.map((hit) => (
-                <tr key={hit.id}>
-                  <td>
-                    {isAgentKey(hit.agentKey) ? (
-                      <button type="button" className="cw-linkbtn" onClick={() => onOpen(hit.agentKey as AgentKey)}>
-                        {AGENT_LABELS[hit.agentKey].name}
-                      </button>
-                    ) : (
-                      hit.agentKey
-                    )}
-                  </td>
-                  <td>{hit.trust}</td>
-                  <td>
-                    {hit.inPrompt ? 'In prompt' : 'Held back'}
-                    <div className="cw-muted">{hit.reason}</div>
-                  </td>
-                  <td>{hit.body}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </TableWrap>
-      )}
-    </section>
-  )
-}
-
 function Directives({ directives }: { directives: Desk['directives'] }) {
   const { session } = Route.useRouteContext()
   const router = useRouter()
@@ -607,12 +582,16 @@ function Directives({ directives }: { directives: Desk['directives'] }) {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const refresh = () => router.invalidate()
+  const approved = directives.filter((directive) => directive.status === 'approved').length
   return (
-    <section aria-labelledby="directive-title">
-      <h2 id="directive-title" className="cw-h2-compact">
-        Org directives
-      </h2>
-      <p className="cw-muted">Approved directives are injected into every agent prompt. A draft needs a different owner or approver. Retiring removes it from the prompt. Skills stay in reviewed code.</p>
+    <details className="cw-panel2">
+      <summary className="cw-panel2-head" style={{ cursor: 'pointer' }}>
+        <h2 id="directive-title" className="cw-h2-compact" style={{ display: 'inline' }}>
+          Directives <span className="cw-muted num">({approved} in the prompt)</span>
+        </h2>
+      </summary>
+      <div className="cw-panel2-body">
+      <p className="cw-muted">Approved directives go into every agent prompt. A draft needs a different owner or approver. Retire removes it from the prompt.</p>
       {error && <Notice tone="error">{error}</Notice>}
       <form
         className="cw-form"
@@ -720,6 +699,7 @@ function Directives({ directives }: { directives: Desk['directives'] }) {
           </table>
         </TableWrap>
       )}
-    </section>
+      </div>
+    </details>
   )
 }

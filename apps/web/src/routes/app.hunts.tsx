@@ -1,11 +1,11 @@
 import { Link, Outlet, createFileRoute, useMatchRoute, useNavigate, useRouter } from '@tanstack/react-router'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { z } from 'zod'
 import { createHuntFn, deletePlaybookFn, fetchHunts, fetchPlaybooks, savePlaybookFn, startPlaybookFn } from '../fns/hunts'
 import { fmtTime } from '../components/format'
 import { Notice, Term } from '../components/ui'
 import { Freshness, StatusTag } from '../components/signals'
-import { BUILTIN_PLAYBOOKS, INDICATOR_LABEL, type IndicatorKind, type PlaybookCheck } from '../shared/indicator-playbooks'
+import { INDICATOR_LABEL, builtinForKind, detectIndicator, normaliseIndicator, type IndicatorKind, type PlaybookCheck } from '../shared/indicator-playbooks'
 
 /** Hunt list: one dense table with a URL-backed text filter and status filter (kept on back/forward). */
 export const Route = createFileRoute('/app/hunts')({
@@ -14,6 +14,7 @@ export const Route = createFileRoute('/app/hunts')({
     title: z.string().optional(),
     q: z.string().optional(),
     status: z.enum(['open', 'closed', 'all']).optional(),
+    check: z.string().optional(),
   }),
   loader: async () => {
     const [hunts, playbooks] = await Promise.all([fetchHunts(), fetchPlaybooks()])
@@ -47,14 +48,21 @@ function Hunts() {
         <div>
           <h1>Hunts</h1>
           <p>
-            A <Term k="hunt">hunt</Term> is a case file for checking a hunch. It holds the searches, results and notes, so anyone can see what was checked and why.
+            Paste an IP address, domain, or file hash. Crosswire proposes the usual checks. Nothing is searched until you approve them. A <Term k="hunt">hunt</Term> keeps the searches, results and notes.
           </p>
         </div>
       </header>
 
-      <IndicatorPlaybooks saved={playbooks} />
+      <CheckIndicator autoFocus={Boolean(search.check)} />
 
-      <NewHunt open={Boolean(search.fromHit || search.title)} initialTitle={search.title ?? ''} fromHit={search.fromHit} />
+      <details className="cw-panel2" defaultOpen={Boolean(search.fromHit || search.title)}>
+        <summary className="cw-panel2-head" style={{ cursor: 'pointer' }}>
+          <h2 style={{ display: 'inline' }}>Blank hunt and saved playbooks</h2>
+        </summary>
+        <NewHunt open={Boolean(search.fromHit || search.title)} initialTitle={search.title ?? ''} fromHit={search.fromHit} />
+        <SavedPlaybookStart saved={playbooks} />
+        <SavePlaybook />
+      </details>
 
       <div className="cw-tablewrap" style={{ overflow: 'visible' }}>
         <div className="cw-toolbar" style={{ borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0' }}>
@@ -130,7 +138,7 @@ function NewHunt({ open, initialTitle, fromHit }: { open: boolean; initialTitle:
   const [hypothesis, setHypothesis] = useState('')
   const [error, setError] = useState<string | null>(null)
   return (
-    <details className="cw-panel2" open={open}>
+    <details className="cw-panel2" defaultOpen={open}>
       <summary className="cw-panel2-head" style={{ cursor: 'pointer' }}>
         <h2 style={{ display: 'inline' }}>Start a new hunt</h2>
         {fromHit && <span className="cw-badge" data-tone="info">From a watch hit</span>}
@@ -172,21 +180,16 @@ function NewHunt({ open, initialTitle, fromHit }: { open: boolean; initialTitle:
   )
 }
 
-type SavedPlaybook = { id: string; name: string; description: string; indicatorKind: IndicatorKind; checks: PlaybookCheck[] }
-
-function IndicatorPlaybooks({ saved }: { saved: SavedPlaybook[] }) {
+function CheckIndicator({ autoFocus }: { autoFocus: boolean }) {
   const navigate = useNavigate()
-  const router = useRouter()
-  const options = [
-    ...BUILTIN_PLAYBOOKS.map((playbook) => ({ id: playbook.id, name: playbook.name, description: playbook.description, indicatorKind: playbook.indicatorKind })),
-    ...saved,
-  ]
-  const [playbookId, setPlaybookId] = useState(options[0]!.id)
-  const selected = options.find((playbook) => playbook.id === playbookId) ?? options[0]!
+  const inputRef = useRef<HTMLInputElement>(null)
   const [indicator, setIndicator] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const savedSelected = saved.find((playbook) => playbook.id === selected.id)
+  const detected = detectIndicator(indicator)
+  useEffect(() => {
+    if (autoFocus) inputRef.current?.focus()
+  }, [autoFocus])
   return (
     <section className="cw-panel2" aria-labelledby="playbook-title">
       <div className="cw-panel2-head">
@@ -196,10 +199,16 @@ function IndicatorPlaybooks({ saved }: { saved: SavedPlaybook[] }) {
         className="cw-panel2-body cw-form"
         onSubmit={async (e) => {
           e.preventDefault()
+          const found = detectIndicator(indicator)
+          const playbook = found ? builtinForKind(found.kind) : null
+          if (!found || !playbook) {
+            setError('That is not an IP address, domain, or file hash.')
+            return
+          }
           setBusy(true)
           setError(null)
           try {
-            const started = await startPlaybookFn({ data: { playbookId: selected.id, indicator } })
+            const started = await startPlaybookFn({ data: { playbookId: playbook.id, indicator: found.value } })
             await navigate({ to: '/app/hunts/$huntId', params: { huntId: started.huntId } })
           } catch (err) {
             setError(err instanceof Error ? err.message : String(err))
@@ -208,78 +217,117 @@ function IndicatorPlaybooks({ saved }: { saved: SavedPlaybook[] }) {
           }
         }}
       >
-        <p className="cw-help" style={{ marginTop: 0 }}>
-          One click opens a hunt and proposes every check in the playbook. Nothing is searched until a person approves each check. The hunt page and the exported report then say whether anything hit, and list what was checked.
-        </p>
         <label>
-          Playbook
-          <select value={selected.id} onChange={(e) => setPlaybookId(e.target.value)}>
-            <optgroup label="Built in">
-              {BUILTIN_PLAYBOOKS.map((playbook) => (
-                <option key={playbook.id} value={playbook.id}>
-                  {playbook.name}
-                </option>
-              ))}
-            </optgroup>
-            {saved.length > 0 && (
-              <optgroup label="Saved">
-                {saved.map((playbook) => (
-                  <option key={playbook.id} value={playbook.id}>
-                    {playbook.name}
-                  </option>
-                ))}
-              </optgroup>
-            )}
-          </select>
-          <span className="cw-help">{selected.description}</span>
-        </label>
-        <label>
-          {INDICATOR_LABEL[selected.indicatorKind]}
+          IP address, domain, or file hash
           <input
+            id="indicator-check"
+            ref={inputRef}
             value={indicator}
             onChange={(e) => setIndicator(e.target.value)}
             required
             maxLength={253}
             spellCheck={false}
-            placeholder={selected.indicatorKind === 'ip' ? '203.0.113.10' : selected.indicatorKind === 'domain' ? 'example.invalid' : '64, 40, or 32 hex characters'}
+            placeholder="203.0.113.10"
+            autoComplete="off"
           />
+          <span className="cw-help">
+            {detected ? `${INDICATOR_LABEL[detected.kind]}. Proposes the built-in checks. Nothing runs until you approve them.` : 'Paste one indicator.'}
+          </span>
         </label>
         {error && (
           <Notice tone="error" title="Checks not proposed">
             {error}
           </Notice>
         )}
-        <div style={{ display: 'flex', gap: 'var(--space-xs)', flexWrap: 'wrap' }}>
-          <button className="cw-btn" type="submit" disabled={busy || !indicator.trim()}>
-            {busy ? 'Proposing…' : 'Propose checks'}
-          </button>
-          {savedSelected && (
-            <button
-              className="cw-btn"
-              data-variant="ghost"
-              type="button"
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true)
-                setError(null)
-                try {
-                  await deletePlaybookFn({ data: { playbookId: savedSelected.id } })
-                  setPlaybookId(BUILTIN_PLAYBOOKS[0]!.id)
-                  await router.invalidate()
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : String(err))
-                } finally {
-                  setBusy(false)
-                }
-              }}
-            >
-              Delete saved playbook
-            </button>
-          )}
-        </div>
+        <button className="cw-btn" type="submit" disabled={busy || !indicator.trim()}>
+          {busy ? 'Proposing…' : 'Check this'}
+        </button>
       </form>
-      <SavePlaybook />
     </section>
+  )
+}
+
+type SavedPlaybook = { id: string; name: string; description: string; indicatorKind: IndicatorKind; checks: PlaybookCheck[] }
+
+function SavedPlaybookStart({ saved }: { saved: SavedPlaybook[] }) {
+  const navigate = useNavigate()
+  const router = useRouter()
+  const [playbookId, setPlaybookId] = useState(saved[0]?.id ?? '')
+  const selected = saved.find((playbook) => playbook.id === playbookId) ?? saved[0]
+  const [indicator, setIndicator] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  if (!selected) return <p className="cw-empty">No saved playbooks yet.</p>
+  return (
+    <form
+      className="cw-panel2-body cw-form"
+      onSubmit={async (e) => {
+        e.preventDefault()
+        const value = normaliseIndicator(selected.indicatorKind, indicator)
+        if (!value) {
+          setError(`That is not a valid ${INDICATOR_LABEL[selected.indicatorKind]}.`)
+          return
+        }
+        setBusy(true)
+        setError(null)
+        try {
+          const started = await startPlaybookFn({ data: { playbookId: selected.id, indicator: value } })
+          await navigate({ to: '/app/hunts/$huntId', params: { huntId: started.huntId } })
+        } catch (err) {
+          setError(err instanceof Error ? err.message : String(err))
+        } finally {
+          setBusy(false)
+        }
+      }}
+    >
+      <h3>Use a saved playbook</h3>
+      <label>
+        Playbook
+        <select value={selected.id} onChange={(e) => setPlaybookId(e.target.value)}>
+          {saved.map((playbook) => (
+            <option key={playbook.id} value={playbook.id}>
+              {playbook.name}
+            </option>
+          ))}
+        </select>
+        {selected.description && <span className="cw-help">{selected.description}</span>}
+      </label>
+      <label>
+        {INDICATOR_LABEL[selected.indicatorKind]}
+        <input value={indicator} onChange={(e) => setIndicator(e.target.value)} required maxLength={253} spellCheck={false} />
+      </label>
+      {error && (
+        <Notice tone="error" title="Checks not proposed">
+          {error}
+        </Notice>
+      )}
+      <div style={{ display: 'flex', gap: 'var(--space-xs)', flexWrap: 'wrap' }}>
+        <button className="cw-btn" type="submit" disabled={busy || !indicator.trim()}>
+          {busy ? 'Proposing…' : 'Propose checks'}
+        </button>
+        <button
+          className="cw-btn"
+          data-variant="ghost"
+          type="button"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true)
+            setError(null)
+            try {
+              await deletePlaybookFn({ data: { playbookId: selected.id } })
+              setPlaybookId(saved.find((playbook) => playbook.id !== selected.id)?.id ?? '')
+              await router.invalidate()
+            } catch (err) {
+              setError(err instanceof Error ? err.message : String(err))
+            } finally {
+              setBusy(false)
+            }
+          }}
+        >
+          Delete saved playbook
+        </button>
+      </div>
+    </form>
   )
 }
 

@@ -38,3 +38,18 @@ export function kqlApprovalBlock(
   if (edited) return 'edited'
   return null
 }
+
+/**
+ * True when Approve all is safe to show: this caller may run every still-proposed search,
+ * and the org does not require a second person. One blocked search hides the button.
+ */
+export function canApproveEveryProposal(
+  policy: KqlApprovalPolicy,
+  caller: { userId: string; role: string | undefined },
+  proposals: Array<{ status: string; requestedBy: string | null; proposedByType: 'user' | 'agent'; proposedById: string }>,
+): boolean {
+  if (policy === 'second-person') return false
+  const pending = proposals.filter((proposal) => proposal.status === 'proposed')
+  if (pending.length === 0) return false
+  return pending.every((proposal) => kqlApprovalBlock(policy, caller, proposal, false) === null)
+}

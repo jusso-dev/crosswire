@@ -45,6 +45,17 @@ export function normaliseIndicator(kind: IndicatorKind, raw: string): string | n
   return HASH.test(value) ? value.toLowerCase() : null
 }
 
+/** IP, then hash, then domain. A hash is hex only, so it is not read as a domain. */
+export function detectIndicator(raw: string): { kind: IndicatorKind; value: string } | null {
+  const ip = normaliseIndicator('ip', raw)
+  if (ip) return { kind: 'ip', value: ip }
+  const hash = normaliseIndicator('hash', raw)
+  if (hash) return { kind: 'hash', value: hash }
+  const domain = normaliseIndicator('domain', raw)
+  if (domain) return { kind: 'domain', value: domain }
+  return null
+}
+
 export function fillIndicator(template: string, indicator: string) {
   if (!template.includes(INDICATOR_PLACEHOLDER)) throw new Error(`Query template must contain ${INDICATOR_PLACEHOLDER}.`)
   return template.split(INDICATOR_PLACEHOLDER).join(indicator)
@@ -105,6 +116,15 @@ export function coverageOf(
   const clean = rows.filter((row) => row.outcome === 'hit' || row.outcome === 'no-hit').length
   const answer: CoverageAnswer = hits > 0 ? 'yes' : rows.length > 0 && clean === rows.length ? 'no' : 'incomplete'
   return { answer, hits, ran: clean, total: rows.length, rows }
+}
+
+/** Plain answer for the clipboard: the yes or no line, then one line per check. */
+export function answerText(coverage: ReturnType<typeof coverageOf>): string {
+  const lines = [`Any hits? ${HIT_ANSWER[coverage.answer]}`, `${coverage.ran} of ${coverage.total} checks ran.`]
+  for (const row of coverage.rows) {
+    lines.push(`${row.name}: ${OUTCOME_LABEL[row.outcome]}${row.rowCount !== null ? ` (${row.rowCount} rows)` : ''}`)
+  }
+  return lines.join('\n')
 }
 
 const DAYS = '30d'
@@ -240,4 +260,8 @@ export const BUILTIN_PLAYBOOKS: PlaybookTemplate[] = [
 
 export function builtinPlaybook(id: string) {
   return BUILTIN_PLAYBOOKS.find((playbook) => playbook.id === id) ?? null
+}
+
+export function builtinForKind(kind: IndicatorKind) {
+  return BUILTIN_PLAYBOOKS.find((playbook) => playbook.indicatorKind === kind) ?? null
 }
