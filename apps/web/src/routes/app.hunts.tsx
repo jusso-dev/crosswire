@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { z } from 'zod'
 import { createHuntFn, deletePlaybookFn, fetchHunts, fetchPlaybooks, savePlaybookFn, startPlaybookFn } from '../fns/hunts'
 import { fmtTime } from '../components/format'
-import { Notice, Term } from '../components/ui'
+import { Notice, Term, SkeletonPage } from '../components/ui'
+import { plainMessage } from '../shared/messages'
 import { Freshness, StatusTag } from '../components/signals'
 import { INDICATOR_LABEL, builtinForKind, detectIndicator, normaliseIndicator, type IndicatorKind, type PlaybookCheck } from '../shared/indicator-playbooks'
 
@@ -20,10 +21,10 @@ export const Route = createFileRoute('/app/hunts')({
     const [hunts, playbooks] = await Promise.all([fetchHunts(), fetchPlaybooks()])
     return { hunts, playbooks }
   },
-  pendingComponent: () => <p className="cw-muted">Loading hunts…</p>,
+  pendingComponent: () => <SkeletonPage label="Loading hunts" />,
   errorComponent: ({ error }) => (
-    <Notice tone="error" title="Could not load hunts">
-      {error instanceof Error ? error.message : String(error)}
+    <Notice tone="error" title="Hunts did not load">
+      {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
   component: Hunts,
@@ -57,16 +58,16 @@ function Hunts() {
       <CheckIndicator autoFocus={Boolean(search.check)} />
 
       <details className="cw-panel2" open={moreOpen} onToggle={(event) => setMoreOpen(event.currentTarget.open)}>
-        <summary className="cw-panel2-head" style={{ cursor: 'pointer' }}>
-          <h2 style={{ display: 'inline' }}>Blank hunt and saved playbooks</h2>
+        <summary className="cw-panel2-head cw-pointer">
+          <h2 className="cw-inline-h">Blank hunt and saved playbooks</h2>
         </summary>
         <NewHunt open={Boolean(search.fromHit || search.title)} initialTitle={search.title ?? ''} fromHit={search.fromHit} />
         <SavedPlaybookStart saved={playbooks} />
         <SavePlaybook />
       </details>
 
-      <div className="cw-tablewrap" style={{ overflow: 'visible' }}>
-        <div className="cw-toolbar" style={{ borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0' }}>
+      <div className="cw-tablewrap cw-overflow-visible">
+        <div className="cw-toolbar cw-attached">
           <label className="cw-search">
             <span className="cw-sr-only">Filter hunts</span>
             <input type="search" placeholder="Filter by title or hypothesis" value={search.q ?? ''} onChange={(e) => set({ q: e.target.value || undefined })} />
@@ -82,13 +83,13 @@ function Hunts() {
             {shown.length} shown
           </span>
         </div>
-        <div style={{ overflowX: 'auto' }}>
+        <div className="cw-scroll-x">
           {hunts.length === 0 ? (
-            <p className="cw-empty" style={{ padding: 'var(--space-md)' }}>
+            <p className="cw-empty cw-pad">
               No hunts yet. Start one above, or from any watch hit on the <Link to="/app/watches">Watches</Link> page.
             </p>
           ) : shown.length === 0 ? (
-            <p className="cw-empty" style={{ padding: 'var(--space-md)' }}>
+            <p className="cw-empty cw-pad">
               No hunts match.{' '}
               <button type="button" className="cw-linkbtn" onClick={() => set({ q: undefined, status: 'all' })}>
                 Clear filters
@@ -108,11 +109,11 @@ function Hunts() {
               <tbody>
                 {shown.map((h) => (
                   <tr key={h.id}>
-                    <td style={{ maxWidth: '60ch' }}>
+                    <td className="cw-cell-wide">
                       <Link to="/app/hunts/$huntId" params={{ huntId: h.id }}>
                         {h.title}
                       </Link>
-                      {h.hypothesis && <div className="cw-muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.hypothesis}</div>}
+                      {h.hypothesis && <div className="cw-muted cw-ellipsis">{h.hypothesis}</div>}
                     </td>
                     <td>
                       <StatusTag status={h.status} />
@@ -141,8 +142,8 @@ function NewHunt({ open, initialTitle, fromHit }: { open: boolean; initialTitle:
   const [expanded, setExpanded] = useState(open)
   return (
     <details className="cw-panel2" open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
-      <summary className="cw-panel2-head" style={{ cursor: 'pointer' }}>
-        <h2 style={{ display: 'inline' }}>Start a new hunt</h2>
+      <summary className="cw-panel2-head cw-pointer">
+        <h2 className="cw-inline-h">Start a new hunt</h2>
         {fromHit && <span className="cw-badge" data-tone="info">From a watch hit</span>}
       </summary>
       <form
@@ -303,7 +304,7 @@ function SavedPlaybookStart({ saved }: { saved: SavedPlaybook[] }) {
           {error}
         </Notice>
       )}
-      <div style={{ display: 'flex', gap: 'var(--space-xs)', flexWrap: 'wrap' }}>
+      <div className="cw-cluster">
         <button className="cw-btn" type="submit" disabled={busy || !indicator.trim()}>
           {busy ? 'Proposing…' : 'Propose checks'}
         </button>
@@ -344,7 +345,7 @@ function SavePlaybook() {
   const setCheck = (index: number, patch: Partial<PlaybookCheck>) => setChecks((current) => current.map((check, i) => (i === index ? { ...check, ...patch } : check)))
   return (
     <details>
-      <summary className="cw-panel2-foot" style={{ cursor: 'pointer' }}>
+      <summary className="cw-panel2-foot cw-pointer">
         Save a playbook for this organisation
       </summary>
       <form
@@ -366,7 +367,7 @@ function SavePlaybook() {
           }
         }}
       >
-        <p className="cw-help" style={{ marginTop: 0 }}>
+        <p className="cw-help cw-mt0">
           Put <code>{'{{indicator}}'}</code> where the IP, domain, or hash should go. Saving does not run the queries.
         </p>
         <label>
@@ -417,7 +418,7 @@ function SavePlaybook() {
             {error}
           </Notice>
         )}
-        <div style={{ display: 'flex', gap: 'var(--space-xs)', flexWrap: 'wrap' }}>
+        <div className="cw-cluster">
           {checks.length < 8 && (
             <button type="button" className="cw-btn" data-variant="ghost" onClick={() => setChecks((current) => [...current, { name: '', target: 'defender', kql: '' }])}>
               Add check

@@ -3,7 +3,8 @@ import { useMemo, useState } from 'react'
 import { z } from 'zod'
 import { addNote, approveKqlFn, createScheduleFn, disableScheduleFn, fetchHunt, huntReportFn, proposeKqlFn, reapproveScheduleFn, rejectKqlFn, setHuntStatusFn } from '../fns/hunts'
 import { fmtTime } from '../components/format'
-import { Notice, Term } from '../components/ui'
+import { Notice, Term, SkeletonPage } from '../components/ui'
+import { plainMessage } from '../shared/messages'
 import { canApproveEveryProposal, kqlApprovalBlock } from '../shared/kql-approval'
 import { HIT_ANSWER, OUTCOME_LABEL, answerText, coverageOf } from '../shared/indicator-playbooks'
 import { Freshness, ModeTag, StatusTag, TARGET_LABEL } from '../components/signals'
@@ -32,17 +33,17 @@ export const Route = createFileRoute('/app/hunts/$huntId')({
     if (!h) throw notFound()
     return h
   },
-  pendingComponent: () => <p className="cw-muted" style={{ padding: 'var(--space-lg)' }}>Loading hunt…</p>,
+  pendingComponent: () => <SkeletonPage label="Loading this hunt" />,
   errorComponent: ({ error }) => (
-    <div style={{ padding: 'var(--space-lg)' }}>
-      <Notice tone="error" title="Could not load this hunt">
-        {error instanceof Error ? error.message : String(error)}
+    <div className="cw-pad-lg">
+      <Notice tone="error" title="This hunt did not load">
+        {plainMessage(error)} Refresh the page to try again.
       </Notice>
       <Link to="/app/hunts">Back to all hunts</Link>
     </div>
   ),
   notFoundComponent: () => (
-    <div style={{ padding: 'var(--space-lg)' }}>
+    <div className="cw-pad-lg">
       <h1>Hunt not found</h1>
       <p className="cw-muted">It may have been removed, or it belongs to another organisation.</p>
       <Link to="/app/hunts">Back to all hunts</Link>
@@ -87,7 +88,7 @@ function CoverageSummary({ proposals }: { proposals: Proposal[] }) {
   if (!proposals.length) return null
   const coverage = coverageFor(proposals)
   return (
-    <section aria-label="What was checked" style={{ marginTop: 'var(--space-sm)' }}>
+    <section aria-label="What was checked" className="cw-mt-sm">
       <p>
         <strong>Any hits?</strong> {HIT_ANSWER[coverage.answer]} <span className="cw-muted">{coverage.ran} of {coverage.total} checks ran.</span>
       </p>
@@ -148,7 +149,7 @@ function HuntWorkspace() {
             <li aria-current="page">{hunt.title}</li>
           </ol>
         </nav>
-        <header className="cw-pagehead" style={{ marginBottom: 0 }}>
+        <header className="cw-pagehead cw-mb0">
           <div>
             <h1>{hunt.title}</h1>
             <p>{hunt.hypothesis || <span>No hypothesis yet. Add a note saying what you suspect, so agents can suggest searches.</span>}</p>
@@ -219,7 +220,7 @@ function HuntWorkspace() {
           </Notice>
         )}
         {error && (
-          <Notice tone="error" title="That did not work">
+          <Notice tone="error" title="The server did not accept that step">
             {error}
           </Notice>
         )}
@@ -239,7 +240,7 @@ function HuntWorkspace() {
             {proposals.map((p) => {
               const s = summaryOf(p)
               return (
-                <li key={p.id} style={{ display: 'contents' }}>
+                <li key={p.id} className="cw-contents">
                 <button
                   type="button"
                   className="cw-qitem"
@@ -365,7 +366,7 @@ function SearchPanel({
         <StatusTag status={p.status} />
         <span className="cw-muted">{TARGET_LABEL[p.target]}</span>
         {s?.mode && <ModeTag mode={s.mode} />}
-        <span style={{ marginLeft: 'auto' }} className="cw-row" data-center>
+        <span className="cw-row cw-ml-auto" data-center>
           {!pending && (
             <button type="button" className="cw-btn" data-variant="ghost" data-size="sm" onClick={() => onDraft(p.kql)}>
               Edit as new search
@@ -374,7 +375,7 @@ function SearchPanel({
         </span>
       </div>
       <div className="cw-panel2-body">
-        {p.rationale && <p style={{ marginBottom: 'var(--space-xs)' }}>{p.rationale}</p>}
+        {p.rationale && <p className="cw-mb-xs">{p.rationale}</p>}
         {pending ? (
           <>
             <p className="cw-muted">
@@ -407,7 +408,7 @@ function SearchPanel({
                 )}
               </Notice>
             )}
-            <div className="cw-row" style={{ marginTop: 'var(--space-sm)' }}>
+            <div className="cw-row cw-mt-sm">
               <button
                 type="button"
                 className="cw-btn"
@@ -453,7 +454,7 @@ function SearchPanel({
       </div>
 
       {runAt && (
-        <div className="cw-panel2-foot" style={{ borderTop: 0 }}>
+        <div className="cw-panel2-foot cw-bt0">
           <span>
             Showing the sample from the repeat run at {fmtTime(runAt)}.{' '}
             <button type="button" className="cw-linkbtn" onClick={onShowOriginal}>
@@ -464,7 +465,7 @@ function SearchPanel({
       )}
       {p.status === 'run' && s && (
         <>
-          <div className="cw-panel2-foot" style={{ borderTop: 0, borderBottom: '1px solid var(--border)' }}>
+          <div className="cw-panel2-foot cw-bt0 cw-bb">
             <dl className="cw-runstats">
               <div>
                 <dt>Rows returned</dt>
@@ -559,7 +560,14 @@ function RowInspector({
         onRow(null)
         // Return focus to the row the analyst was last on (the one now shown), after the inert
         // background is released and the grid has re-rendered.
-        requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector<HTMLElement>(`tr[data-index="${rowIndex}"]`)?.focus()))
+        // The URL update and inert release can take a few frames, so retry briefly until focus lands.
+        let tries = 0
+        const land = () => {
+          const row = document.querySelector<HTMLElement>(`tr[data-index="${rowIndex}"]`)
+          if (row && !row.closest('[inert]')) row.focus()
+          if (document.activeElement !== row && ++tries < 20) requestAnimationFrame(land)
+        }
+        requestAnimationFrame(land)
       }}
       onPrev={pos > 0 ? () => onRow(visible[pos - 1]!) : undefined}
       onNext={pos >= 0 && pos < visible.length - 1 ? () => onRow(visible[pos + 1]!) : undefined}
@@ -579,7 +587,7 @@ function RowInspector({
           <dd>{p.proposedByType === 'agent' ? `agent ${p.proposedById}` : 'an analyst'}</dd>
           <dt>Query</dt>
           <dd>
-            <pre style={{ margin: 0 }}>{p.kql}</pre>
+            <pre className="cw-m0">{p.kql}</pre>
           </dd>
         </dl>
       }
@@ -671,7 +679,7 @@ function Timeline({
   return (
     <section className="cw-rail-section" aria-labelledby="timeline-title">
       <h2 id="timeline-title">Evidence timeline</h2>
-      <div className="cw-segmented" role="group" aria-label="Show in timeline" style={{ marginBottom: 'var(--space-sm)', flexWrap: 'wrap' }}>
+      <div className="cw-segmented cw-mb-sm cw-wrap" role="group" aria-label="Show in timeline">
         {(['all', 'searches', 'results', 'notes', 'schedules'] as const).map((k) => (
           <button key={k} type="button" aria-pressed={filter === k} onClick={() => onFilter(k)}>
             {k === 'all' ? 'All' : k[0]!.toUpperCase() + k.slice(1)}
@@ -775,8 +783,8 @@ function ProposeSearch({ huntId, draft, onDone, onError }: { huntId: string; dra
   }
   return (
     <details className="cw-panel2" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
-      <summary className="cw-panel2-head" style={{ cursor: 'pointer' }}>
-        <h2 style={{ display: 'inline' }}>Propose a new search</h2>
+      <summary className="cw-panel2-head cw-pointer">
+        <h2 className="cw-inline-h">Propose a new search</h2>
         <span className="cw-muted">It will wait for review before it runs.</span>
       </summary>
       <form
@@ -792,7 +800,7 @@ function ProposeSearch({ huntId, draft, onDone, onError }: { huntId: string; dra
           await router.invalidate()
         }}
       >
-        <label style={{ maxWidth: 320 }}>
+        <label className="cw-maxw-320">
           Search in
           <select value={target} onChange={(e) => setTarget(e.target.value as 'defender' | 'sentinel')}>
             <option value="defender">Defender XDR (devices, email, identity)</option>
@@ -801,7 +809,7 @@ function ProposeSearch({ huntId, draft, onDone, onError }: { huntId: string; dra
         </label>
         <div>
           <label htmlFor="new-kql">KQL</label>
-          <div className="cw-editor" style={{ marginTop: 'var(--space-2xs)' }}>
+          <div className="cw-editor cw-mt-2xs">
             <textarea id="new-kql" className="mono" rows={5} value={kql} onChange={(e) => setKql(e.target.value)} required spellCheck={false} placeholder="DeviceProcessEvents | where Timestamp > ago(1d) | take 100" />
             <div className="cw-editor-bar">
               <span>Keep results small with “| take 100”. Crosswire caps rows and blocks external data and management commands.</span>
@@ -853,7 +861,7 @@ function Schedules({ data, onError }: { data: Data; onError: (e: string | null) 
                 {data.schedules.map((s) => (
                   <tr key={s.id}>
                     <td>
-                      <code style={{ display: 'block', maxWidth: '44ch', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.kql}>
+                      <code className="cw-ellipsis cw-maxw-44ch" title={s.kql}>
                         {s.kql}
                       </code>
                       <span className="cw-muted">{TARGET_LABEL[s.target]}</span>
@@ -872,7 +880,7 @@ function Schedules({ data, onError }: { data: Data; onError: (e: string | null) 
                       ) : (
                         <span className="cw-muted">not run yet</span>
                       )}
-                      {s.lastError && <p className="cw-field-error" style={{ marginTop: 4 }}>{s.lastError}</p>}
+                      {s.lastError && <p className="cw-field-error cw-mt-2xs">{s.lastError}</p>}
                     </td>
                     <td>{fmtTime(s.approvalExpiresAt)}</td>
                     <td>
@@ -902,8 +910,8 @@ function Schedules({ data, onError }: { data: Data; onError: (e: string | null) 
         )}
         {ran.length > 0 &&
           (data.canApprove ? (
-            <div className="cw-row" style={{ marginTop: 'var(--space-sm)' }}>
-              <label className="cw-grow" style={{ maxWidth: 420 }}>
+            <div className="cw-row cw-mt-sm">
+              <label className="cw-grow cw-maxw-420">
                 Search to repeat
                 <select value={pick} onChange={(e) => setPick(e.target.value)}>
                   {ran.map((p) => (
@@ -936,7 +944,7 @@ function Schedules({ data, onError }: { data: Data; onError: (e: string | null) 
               </button>
             </div>
           ) : (
-            <p className="cw-muted" style={{ marginTop: 'var(--space-sm)' }}>
+            <p className="cw-muted cw-mt-sm">
               Approvers and owners can turn a search that ran into a repeat search. Your role is {data.role}.
             </p>
           ))}

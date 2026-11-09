@@ -14,6 +14,8 @@ test('chat streams a markdown reply, shows tool steps, persists, and supports st
   test.setTimeout(120_000)
   await page.setViewportSize({ width: 1280, height: 860 })
   await page.goto('/sign-in')
+  // Wait for hydration: a click before React attaches its handlers does nothing.
+  await page.waitForLoadState('networkidle')
   await page.getByRole('button', { name: 'Create an account' }).click()
   await page.getByLabel('Email').fill(`chat-${stamp}@example.test`)
   await page.getByLabel('Password').fill('correct horse battery staple')

@@ -12,6 +12,8 @@ const owner = { email: `owner-${stamp}@example.test`, password: 'correct horse b
 test('SSO stand-in -> watch hit -> hunt proposal -> dry-run approval', async ({ page, request }) => {
   // 1. Sign up (local stand-in for Entra SSO). First user owns a personal workspace.
   await page.goto('/sign-in')
+  // Wait for hydration: a click before React attaches its handlers does nothing.
+  await page.waitForLoadState('networkidle')
   await page.getByRole('button', { name: 'Create an account' }).click()
   await page.getByLabel('Email').fill(owner.email)
   await page.getByLabel('Password').fill(owner.password)
@@ -51,8 +53,10 @@ test('SSO stand-in -> watch hit -> hunt proposal -> dry-run approval', async ({ 
   await expect(dry.getByText('Dry run', { exact: true })).toBeVisible()
   await dry.getByText('Raw record').click()
   await expect(dry.locator('pre').filter({ hasText: '"mode": "dry-run"' })).toBeVisible()
-  await page.getByRole('button', { name: 'Approve' }).click()
-  await expect(page.getByRole('alert')).toContainText(/self-approval is off/i)
+  // The requester cannot approve their own action: the screen says why and offers no Approve
+  // button. The server refusal itself is covered in apps/web/test/ui-polish.test.ts.
+  await expect(page.getByText('You cannot approve this one')).toBeVisible()
+  await expect(page.getByRole('button', { name: /^Approve/ })).toHaveCount(0)
 
   // 6. No live executor ran: status is still pending and there is no execution record.
   await expect(page.locator('main.cw-content .cw-badge').first()).toHaveText(/pending/i)

@@ -1,9 +1,10 @@
 import { Link, Outlet, createFileRoute, redirect, useRouter, useRouterState } from '@tanstack/react-router'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { fetchSession } from '../fns/session'
 import { authClient } from '../lib/auth-client'
 import { Mark } from '../components/ui'
 import { ThemeToggle } from '../components/ThemeToggle'
+import { CommandLayer, PaletteButton, ShortcutsButton } from '../components/CommandPalette'
 import { getDisplayTimeZone } from '../components/format'
 
 /** Authenticated layout (#20, #23). Server-side redirect when signed out; server fns re-check every call. */
@@ -32,15 +33,34 @@ const NAV_GROUPS = [
       { to: '/app/chat', label: 'Ask an agent' },
     ],
   },
-  { label: 'Act', items: [{ to: '/app/approvals', label: 'Approvals', badge: true }] },
+  { label: 'Act', items: [{ to: '/app/approvals', label: 'Approvals', badge: 'approvals' }] },
   {
     label: 'Admin',
     items: [
-      { to: '/app/agents', label: 'Agents and log' },
+      { to: '/app/agents', label: 'Agents', badge: 'agents' },
       { to: '/app/settings', label: 'Settings' },
     ],
   },
 ] as const
+
+/** List pages whose filters (URL search) are restored from the nav. */
+const REMEMBER = new Set(['/app/watches', '/app/hunts', '/app/approvals', '/app/agents', '/app/digests'])
+
+function rememberedSearch(str: string | undefined) {
+  if (!str || str === '?') return undefined
+  const params = new URLSearchParams(str)
+  // One-shot hand-off params are not filters.
+  for (const k of ['fromHit', 'title', 'check', 'run']) params.delete(k)
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of params) {
+    try {
+      out[k] = JSON.parse(v)
+    } catch {
+      out[k] = v
+    }
+  }
+  return Object.keys(out).length ? (out as never) : undefined
+}
 
 const ROLE_HINT: Record<string, string> = {
   owner: 'can manage people and settings, and approve actions',
@@ -58,7 +78,33 @@ function AppShell() {
   const flush = /^\/app\/hunts\/[^/]+/.test(pathname)
   const chat = pathname.startsWith('/app/chat')
   const router = useRouter()
+  const search = useRouterState({ select: (s) => s.location.searchStr })
   const main = useRef<HTMLElement>(null)
+  // Lists remember their filters: the nav link returns to the last search used on that page.
+  const [remembered, setRemembered] = useState<Record<string, string>>({})
+  useEffect(() => {
+    try {
+      // Sync from storage after hydration; the server cannot read it.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setRemembered(JSON.parse(sessionStorage.getItem('cw-list-filters') ?? '{}'))
+    } catch {
+      // Storage blocked: links go to the plain page.
+    }
+  }, [])
+  useEffect(() => {
+    if (!REMEMBER.has(pathname)) return
+    // Mirror the current list URL into storage and the nav links.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setRemembered((prev) => {
+      const next = { ...prev, [pathname]: search }
+      try {
+        sessionStorage.setItem('cw-list-filters', JSON.stringify(next))
+      } catch {
+        // Ignore.
+      }
+      return next
+    })
+  }, [pathname, search])
   const first = useRef(true)
 
   // On client-side navigation, move focus to the new page's heading so screen readers announce it
@@ -102,12 +148,24 @@ function AppShell() {
                 {g.label}
               </div>
               {g.items.map((n) => (
-                <Link key={n.to} to={n.to} activeOptions={{ exact: 'exact' in n ? n.exact : false }}>
+                <Link key={n.to} to={n.to} search={rememberedSearch(remembered[n.to])} activeOptions={{ exact: 'exact' in n ? n.exact : false, includeSearch: false }}>
                   <span>{n.label}</span>
-                  {'badge' in n && session.pendingApprovals > 0 && (
+                  {'badge' in n && n.badge === 'approvals' && session.pendingApprovals > 0 && (
                     <span className="cw-badge" data-tone="warn">
                       {session.pendingApprovals}
                       <span className="cw-sr-only"> waiting</span>
+                    </span>
+                  )}
+                  {'badge' in n && n.badge === 'agents' && session.runningRuns > 0 && (
+                    <span className="cw-badge" data-tone="info" title="Agent runs in progress">
+                      {session.runningRuns}
+                      <span className="cw-sr-only"> running</span>
+                    </span>
+                  )}
+                  {'badge' in n && n.badge === 'agents' && session.memoryToReview > 0 && (
+                    <span className="cw-badge" data-tone="warn" title="Memory notes waiting for your review">
+                      {session.memoryToReview}
+                      <span className="cw-sr-only"> notes to review</span>
                     </span>
                   )}
                 </Link>
@@ -132,6 +190,10 @@ function AppShell() {
             <span className="cw-sr-only">: {ROLE_HINT[session.org.role] ?? ''}</span>
           </span>
           <span className="cw-header-meta">
+            <span className="cw-header-tools">
+              <PaletteButton />
+              <ShortcutsButton />
+            </span>
             <ThemeToggle />
             <span>{session.user.email}</span>
             <button
@@ -151,6 +213,7 @@ function AppShell() {
           <Outlet />
         </main>
       </div>
+      <CommandLayer />
     </div>
   )
 }

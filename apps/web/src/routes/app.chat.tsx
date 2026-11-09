@@ -1,7 +1,8 @@
 import { Link, Outlet, createFileRoute, useNavigate, useRouter } from '@tanstack/react-router'
 import { useState } from 'react'
 import { fetchThreads, newThread, removeThread } from '../fns/chat'
-import { Notice } from '../components/ui'
+import { Notice, SkeletonPage } from '../components/ui'
+import { plainMessage } from '../shared/messages'
 import { getDisplayTimeZone } from '../components/format'
 
 /**
@@ -10,10 +11,10 @@ import { getDisplayTimeZone } from '../components/format'
  */
 export const Route = createFileRoute('/app/chat')({
   loader: () => fetchThreads(),
-  pendingComponent: () => <p className="cw-muted">Loading conversations…</p>,
+  pendingComponent: () => <SkeletonPage label="Loading conversations" />,
   errorComponent: ({ error }) => (
-    <Notice tone="error" title="Could not load conversations">
-      {error instanceof Error ? error.message : String(error)}
+    <Notice tone="error" title="Your conversations did not load">
+      {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
   component: ChatLayout,
@@ -69,7 +70,7 @@ function ChatLayout() {
           {busy ? 'Starting…' : 'New conversation'}
         </button>
         {runtime.configured && (
-          <p className="cw-help" style={{ margin: 0 }}>
+          <p className="cw-help cw-m0">
             Model: {runtime.provider}
             {runtime.model ? ` · ${runtime.model}` : ''}
           </p>

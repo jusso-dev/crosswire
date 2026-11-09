@@ -51,6 +51,10 @@ test('every page passes axe WCAG 2.2 AA in light and dark', async ({ page }) => 
     ['approvals', '/app/approvals'],
     ['approval', approvalHref!],
     ['agents', '/app/agents'],
+    ['agents runs', '/app/agents?view=runs'],
+    ['agents review', '/app/agents?view=review'],
+    ['agents skills', '/app/agents?view=skills'],
+    ['agents log', '/app/agents?view=log'],
     ['settings', '/app/settings'],
     ['compare', '/app/intel/CVE-2024-27834'],
     ['not found', '/app/does-not-exist'],
@@ -67,6 +71,27 @@ test('every page passes axe WCAG 2.2 AA in light and dark', async ({ page }) => 
     await page.locator('.cw-qitem', { hasText: 'Ran' }).first().click()
     await page.getByRole('table', { name: /sample rows/ }).locator('tbody tr').first().click()
     problems.push(...(await scan(page, `hunt inspector [${theme}]`)))
+    // Command palette and shortcut sheet open.
+    await page.goto('/app')
+    await page.waitForLoadState('networkidle')
+    await page.keyboard.press('ControlOrMeta+k')
+    await page.getByRole('dialog', { name: 'Command palette' }).waitFor()
+    problems.push(...(await scan(page, `command palette [${theme}]`)))
+    await page.keyboard.press('Escape')
+    await page.keyboard.press('Shift+Slash')
+    await page.getByRole('heading', { name: 'Keyboard shortcuts' }).waitFor()
+    problems.push(...(await scan(page, `shortcut sheet [${theme}]`)))
+    await page.keyboard.press('Escape')
+    // Narrow width: reading and approving at 390 px.
+    await page.setViewportSize({ width: 390, height: 844 })
+    for (const [label, path] of [['approval mobile', approvalHref!], ['control panel mobile', '/app'], ['chat thread mobile', chatHref]] as const) {
+      await page.goto(path)
+      await page.waitForLoadState('networkidle')
+      problems.push(...(await scan(page, `${label} [${theme}]`)))
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
+      if (overflow > 1) problems.push(`${label} [${theme}] · horizontal overflow of ${overflow}px at 390 px`)
+    }
+    await page.setViewportSize({ width: 1280, height: 900 })
   }
   expect(problems, problems.join('\n')).toEqual([])
 })

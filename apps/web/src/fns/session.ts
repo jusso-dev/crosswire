@@ -3,12 +3,16 @@ import { getRequestHeaders } from '@tanstack/react-start/server'
 import { getAppSession } from '../server/auth/session'
 import { canApprove } from '../server/response/rbac'
 import { countPending } from '../server/response/proposals'
+import { countRunning } from '../server/agents/runs'
+import { countReviewable } from '../server/agents/memory'
 
 /** Used by route beforeLoad guards. Returns null when signed out (never throws for that). */
 export const fetchSession = createServerFn({ method: 'GET' }).handler(async () => {
   const s = await getAppSession(new Headers(getRequestHeaders() as unknown as HeadersInit))
   if (!s) return null
-  return { user: s.user, org: s.org, canApprove: canApprove(s.org.role), pendingApprovals: await countPending(s.org.id) }
+  // Notes this person could act on: held notes written by someone else (approvers only).
+  const [pendingApprovals, runningRuns, memoryToReview] = await Promise.all([countPending(s.org.id), countRunning(s.org.id), canApprove(s.org.role) ? countReviewable(s.org.id, s.user.id) : Promise.resolve(0)])
+  return { user: s.user, org: s.org, canApprove: canApprove(s.org.role), pendingApprovals, runningRuns, memoryToReview }
 })
 
 export const fetchAuthConfig = createServerFn({ method: 'GET' }).handler(async () => {

@@ -184,3 +184,59 @@ export function TableWrap({ children, label }: { children: ReactNode; label: str
 export function Count({ n }: { n: number }) {
   return <span className="cw-count-pill num">{n}</span>
 }
+
+/**
+ * Empty state: what this is, why it is empty, and the next action. Use instead of a bare "None".
+ */
+export function EmptyState({ title, body, action, compact }: { title: string; body?: ReactNode; action?: ReactNode; compact?: boolean }) {
+  return (
+    <div className="cw-emptystate" data-compact={compact ? '' : undefined}>
+      <p className="cw-emptystate-title">{title}</p>
+      {body && <p className="cw-emptystate-body">{body}</p>}
+      {action && <div className="cw-emptystate-action">{action}</div>}
+    </div>
+  )
+}
+
+/** Placeholder bars shaped like the content that is loading. Hidden from screen readers; the live label says it. */
+export function Skeleton({ lines = 3, label = 'Loading' }: { lines?: number; label?: string }) {
+  return (
+    <div className="cw-skel" role="status" aria-label={label}>
+      {Array.from({ length: lines }, (_, i) => (
+        <span key={i} className="cw-skel-line" aria-hidden="true" data-w={i % 3} />
+      ))}
+    </div>
+  )
+}
+
+/** Route-level loading: a header block, a toolbar strip and table rows, matching the page layout. */
+export function SkeletonPage({ rows = 6, label = 'Loading this page' }: { rows?: number; label?: string }) {
+  return (
+    <div className="cw-skelpage" role="status" aria-label={label}>
+      <span className="cw-skel-line" data-kind="title" aria-hidden="true" />
+      <span className="cw-skel-line" data-w="1" aria-hidden="true" />
+      <span className="cw-skel-block" data-kind="bar" aria-hidden="true" />
+      <div className="cw-skel-table" aria-hidden="true">
+        {Array.from({ length: rows }, (_, i) => (
+          <span key={i} className="cw-skel-row" />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** Small "Saved" / "Copied" acknowledgement that fades after a moment. Announced politely. */
+export function useFlash(ms = 1600) {
+  const [text, setText] = useState<string | null>(null)
+  useEffect(() => {
+    if (!text) return
+    const t = setTimeout(() => setText(null), ms)
+    return () => clearTimeout(t)
+  }, [text, ms])
+  const node = (
+    <span className="cw-flash" role="status" data-on={text ? '' : undefined}>
+      {text ?? ''}
+    </span>
+  )
+  return [node, setText] as const
+}

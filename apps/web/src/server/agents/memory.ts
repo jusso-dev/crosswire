@@ -336,3 +336,47 @@ export async function replaceMemory(orgId: string, userId: string, entryId: stri
   await supersedeMemory(orgId, entryId, replacement.id)
   return replacement
 }
+
+/**
+ * Quarantined notes waiting for a person, across every agent in this organisation, newest first.
+ * Tombstoned and compacted rows are not in the queue.
+ */
+export async function listReviewQueue(orgId: string, limit = 100) {
+  return getDb()
+    .select()
+    .from(agentMemoryEntries)
+    .where(and(eq(agentMemoryEntries.orgId, orgId), eq(agentMemoryEntries.trust, 'quarantine'), isNull(agentMemoryEntries.tombstonedAt), isNull(agentMemoryEntries.compactedAt)))
+    .orderBy(desc(agentMemoryEntries.createdAt))
+    .limit(Math.min(Math.max(limit, 1), 200))
+}
+
+/**
+ * Why this person cannot promote this note, or null when they can. Mirrors promoteMemory's checks
+ * so the screen can say why before anyone clicks. promoteMemory still enforces every rule.
+ */
+export function promoteBlockReason(row: Pick<MemoryRow, 'authorId' | 'body' | 'trust'>, viewer: { userId: string; canApprove: boolean }): string | null {
+  if (row.trust !== 'quarantine') return 'Already reviewed.'
+  if (!viewer.canApprove) return 'Only owners and approvers can promote memory.'
+  if (!row.authorId) return 'This note has no author, so nobody can vouch for it. Replace it with a note you write.'
+  if (row.authorId === viewer.userId) return 'You wrote this note. A different approver must promote it, so two people agree before it reaches the agent.'
+  if (isPersistentInjection(row.body)) return 'This reads like an instruction to the agent, so it cannot be promoted.'
+  return null
+}
+
+/** Held notes this person could promote: quarantined, live, and written by someone else. Not capped. */
+export async function countReviewable(orgId: string, viewerUserId: string) {
+  const [row] = await getDb()
+    .select({ n: sql<number>`count(*)::int` })
+    .from(agentMemoryEntries)
+    .where(
+      and(
+        eq(agentMemoryEntries.orgId, orgId),
+        eq(agentMemoryEntries.trust, 'quarantine'),
+        isNull(agentMemoryEntries.tombstonedAt),
+        isNull(agentMemoryEntries.compactedAt),
+        sql`${agentMemoryEntries.authorId} is not null`,
+        ne(agentMemoryEntries.authorId, viewerUserId),
+      ),
+    )
+  return Number(row?.n ?? 0)
+}

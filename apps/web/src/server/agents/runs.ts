@@ -1,11 +1,12 @@
-import { and, desc, eq, lt, or, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, lt, or, sql } from 'drizzle-orm'
 import { getDb } from '../db/client'
-import { agentRunEvents, agentRunOutputs, agentRuns } from '../db/schema'
+import { agentRunEvents, agentRunOutputs, agentRuns, agentUsage, chatThreads } from '../db/schema'
 import { env } from '../env'
 import { redactValue } from '../lib/redact'
 import { canonicalJson, sha256 } from './canonical'
 import { releaseRunSlot } from './budgets'
 import { SQUAD_SDK_PIN } from './squad-sdk'
+import { asJson } from '../../shared/json'
 
 export type RunStatus = 'running' | 'completed' | 'failed' | 'interrupted'
 
@@ -97,6 +98,124 @@ export async function listRecentRuns(orgId: string, limit = 20) {
     .where(eq(agentRuns.orgId, orgId))
     .orderBy(desc(agentRuns.startedAt))
     .limit(Math.min(Math.max(limit, 1), 50))
+}
+
+export const RUN_STATUSES = ['running', 'completed', 'failed', 'interrupted'] as const
+
+type RunRow = typeof agentRuns.$inferSelect
+
+/** Observed tokens and cost per run. A reservation (observed=false) is only an estimate. */
+async function usageFor(orgId: string, runIds: string[]) {
+  if (runIds.length === 0) return new Map<string, { inputTokens: number | null; outputTokens: number | null; costMicros: number | null; observed: boolean }>()
+  const rows = await getDb()
+    .select({ runId: agentUsage.runId, inputTokens: agentUsage.inputTokens, outputTokens: agentUsage.outputTokens, costMicros: agentUsage.estimatedCostMicros, observed: agentUsage.observed })
+    .from(agentUsage)
+    .where(and(eq(agentUsage.orgId, orgId), inArray(agentUsage.runId, runIds)))
+  const out = new Map<string, { inputTokens: number | null; outputTokens: number | null; costMicros: number | null; observed: boolean }>()
+  for (const row of rows) {
+    if (!row.runId) continue
+    const prev = out.get(row.runId)
+    // An observed row wins over a reservation for the same run.
+    if (prev?.observed && !row.observed) continue
+    out.set(row.runId, { inputTokens: row.inputTokens, outputTokens: row.outputTokens, costMicros: row.costMicros, observed: row.observed })
+  }
+  return out
+}
+
+function summarise(row: RunRow, usage: Awaited<ReturnType<typeof usageFor>>) {
+  const u = usage.get(row.id)
+  return {
+    id: row.id,
+    parentRunId: row.parentRunId,
+    threadId: row.threadId,
+    agentKey: row.agentKey,
+    status: row.status,
+    modelProvider: row.modelProvider,
+    modelName: row.modelName,
+    startedAt: row.startedAt.toISOString(),
+    finishedAt: row.finishedAt?.toISOString() ?? null,
+    durationMs: row.finishedAt ? row.finishedAt.getTime() - row.startedAt.getTime() : null,
+    cancelRequested: Boolean(row.cancelRequestedAt),
+    error: row.error,
+    inputTokens: u?.inputTokens ?? null,
+    outputTokens: u?.outputTokens ?? null,
+    costMicros: u?.costMicros ?? null,
+    usageObserved: u?.observed ?? false,
+  }
+}
+
+export type RunSummary = ReturnType<typeof summarise>
+
+/** Runs for the run view, newest first. Filters are optional. Only this organisation's rows. */
+export async function listRuns(orgId: string, filter: { status?: RunStatus; agentKey?: string; threadId?: string; limit?: number } = {}) {
+  const conds = [eq(agentRuns.orgId, orgId)]
+  if (filter.status) conds.push(eq(agentRuns.status, filter.status))
+  if (filter.agentKey) conds.push(eq(agentRuns.agentKey, filter.agentKey))
+  if (filter.threadId) conds.push(eq(agentRuns.threadId, filter.threadId))
+  const rows = await getDb()
+    .select()
+    .from(agentRuns)
+    .where(and(...conds))
+    .orderBy(desc(agentRuns.startedAt))
+    .limit(Math.min(Math.max(filter.limit ?? 50, 1), 200))
+  const usage = await usageFor(orgId, rows.map((row) => row.id))
+  return rows.map((row) => summarise(row, usage))
+}
+
+export async function countRunning(orgId: string) {
+  const [row] = await getDb()
+    .select({ n: sql<number>`count(*)::int` })
+    .from(agentRuns)
+    .where(and(eq(agentRuns.orgId, orgId), eq(agentRuns.status, 'running')))
+  return Number(row?.n ?? 0)
+}
+
+/**
+ * One run with its ordered events, redacted outputs, parent and children (delegation).
+ * Outputs are the stored redacted bodies. Nothing is re-read from the model. Null outside this org.
+ */
+export async function readRunDetail(orgId: string, runId: string) {
+  const run = await getRun(orgId, runId)
+  if (!run) return null
+  const [events, outputs, children, parent] = await Promise.all([
+    listRunEvents(orgId, runId),
+    listRunOutputs(orgId, runId),
+    getDb().select().from(agentRuns).where(and(eq(agentRuns.orgId, orgId), eq(agentRuns.parentRunId, runId))).orderBy(agentRuns.startedAt),
+    run.parentRunId ? getRun(orgId, run.parentRunId) : Promise.resolve(null),
+  ])
+  const usage = await usageFor(orgId, [run.id, ...children.map((c) => c.id), ...(parent ? [parent.id] : [])])
+  return {
+    run: { ...summarise(run, usage), policySha256: run.policySha256, charterSha256: run.charterSha256, toolsetSha256: run.toolsetSha256, memorySha256: run.memorySha256, sdkVersion: run.sdkVersion },
+    parent: parent ? summarise(parent, usage) : null,
+    children: children.map((c) => summarise(c, usage)),
+    events: events.map((e) => ({ id: e.id, seq: e.seq, kind: e.kind, payload: asJson(e.payload), createdAt: e.createdAt.toISOString() })),
+    outputs: outputs
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+      .map((o) => ({ id: o.id, kind: o.kind, body: o.body, createdAt: o.createdAt.toISOString() })),
+  }
+}
+
+export class RunCancelForbiddenError extends Error {}
+
+/**
+ * Stop a running run. Allowed for the person whose conversation started it, or an owner or approver.
+ * The live process sees cancel_requested_at within a poll and aborts with reason `cancelled`, and the
+ * row ends `interrupted`. Returns the status after the request.
+ */
+export async function cancelRunAs(orgId: string, actor: { userId: string; canApprove: boolean }, runId: string) {
+  const run = await getRun(orgId, runId)
+  if (!run) throw new Error('Run not found.')
+  if (!actor.canApprove) {
+    // Walk up to the root run: a specialist row carries the same thread id as its parent.
+    const threadId = run.threadId
+    const [thread] = threadId
+      ? await getDb().select({ userId: chatThreads.userId }).from(chatThreads).where(and(eq(chatThreads.orgId, orgId), eq(chatThreads.id, threadId))).limit(1)
+      : []
+    if (!thread || thread.userId !== actor.userId) throw new RunCancelForbiddenError('Only the person who started this run, or an owner or approver, can stop it.')
+  }
+  if (run.status !== 'running') return { status: run.status, requested: false }
+  await requestRunCancel(orgId, runId)
+  return { status: 'running' as const, requested: true }
 }
 
 /** Full redacted replay for one run. Null when the run is not in this organisation. */

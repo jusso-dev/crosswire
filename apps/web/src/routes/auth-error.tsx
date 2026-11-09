@@ -24,7 +24,7 @@ function AuthError() {
     return (
       <main className="cw-center">
         <Wordmark />
-        <h1 style={{ marginTop: 'var(--space-xl)' }}>We couldn't sign you in</h1>
+        <h1 className="cw-mt-xl">We couldn't sign you in</h1>
         <p>{message}</p>
         {error && <p className="cw-muted">If you contact your administrator, quote this code: {error.replace(/[^\w-]/g, '').slice(0, 64)}</p>}
         <a href="/sign-in" className="cw-btn">
