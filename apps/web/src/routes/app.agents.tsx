@@ -7,7 +7,7 @@ import { plainMessage } from '../shared/messages'
 import { fmtTime } from '../components/format'
 import { EmptyState, Notice, PageHead, SkeletonPage, TableWrap } from '../components/ui'
 import { EVENT_WORD, RunStatusTag, RunTree, StopRunButton, agentLabel, fmtCost, fmtDuration, fmtTokens, outputLabel } from '../components/runs'
-import { useListKeys } from '../components/keys'
+import { listKeys } from '../components/keys'
 
 /**
  * Agents page. Memory is the default view: one agent, its notes, usage and directives.
@@ -274,7 +274,6 @@ function RunsView({ runs, rateSet, detail }: { runs: RunsData['runs']; rateSet: 
     const t = setInterval(() => void router.invalidate(), 2000)
     return () => clearInterval(t)
   }, [live, router])
-  const list = useListKeys<HTMLTableSectionElement>()
   return (
     <div className="cw-runs" data-open={detail ? '' : undefined}>
       <section aria-labelledby="runs-title" className="cw-runs-list">
@@ -335,7 +334,7 @@ function RunsView({ runs, rateSet, detail }: { runs: RunsData['runs']; rateSet: 
                   </th>
                 </tr>
               </thead>
-              <tbody ref={list.ref} onKeyDown={list.onKeyDown}>
+              <tbody onKeyDown={listKeys}>
                 {runs.map((r) => (
                   <tr key={r.id} aria-selected={sp.run === r.id} data-row>
                     <td>

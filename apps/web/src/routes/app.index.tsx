@@ -146,6 +146,8 @@ function NextSteps({ setup, d }: { setup: Data['setup']; d: Data }) {
   const [hidden, setHidden] = useState(false)
   useEffect(() => {
     try {
+      // Sync from storage after hydration, as ThemeToggle does; the server cannot read it.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setHidden(localStorage.getItem(storeKey) === '1')
     } catch {
       // Storage blocked: show the checklist.

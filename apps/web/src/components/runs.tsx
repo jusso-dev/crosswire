@@ -72,7 +72,7 @@ export function outputLabel(kind: string) {
  * Stop a running run. Asks for confirmation (one click never stops work), then reports the outcome.
  * The server decides who may stop it; a refusal is shown in plain words.
  */
-export function StopRunButton({ runId, onStopped, size = 'sm' }: { runId: string; onStopped?: () => void; size?: 'sm' | 'md' }) {
+export function StopRunButton({ runId, onStopped, size = 'sm', refresh = true }: { runId: string; onStopped?: () => void; size?: 'sm' | 'md'; refresh?: boolean }) {
   const router = useRouter()
   const [stage, setStage] = useState<'idle' | 'confirm' | 'busy'>('idle')
   const [msg, setMsg] = useState<string | null>(null)
@@ -105,7 +105,9 @@ export function StopRunButton({ runId, onStopped, size = 'sm' }: { runId: string
               else setMsg(`Nothing to stop. This run already ${r.status === 'interrupted' ? 'stopped' : r.status}.`)
               setStage('idle')
               onStopped?.()
-              await router.invalidate()
+              // In chat the stream itself ends when the server stops the run. Reloading route data
+              // there would remount the conversation and drop the live connection mid-stream.
+              if (refresh) await router.invalidate()
             }}
           >
             {stage === 'busy' ? 'Stopping…' : 'Yes, stop it'}

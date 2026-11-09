@@ -560,7 +560,14 @@ function RowInspector({
         onRow(null)
         // Return focus to the row the analyst was last on (the one now shown), after the inert
         // background is released and the grid has re-rendered.
-        requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector<HTMLElement>(`tr[data-index="${rowIndex}"]`)?.focus()))
+        // The URL update and inert release can take a few frames, so retry briefly until focus lands.
+        let tries = 0
+        const land = () => {
+          const row = document.querySelector<HTMLElement>(`tr[data-index="${rowIndex}"]`)
+          if (row && !row.closest('[inert]')) row.focus()
+          if (document.activeElement !== row && ++tries < 20) requestAnimationFrame(land)
+        }
+        requestAnimationFrame(land)
       }}
       onPrev={pos > 0 ? () => onRow(visible[pos - 1]!) : undefined}
       onNext={pos >= 0 && pos < visible.length - 1 ? () => onRow(visible[pos + 1]!) : undefined}

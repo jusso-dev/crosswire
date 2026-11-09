@@ -84,6 +84,8 @@ function AppShell() {
   const [remembered, setRemembered] = useState<Record<string, string>>({})
   useEffect(() => {
     try {
+      // Sync from storage after hydration; the server cannot read it.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setRemembered(JSON.parse(sessionStorage.getItem('cw-list-filters') ?? '{}'))
     } catch {
       // Storage blocked: links go to the plain page.
@@ -91,6 +93,8 @@ function AppShell() {
   }, [])
   useEffect(() => {
     if (!REMEMBER.has(pathname)) return
+    // Mirror the current list URL into storage and the nav links.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRemembered((prev) => {
       const next = { ...prev, [pathname]: search }
       try {

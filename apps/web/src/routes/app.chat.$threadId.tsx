@@ -109,6 +109,8 @@ function textOf(m: UIMessage) {
 
 // Drafts typed while a reply streams survive the remount that follows it (keyed per thread).
 const drafts = new Map<string, string>()
+// "You stopped this reply" survives the same remount (keyed per thread, cleared on the next send).
+const stoppedThreads = new Set<string>()
 
 function Thread() {
   const data = Route.useLoaderData()
@@ -155,7 +157,12 @@ function ThreadChat({ data, threadId }: { data: Loaded; threadId: string }) {
   })
   // The live run for this reply, found by thread while it streams, so status and Stop are visible.
   const [liveRun, setLiveRun] = useState<{ id: string; status: string; agentKey: string } | null>(null)
-  const [stopped, setStopped] = useState(false)
+  const [stopped, setStoppedState] = useState(() => stoppedThreads.has(threadId))
+  const setStopped = (v: boolean) => {
+    if (v) stoppedThreads.add(threadId)
+    else stoppedThreads.delete(threadId)
+    setStoppedState(v)
+  }
   useEffect(() => {
     if (!isLoading) return
     let live = true
@@ -259,7 +266,7 @@ function ThreadChat({ data, threadId }: { data: Loaded; threadId: string }) {
               Watch the steps
             </Link>
           )}
-          {liveRun && <StopRunButton runId={liveRun.id} onStopped={() => setStopped(true)} />}
+          {liveRun && <StopRunButton runId={liveRun.id} refresh={false} onStopped={() => setStopped(true)} />}
         </div>
       )}
 

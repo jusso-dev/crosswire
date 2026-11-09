@@ -64,7 +64,8 @@ function ProposalDetail() {
   const blockedSelf = isRequester && !selfApprovalAllowed
   const targetNames = [...(p.targets.devices ?? []), ...(p.targets.users ?? []), ...(p.targets.incidents ?? [])]
   const targetText = targetNames.length <= 3 ? targetNames.join(', ') : `${targetNames.slice(0, 3).join(', ')} and ${targetNames.length - 3} more`
-  const expiresIn = new Date(p.expiresAt).getTime() - Date.now()
+  const [now] = useState(() => Date.now())
+  const expiresIn = new Date(p.expiresAt).getTime() - now
 
   const act = async (label: string, fn: () => Promise<{ ok: boolean; error?: string }>) => {
     setBusy(label)
@@ -238,7 +239,7 @@ function ProposalDetail() {
         </li>
         <li>
           <Section title="6. How to roll back">
-            {p.rollbackNotes ? <pre className="cw-pre-flush">{p.rollbackNotes}</pre> : <p className="cw-muted">Rollback notes appear after a dry run. Crosswire cannot undo an action by itself; a rollback is a new action that also needs approval.</p>}
+            {p.rollbackNotes ? <pre className="cw-pre-flush" tabIndex={0} aria-label="Rollback notes">{p.rollbackNotes}</pre> : <p className="cw-muted">Rollback notes appear after a dry run. Crosswire cannot undo an action by itself; a rollback is a new action that also needs approval.</p>}
           </Section>
         </li>
         <li>

@@ -160,8 +160,6 @@ export function CommandLayer() {
     return [...extra, ...matchItems(all, q)].slice(0, 60)
   }, [data, query])
 
-  useEffect(() => setActive(0), [query])
-
   const go = (item: Item) => {
     palette.current?.close()
     void navigate({ to: item.to, params: item.params, search: item.search } as never)
@@ -190,7 +188,10 @@ export function CommandLayer() {
               aria-label="Search pages, hunts, conversations, approvals and intel"
               placeholder="Jump to a page, hunt, conversation or CVE"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {
+                setQuery(e.target.value)
+                setActive(0)
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) {
                   e.preventDefault()
@@ -316,7 +317,7 @@ export function CommandLayer() {
 export function PaletteButton() {
   return (
     <button type="button" className="cw-kbdhint" onClick={() => window.dispatchEvent(new CustomEvent('cw:command', { detail: 'palette' }))} aria-keyshortcuts="Meta+K Control+K">
-      <span>Search or jump</span> <kbd>⌘K</kbd>
+      <span>Search or jump</span> <kbd aria-hidden="true">⌘K</kbd>
     </button>
   )
 }

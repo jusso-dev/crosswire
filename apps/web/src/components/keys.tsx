@@ -1,4 +1,4 @@
-import { useCallback, useRef, type KeyboardEvent } from 'react'
+import type { KeyboardEvent } from 'react'
 
 /** True while the person is typing, so single-key shortcuts must not fire. */
 export function isTyping(target: EventTarget | null) {
@@ -13,25 +13,26 @@ export function isTyping(target: EventTarget | null) {
  * Rows are elements marked data-row. Nothing here approves, rejects or runs anything.
  */
 export function useListKeys<T extends HTMLElement>() {
-  const ref = useRef<T>(null)
-  const onKeyDown = useCallback((e: KeyboardEvent<T>) => {
-    if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
-    const rows = Array.from(ref.current?.querySelectorAll<HTMLElement>('[data-row]') ?? [])
-    if (!rows.length) return
-    const current = (e.target as HTMLElement).closest<HTMLElement>('[data-row]')
-    const i = current ? rows.indexOf(current) : -1
-    const focusRow = (n: number) => {
-      const row = rows[Math.max(0, Math.min(rows.length - 1, n))]!
-      const link = row.querySelector<HTMLElement>('a, button')
-      ;(link ?? row).focus()
-    }
-    if (e.key === 'j' || e.key === 'ArrowDown') {
-      e.preventDefault()
-      focusRow(i + 1)
-    } else if (e.key === 'k' || e.key === 'ArrowUp') {
-      e.preventDefault()
-      focusRow(i - 1)
-    }
-  }, [])
-  return { ref, onKeyDown }
+  return listKeys<T>
+}
+
+/** Keydown handler for a container whose rows are marked data-row. Works from any element inside it. */
+export function listKeys<T extends HTMLElement>(e: KeyboardEvent<T>) {
+  if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
+  const rows = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[data-row]'))
+  if (!rows.length) return
+  const current = (e.target as HTMLElement).closest<HTMLElement>('[data-row]')
+  const i = current ? rows.indexOf(current) : -1
+  const focusRow = (n: number) => {
+    const row = rows[Math.max(0, Math.min(rows.length - 1, n))]!
+    const link = row.querySelector<HTMLElement>('a, button')
+    ;(link ?? row).focus()
+  }
+  if (e.key === 'j' || e.key === 'ArrowDown') {
+    e.preventDefault()
+    focusRow(i + 1)
+  } else if (e.key === 'k' || e.key === 'ArrowUp') {
+    e.preventDefault()
+    focusRow(i - 1)
+  }
 }

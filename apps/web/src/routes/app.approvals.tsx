@@ -1,9 +1,10 @@
 import { Link, Outlet, createFileRoute, useMatchRoute, useNavigate } from '@tanstack/react-router'
+import { useState } from 'react'
 import { z } from 'zod'
 import { fetchProposals } from '../fns/approvals'
 import { fmtTime } from '../components/format'
 import { EmptyState, Notice, Term, SkeletonPage } from '../components/ui'
-import { useListKeys } from '../components/keys'
+import { listKeys } from '../components/keys'
 import { plainMessage } from '../shared/messages'
 import { Freshness, StatusTag } from '../components/signals'
 
@@ -28,12 +29,12 @@ function Approvals() {
   const { view = 'waiting' } = Route.useSearch()
   const navigate = useNavigate({ from: '/app/approvals' })
   const matchRoute = useMatchRoute()
-  const list = useListKeys<HTMLTableSectionElement>()
+  const [now] = useState(() => Date.now())
   if (matchRoute({ to: '/app/approvals/$id', fuzzy: true })) return <Outlet />
   const waiting = proposals.filter((p) => WAITING.includes(p.status))
   // Waiting items lead with the one that expires first, so the most urgent decision is on top.
   const shown = view === 'all' ? proposals : view === 'waiting' ? [...waiting].sort((a, b) => a.expiresAt.localeCompare(b.expiresAt)) : proposals.filter((p) => !WAITING.includes(p.status))
-  const soon = waiting.filter((p) => p.status === 'pending' && new Date(p.expiresAt).getTime() - Date.now() < 3 * 3_600_000).length
+  const soon = waiting.filter((p) => p.status === 'pending' && new Date(p.expiresAt).getTime() - now < 3 * 3_600_000).length
   return (
     <>
       <header className="cw-pagehead">
@@ -82,7 +83,7 @@ function Approvals() {
                   <th scope="col">Expires</th>
                 </tr>
               </thead>
-              <tbody ref={list.ref} onKeyDown={list.onKeyDown}>
+              <tbody onKeyDown={listKeys}>
                 {shown.map((p) => (
                   <tr key={p.id} data-row>
                     <td className="cw-cell-wide">
