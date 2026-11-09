@@ -1,12 +1,13 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { authed } from './middleware'
-import { auditBundle, createProposal, decideProposal, dryRunProposal, executeProposal, findRollback, getProposal, listEvents, listProposals, proposeRollback, toView } from '../server/response/proposals'
+import { approvalContentHash, auditBundle, createProposal, decideProposal, dryRunProposal, executeProposal, findRollback, getProposal, listEvents, listProposals, proposeRollback, toView } from '../server/response/proposals'
 import { executorMode } from '../server/response/executors'
 import { canApprove } from '../server/response/rbac'
 import { RESPONSE_ACTION_TYPES } from '../shared/response'
 import { asJson } from '../shared/json'
 import { listOrgMembers } from '../server/orgs'
+import { env } from '../server/env'
 
 const run = async <T>(fn: () => Promise<T>) => {
   try {
@@ -37,6 +38,16 @@ export const fetchProposal = createServerFn({ method: 'GET' })
       executorMode: executorMode(p.actionType),
       canApprove: canApprove(context.session.org.role),
       isRequester: p.requestedByUserId === context.session.user.id,
+      // Self-approval stays a server rule. This only lets the screen say so before anyone clicks.
+      selfApprovalAllowed: env().RESPONSE_ALLOW_SELF_APPROVAL,
+      onBehalfOf: p.requestedByUserId ? (people[p.requestedByUserId] ?? 'a former member') : null,
+      // What the decision is bound to. Read-only; execution re-checks the hash before its atomic claim.
+      binding: {
+        sha256: p.payloadSha256,
+        schemaVersion: p.payloadSchemaVersion,
+        matches: p.payloadSha256 ? approvalContentHash(p) === p.payloadSha256 : false,
+        enforced: env().APPROVAL_BINDING !== 'legacy',
+      },
       rollback: await findRollback(context.session.org.id, data.id),
     }
   })
