@@ -70,11 +70,16 @@ function ProposalDetail() {
   const act = async (label: string, fn: () => Promise<{ ok: boolean; error?: string }>) => {
     setBusy(label)
     setError(null)
-    const r = await fn()
-    setBusy(null)
-    setConfirming(null)
-    if (!r.ok) setError(r.error ?? 'The server refused this step.')
-    await router.invalidate()
+    try {
+      const r = await fn()
+      if (!r.ok) setError(r.error ?? 'The server refused this step.')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(null)
+      setConfirming(null)
+    }
+    await router.invalidate().catch(() => {})
   }
 
   const targets: Array<[string, string[] | undefined]> = [
@@ -385,10 +390,15 @@ function ProposalDetail() {
             disabled={busy !== null}
             onClick={async () => {
               setBusy('rollback')
-              const r = await proposeRollbackFn({ data: { id: p.id } })
-              setBusy(null)
-              if (!r.ok) return setError(r.error)
-              await navigate({ to: '/app/approvals/$id', params: { id: r.result.id } })
+              try {
+                const r = await proposeRollbackFn({ data: { id: p.id } })
+                if (!r.ok) return setError(r.error)
+                await navigate({ to: '/app/approvals/$id', params: { id: r.result.id } })
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err))
+              } finally {
+                setBusy(null)
+              }
             }}
           >
             Propose rollback (needs approval)

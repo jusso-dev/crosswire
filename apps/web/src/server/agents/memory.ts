@@ -362,3 +362,21 @@ export function promoteBlockReason(row: Pick<MemoryRow, 'authorId' | 'body' | 't
   if (isPersistentInjection(row.body)) return 'This reads like an instruction to the agent, so it cannot be promoted.'
   return null
 }
+
+/** Held notes this person could promote: quarantined, live, and written by someone else. Not capped. */
+export async function countReviewable(orgId: string, viewerUserId: string) {
+  const [row] = await getDb()
+    .select({ n: sql<number>`count(*)::int` })
+    .from(agentMemoryEntries)
+    .where(
+      and(
+        eq(agentMemoryEntries.orgId, orgId),
+        eq(agentMemoryEntries.trust, 'quarantine'),
+        isNull(agentMemoryEntries.tombstonedAt),
+        isNull(agentMemoryEntries.compactedAt),
+        sql`${agentMemoryEntries.authorId} is not null`,
+        ne(agentMemoryEntries.authorId, viewerUserId),
+      ),
+    )
+  return Number(row?.n ?? 0)
+}

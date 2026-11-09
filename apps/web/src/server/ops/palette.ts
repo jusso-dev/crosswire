@@ -1,4 +1,4 @@
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, gt } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { chatThreads, cveRecords, huntCases, responseProposals } from '../db/schema'
 
@@ -19,7 +19,7 @@ export async function paletteIndex(orgId: string, userId: string) {
     db
       .select({ id: responseProposals.id, title: responseProposals.title })
       .from(responseProposals)
-      .where(and(eq(responseProposals.orgId, orgId), eq(responseProposals.status, 'pending')))
+      .where(and(eq(responseProposals.orgId, orgId), eq(responseProposals.status, 'pending'), gt(responseProposals.expiresAt, new Date())))
       .orderBy(desc(responseProposals.createdAt))
       .limit(15),
     db.selectDistinct({ cveId: cveRecords.cveId, publishedAt: cveRecords.publishedAt }).from(cveRecords).where(eq(cveRecords.source, 'cisa-kev')).orderBy(desc(cveRecords.publishedAt)).limit(15),

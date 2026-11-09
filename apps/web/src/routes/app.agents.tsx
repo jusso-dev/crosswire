@@ -380,7 +380,7 @@ function RunPanel({ detail, rateSet, onClose }: { detail: RunDetail; rateSet: bo
         </h2>
         <RunStatusTag status={run.status} />
         <span className="cw-spacer" />
-        {run.status === 'running' && <StopRunButton runId={run.id} />}
+        {run.status === 'running' && <StopRunButton key={run.id} runId={run.id} />}
         <button type="button" className="cw-btn" data-variant="quiet" data-size="sm" onClick={onClose}>
           Close
         </button>

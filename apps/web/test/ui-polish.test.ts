@@ -5,10 +5,10 @@ import { eq } from 'drizzle-orm'
 import { resetEnvForTests } from '../src/server/env'
 import { appendRunEvent, cancelRunAs, countRunning, finishRun, listRuns, readRunDetail, recordRunOutput, RunCancelForbiddenError, startRun } from '../src/server/agents/runs'
 import { recordObservedUsage } from '../src/server/agents/budgets'
-import { appendMemory, listReviewQueue, promoteBlockReason, promoteMemory, rememberOperator } from '../src/server/agents/memory'
+import { appendMemory, countReviewable, listReviewQueue, promoteBlockReason, promoteMemory, rememberOperator } from '../src/server/agents/memory'
 import { onboardingSteps } from '../src/server/ops/onboarding'
 import { paletteIndex } from '../src/server/ops/palette'
-import { approvalContentHash, createProposal, decideProposal, executeProposal, toView } from '../src/server/response/proposals'
+import { approvalContentHash, createProposal, decideProposal, executeProposal, expireProposals, toView } from '../src/server/response/proposals'
 import { ForbiddenError } from '../src/server/response/rbac'
 import { plainMessage, isBudgetRefusal } from '../src/shared/messages'
 import { matchItems } from '../src/components/CommandPalette'
@@ -210,5 +210,30 @@ describe('plain-English refusals (Part 1.4, Part 2.7)', () => {
     expect(isBudgetRefusal('Daily spend budget is exhausted.')).toBe(true)
     expect(isBudgetRefusal('Model timed out')).toBe(false)
     for (const m of ['Daily input token budget is exhausted.', 'Daily usage includes unpriced calls.']) expect(plainMessage(m)).not.toMatch(/—/)
+  })
+})
+
+describe('review fixes (#119)', () => {
+  it('counts every reviewable note for the nav badge, past the list cap, excluding the viewer own notes', async () => {
+    const t = await team()
+    for (let i = 0; i < 105; i++) await appendMemory({ orgId: t.orgId, agentKey: 'scribe', body: `cap held note ${i}`, sourceType: 'remember', authorId: t.analyst })
+    await appendMemory({ orgId: t.orgId, agentKey: 'scribe', body: 'approver own held note', sourceType: 'remember', authorId: t.approver })
+    expect(await countReviewable(t.orgId, t.approver)).toBe(105)
+    expect(await countReviewable(t.orgId, t.analyst)).toBe(1)
+  })
+
+  it('keeps expired proposals out of the palette and does not count an expiry as a review', async () => {
+    const t = await team()
+    const p = await createProposal(t.orgId, { type: 'user', userId: t.analyst }, {
+      title: 'Expiring action',
+      actionType: 'logic_app',
+      targets: { devices: ['exp-1'] },
+      blastRadius: { summary: 'One device for the expiry test.' },
+    })
+    const { responseProposals } = await import('../src/server/db/schema')
+    await getDb().update(responseProposals).set({ expiresAt: new Date(Date.now() - 60_000) }).where(eq(responseProposals.id, p.id))
+    expect((await paletteIndex(t.orgId, t.analyst)).approvals).toEqual([])
+    await expireProposals()
+    expect((await onboardingSteps(t.orgId)).approval).toBe(false)
   })
 })

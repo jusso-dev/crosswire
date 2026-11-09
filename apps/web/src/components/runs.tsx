@@ -99,15 +99,24 @@ export function StopRunButton({ runId, onStopped, size = 'sm', refresh = true }:
             disabled={stage === 'busy'}
             onClick={async () => {
               setStage('busy')
-              const r = await cancelRunFn({ data: { runId } })
-              if (!r.ok) setMsg(plainMessage(r.error))
-              else if (r.requested) setMsg('Stop requested. The run ends as Stopped within a second.')
-              else setMsg(`Nothing to stop. This run already ${r.status === 'interrupted' ? 'stopped' : r.status}.`)
-              setStage('idle')
-              onStopped?.()
+              let requested = false
+              try {
+                const r = await cancelRunFn({ data: { runId } })
+                if (!r.ok) setMsg(plainMessage(r.error))
+                else if (r.requested) {
+                  requested = true
+                  setMsg('Stop requested. The run ends as Stopped within a second.')
+                } else setMsg(`Nothing to stop. This run already ${r.status === 'interrupted' ? 'stopped' : r.status}.`)
+              } catch (err) {
+                setMsg(plainMessage(err))
+              } finally {
+                setStage('idle')
+              }
+              // Only a real stop marks the reply as stopped; a finished or refused run does not.
+              if (requested) onStopped?.()
               // In chat the stream itself ends when the server stops the run. Reloading route data
               // there would remount the conversation and drop the live connection mid-stream.
-              if (refresh) await router.invalidate()
+              if (refresh) await router.invalidate().catch(() => {})
             }}
           >
             {stage === 'busy' ? 'Stopping…' : 'Yes, stop it'}
