@@ -1,9 +1,10 @@
 import { Link, createFileRoute, useRouter } from '@tanstack/react-router'
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { fetchDashboard } from '../fns/dashboard'
 import { fmtAgo, fmtTime, getDisplayTimeZone } from '../components/format'
 import { dismissSetupFn, fetchSetup, loadDemoFn } from '../fns/setup'
-import { Notice, PageHead, Term } from '../components/ui'
+import { Notice, PageHead, SkeletonPage, Term } from '../components/ui'
+import { plainMessage } from '../shared/messages'
 import { Freshness, SeverityTag } from '../components/signals'
 
 export const Route = createFileRoute('/app/')({
@@ -11,10 +12,10 @@ export const Route = createFileRoute('/app/')({
     const [d, setup] = await Promise.all([fetchDashboard(), fetchSetup()])
     return { ...d, setup }
   },
-  pendingComponent: () => <p className="cw-muted">Loading the control panel…</p>,
+  pendingComponent: () => <SkeletonPage rows={6} label="Loading the control panel" />,
   errorComponent: ({ error }) => (
-    <Notice tone="error" title="Could not load the control panel">
-      {error instanceof Error ? error.message : String(error)}
+    <Notice tone="error" title="The control panel did not load">
+      {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
   component: ControlPanel,
@@ -138,82 +139,113 @@ function Stat({ value, label }: { value: number; label: string }) {
 /** Plain-language "do this next" strip. Steps tick themselves off from real signals. */
 function NextSteps({ setup, d }: { setup: Data['setup']; d: Data }) {
   const router = useRouter()
+  const { session } = Route.useRouteContext()
   const [msg, setMsg] = useState<string | null>(null)
-  if (setup.dismissed) return null
+  // Each person can hide the checklist for themselves; the browser remembers it.
+  const storeKey = `cw-onboarding-hidden:${session.user.id}`
+  const [hidden, setHidden] = useState(false)
+  useEffect(() => {
+    try {
+      setHidden(localStorage.getItem(storeKey) === '1')
+    } catch {
+      // Storage blocked: show the checklist.
+    }
+  }, [storeKey])
+  if (setup.dismissed || hidden) return null
+  const o = d.onboarding
   const steps = [
-    { done: d.totals.watches > 0, title: 'Tell Crosswire what you use', body: <>Add a vendor or product as a <Term k="watch">watch</Term>.</>, to: '/app/watches', cta: 'Add a watch' },
-    { done: d.recentHits.length > 0, title: 'Check what matched', body: <>Each <Term k="hit">hit</Term> links to the source story.</>, to: '/app/watches', cta: 'See hits' },
-    { done: d.openHunts.length + d.closedHunts.length > 0, title: 'Investigate a hunch', body: <>Open a <Term k="hunt">hunt</Term> from any hit.</>, to: '/app/hunts', cta: 'Start a hunt' },
-    { done: d.agentActivity.length > 0, title: 'Ask an agent for help', body: 'Hunter writes the query, you approve it.', to: '/app/chat', cta: 'Open chat' },
+    { done: o.tenant, title: 'Connect your tenant', body: <>Save the <Term k="defender">Defender</Term> or <Term k="sentinel">Sentinel</Term> hunting connector. Until then, searches use demo data.</>, to: '/app/settings', cta: 'Open settings' },
+    { done: o.watch, title: 'Add a watch', body: <>Name a vendor or product you use. Crosswire checks feeds for it every hour (<Term k="watch">what is a watch?</Term>).</>, to: '/app/watches', cta: 'Add a watch' },
+    { done: o.hunt, title: 'Run a hunt', body: <>Open a <Term k="hunt">hunt</Term>, approve a search, and read the sample rows.</>, to: '/app/hunts', cta: 'Start a hunt' },
+    { done: o.agent, title: 'Ask an agent', body: 'Ask Hunter or Intel a question. You approve anything it proposes.', to: '/app/chat', cta: 'Open chat' },
+    { done: o.approval, title: 'Review an approval', body: <>Open an action, run a <Term k="dryRun">dry run</Term>, and decide. A second person always decides.</>, to: '/app/approvals', cta: 'Open approvals' },
   ]
-  const allDone = steps.every((s) => s.done)
-  if (allDone && setup.complete) return null
+  const doneCount = steps.filter((s) => s.done).length
+  if (doneCount === steps.length && setup.complete) return null
   return (
-    <section className="cw-card" aria-labelledby="next-title">
-      <div className="cw-row" data-center style={{ justifyContent: 'space-between', marginBottom: 'var(--space-sm)' }}>
-        <div>
-          <h3 id="next-title">
-            Getting started ({steps.filter((s) => s.done).length}/{steps.length})
-          </h3>
-          <p className="cw-muted" style={{ margin: 0 }}>
-            Four steps to your first investigation. They tick off as you go. Admins: see the setup checklist below.
-          </p>
-        </div>
-        <div className="cw-row" data-center>
-          {setup.canLoadDemo && (
-            <button
-              className="cw-btn"
-              data-variant="ghost"
-              onClick={async () => {
-                try {
-                  const r = await loadDemoFn()
-                  setMsg(r.loaded ? 'Demo data loaded. Look for [DEMO] items in Watches, Hunts and Approvals.' : 'Demo data is already loaded.')
-                  await router.invalidate()
-                } catch (err) {
-                  setMsg(err instanceof Error ? err.message : String(err))
-                }
-              }}
-            >
-              Load demo data
-            </button>
-          )}
-          {setup.isOwner && (
-            <button
-              className="cw-btn"
-              data-variant="ghost"
-              onClick={async () => {
-                try {
-                  await dismissSetupFn()
-                  await router.invalidate()
-                } catch (err) {
-                  setMsg(err instanceof Error ? err.message : String(err))
-                }
-              }}
-            >
-              Dismiss
-            </button>
-          )}
-        </div>
+    <section className="cw-onboard" aria-labelledby="next-title">
+      <div className="cw-onboard-head">
+        <h2 id="next-title">Get started</h2>
+        <span className="cw-muted num">
+          {doneCount} of {steps.length} done
+        </span>
+        <span className="cw-progress" aria-hidden="true">
+          <span style={{ width: `${(doneCount / steps.length) * 100}%` }} />
+        </span>
+        <span className="cw-spacer" />
+        {setup.canLoadDemo && (
+          <button
+            type="button"
+            className="cw-btn"
+            data-variant="ghost"
+            data-size="sm"
+            onClick={async () => {
+              try {
+                const r = await loadDemoFn()
+                setMsg(r.loaded ? 'Demo data loaded. Look for [DEMO] items in Watches, Hunts and Approvals.' : 'Demo data is already loaded.')
+                await router.invalidate()
+              } catch (err) {
+                setMsg(plainMessage(err))
+              }
+            }}
+          >
+            Load demo data
+          </button>
+        )}
+        <button
+          type="button"
+          className="cw-btn"
+          data-variant="quiet"
+          data-size="sm"
+          onClick={() => {
+            try {
+              localStorage.setItem(storeKey, '1')
+            } catch {
+              // Storage blocked: hide for this visit only.
+            }
+            setHidden(true)
+          }}
+        >
+          Hide checklist
+        </button>
+        {setup.isOwner && (
+          <button
+            type="button"
+            className="cw-btn"
+            data-variant="quiet"
+            data-size="sm"
+            onClick={async () => {
+              try {
+                await dismissSetupFn()
+                await router.invalidate()
+              } catch (err) {
+                setMsg(plainMessage(err))
+              }
+            }}
+          >
+            Hide for everyone
+          </button>
+        )}
       </div>
-      <ol className="cw-steps">
+      <ol>
         {steps.map((s) => (
-          <li key={s.title} className="cw-step" data-done={s.done}>
+          <li key={s.title} data-done={s.done}>
             <strong>{s.title}</strong>
             <span>{s.body}</span>
-            {!s.done && <Link to={s.to}>{s.cta} →</Link>}
+            {s.done ? <span className="cw-sr-only">Done.</span> : <Link to={s.to}>{s.cta} →</Link>}
           </li>
         ))}
       </ol>
       {msg && (
-        <p className="cw-muted" role="status" style={{ marginTop: 'var(--space-sm)' }}>
+        <p className="cw-muted cw-mt-sm" role="status">
           {msg}
         </p>
       )}
-      <details style={{ marginTop: 'var(--space-sm)' }}>
+      <details className="cw-mt-sm">
         <summary>
           Admin setup checklist ({setup.items.filter((i) => i.done).length}/{setup.items.length})
         </summary>
-        <ul className="cw-list" style={{ marginTop: 'var(--space-xs)' }}>
+        <ul className="cw-list cw-mt-xs">
           {setup.items.map((i) => (
             <li key={i.key} data-plain>
               <span className="cw-list-title">
@@ -299,6 +331,12 @@ function Emerging({ d }: { d: Data }) {
                   </Link>
                 ))}
                 <Freshness at={i.updatedAt} label="feed updated" />
+                <Link to="/app/hunts" search={{ title: `Hunt: ${i.title.slice(0, 150)}` }}>
+                  Start hunt<span className="cw-sr-only"> for {i.title.slice(0, 80)}</span>
+                </Link>
+                <Link to="/app/chat" search={{ agent: 'intel', q: `Does "${i.title.slice(0, 300)}"${i.cveIds.length ? ` (${i.cveIds.slice(0, 3).join(', ')})` : ''} affect us? Check our watch list and say what to look for.` }}>
+                  Ask Intel<span className="cw-sr-only"> about {i.title.slice(0, 80)}</span>
+                </Link>
               </span>
             </li>
           ))}
@@ -307,7 +345,7 @@ function Emerging({ d }: { d: Data }) {
       {d.changes.length > 0 && (
         <details className="cw-panel-body">
           <summary>Latest updates to these incidents ({d.changes.length})</summary>
-          <ul className="cw-list" style={{ marginTop: 'var(--space-xs)' }}>
+          <ul className="cw-list cw-mt-xs">
             {d.changes.map((c) => (
               <li key={c.id} data-plain>
                 <span className="cw-list-title">{c.url ? <a href={c.url} target="_blank" rel="noreferrer noopener">{c.title}</a> : c.title}</span>
@@ -334,7 +372,7 @@ function WatchHits({ d }: { d: Data }) {
       sub={<>Feed items that mention something on your <Link to="/app/watches">watch list</Link> ({d.totals.watches} watches).</>}
       link={{ to: '/app/watches', label: 'All hits' }}
     >
-      <p className="cw-panel-sub" style={{ margin: 0 }}>
+      <p className="cw-panel-sub cw-m0">
         Watch hits per day (count), last 14 days, by {d.timeZone.replace('_', ' ')} calendar day. A grey bar means zero hits that day.
       </p>
       <div className="cw-spark" role="img" aria-label={`Watch hits per day for the last 14 days, oldest first: ${days.map((day) => byDay.get(day) ?? 0).join(', ')}`}>
@@ -369,7 +407,10 @@ function WatchHits({ d }: { d: Data }) {
                   matched {h.entryType} “{h.entryValue}”
                 </span>
                 <Link to="/app/hunts" search={{ fromHit: h.id, title: `Hunt: ${h.title.slice(0, 150)}` }}>
-                  Start hunt
+                  Start hunt<span className="cw-sr-only"> for {h.title.slice(0, 80)}</span>
+                </Link>
+                <Link to="/app/chat" search={{ agent: 'intel', q: `Is this relevant to us, and what should we check? "${h.title.slice(0, 300)}". It matched our watch on ${h.entryValue}.` }}>
+                  Ask Intel<span className="cw-sr-only"> about {h.title.slice(0, 80)}</span>
                 </Link>
               </span>
             </li>

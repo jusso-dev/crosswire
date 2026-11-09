@@ -3,7 +3,8 @@ import { useId, useState } from 'react'
 import { z } from 'zod'
 import { createWatch, fetchWatches, removeWatch } from '../fns/watches'
 import { fmtTime } from '../components/format'
-import { Notice, PageHead, TableWrap, Term } from '../components/ui'
+import { Notice, PageHead, TableWrap, Term, SkeletonPage } from '../components/ui'
+import { plainMessage } from '../shared/messages'
 import { Freshness } from '../components/signals'
 
 /**
@@ -14,10 +15,10 @@ export const Route = createFileRoute('/app/watches')({
   validateSearch: z.object({ q: z.string().optional(), entry: z.string().optional(), day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), source: z.enum(['pwn.watch', 'cisa-kev']).optional() }),
   loaderDeps: ({ search }) => ({ entry: search.entry, day: search.day }),
   loader: ({ deps }) => fetchWatches({ data: { entryId: deps.entry, day: deps.day } }),
-  pendingComponent: () => <p className="cw-muted">Loading watches…</p>,
+  pendingComponent: () => <SkeletonPage label="Loading watches" />,
   errorComponent: ({ error }) => (
-    <Notice tone="error" title="Could not load watches">
-      {error instanceof Error ? error.message : String(error)}
+    <Notice tone="error" title="Watches did not load">
+      {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
   component: Watches,
@@ -115,8 +116,8 @@ function Watches() {
           <h2 id="hits-title" className="cw-h2-compact">
             {sp.day ? `Hits on ${sp.day}` : sp.entry ? 'Hits for this watch' : 'Recent hits'} <span className="cw-muted num">({sp.entry || sp.day ? hits.length : totalHits})</span>
           </h2>
-          <div className="cw-tablewrap" style={{ overflow: 'visible' }}>
-            <div className="cw-toolbar" style={{ borderRadius: 'var(--radius-lg) var(--radius-lg) 0 0' }}>
+          <div className="cw-tablewrap cw-overflow-visible">
+            <div className="cw-toolbar cw-attached">
               <label className="cw-search">
                 <span className="cw-sr-only">Filter hits by title, summary or CVE</span>
                 <input type="search" placeholder="Filter by title, summary or CVE" value={sp.q ?? ''} onChange={(e) => set({ q: e.target.value || undefined })} />
@@ -139,17 +140,17 @@ function Watches() {
               </span>
             </div>
             {sp.entry && (
-              <p className="cw-muted" style={{ padding: 'var(--space-xs) var(--space-sm) 0', margin: 0 }}>
+              <p className="cw-muted cw-m0 cw-pad-xs-top">
                 Showing hits for <span className="mono">{entries.find((e) => e.id === sp.entry)?.value ?? 'a removed watch'}</span>.
               </p>
             )}
-            <div style={{ overflowX: 'auto' }} role="region" aria-label="Recent hits table" tabIndex={0}>
+            <div className="cw-scroll-x" role="region" aria-label="Recent hits table" tabIndex={0}>
               {hits.length === 0 ? (
-                <p className="cw-empty" style={{ padding: 'var(--space-md)' }}>
+                <p className="cw-empty cw-pad">
                   No hits yet. Crosswire checks the feeds every hour, so a new watch can take up to an hour to match.
                 </p>
               ) : shown.length === 0 ? (
-                <p className="cw-empty" style={{ padding: 'var(--space-md)' }}>
+                <p className="cw-empty cw-pad">
                   No hits match these filters.
                 </p>
               ) : (
@@ -168,7 +169,7 @@ function Watches() {
                   <tbody>
                     {shown.map((h) => (
                       <tr key={h.id}>
-                        <td style={{ minWidth: '28ch', maxWidth: '60ch' }}>
+                        <td className="cw-cell-wide">
                           {h.url ? (
                             <a href={h.url} target="_blank" rel="noreferrer noopener">
                               {h.title}
@@ -179,7 +180,7 @@ function Watches() {
                           )}
                           {h.snippet && <div className="cw-muted cw-clamp">{h.snippet}</div>}
                           {h.cveIds.length > 0 && (
-                            <div className="cw-chips" style={{ marginTop: 4 }}>
+                            <div className="cw-chips cw-mt-2xs">
                               {h.cveIds.slice(0, 3).map((c) => (
                                 <Link key={c} className="cw-chip" to="/app/intel/$key" params={{ key: c }}>
                                   {c}
@@ -209,6 +210,9 @@ function Watches() {
                         <td>
                           <Link className="cw-btn" data-variant="ghost" data-size="sm" to="/app/hunts" search={{ fromHit: h.id, title: `Hunt: ${h.title.slice(0, 150)}` }}>
                             Start hunt<span className="cw-sr-only"> for {h.title.slice(0, 80)}</span>
+                          </Link>
+                          <Link className="cw-btn" data-variant="quiet" data-size="sm" to="/app/chat" search={{ agent: 'intel', q: `Is this relevant to us, and what should we check? "${h.title.slice(0, 300)}"${h.cveIds.length ? ` (${h.cveIds.slice(0, 3).join(', ')})` : ''}. It matched our watch on ${h.entryValue}.` }}>
+                            Ask Intel<span className="cw-sr-only"> about {h.title.slice(0, 80)}</span>
                           </Link>
                         </td>
                       </tr>
@@ -253,7 +257,7 @@ function AddWatch() {
         await router.invalidate()
       }}
     >
-      <h2 id="add-title" className="cw-h2-compact" style={{ margin: 0 }}>
+      <h2 id="add-title" className="cw-h2-compact cw-m0">
         Add a watch
       </h2>
       <div className="cw-row">
@@ -282,7 +286,7 @@ function AddWatch() {
           Add watch
         </button>
       </div>
-      <p id={hintId} className="cw-help" style={{ margin: 0 }}>
+      <p id={hintId} className="cw-help cw-m0">
         {TYPES.find((t) => t.value === type)?.hint}
       </p>
       {error && (
@@ -290,7 +294,7 @@ function AddWatch() {
           {error}
         </p>
       )}
-      <p className="cw-help" role="status" style={{ margin: 0 }}>
+      <p className="cw-help cw-m0" role="status">
         {saved ?? ''}
       </p>
     </form>
@@ -307,7 +311,7 @@ function RemoveWatch({ id, value }: { id: string; value: string }) {
       </button>
     )
   return (
-    <span className="cw-row" data-center style={{ flexWrap: 'nowrap' }}>
+    <span className="cw-row cw-nowrap-flex" data-center>
       <button
         type="button"
         className="cw-btn"
