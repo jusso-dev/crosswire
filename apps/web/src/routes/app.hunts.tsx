@@ -34,15 +34,11 @@ function Hunts() {
   const search = Route.useSearch()
   const navigate = useNavigate({ from: '/app/hunts' })
   const matchRoute = useMatchRoute()
+  const [moreOpen, setMoreOpen] = useState(Boolean(search.fromHit || search.title))
   if (matchRoute({ to: '/app/hunts/$huntId', fuzzy: true })) return <Outlet />
 
   const status = search.status ?? 'open'
   const q = (search.q ?? '').toLowerCase()
-  const startMore = Boolean(search.fromHit || search.title)
-  const [moreOpen, setMoreOpen] = useState(startMore)
-  useEffect(() => {
-    if (startMore) setMoreOpen(true)
-  }, [startMore])
   const shown = hunts.filter((h) => (status === 'all' || h.status === status) && (!q || h.title.toLowerCase().includes(q) || h.hypothesis.toLowerCase().includes(q)))
   const counts = { open: hunts.filter((h) => h.status === 'open').length, closed: hunts.filter((h) => h.status === 'closed').length, all: hunts.length }
   const set = (patch: { q?: string; status?: 'open' | 'closed' | 'all' }) => navigate({ search: (prev) => ({ ...prev, ...patch }), replace: true })
@@ -143,9 +139,6 @@ function NewHunt({ open, initialTitle, fromHit }: { open: boolean; initialTitle:
   const [hypothesis, setHypothesis] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(open)
-  useEffect(() => {
-    if (open) setExpanded(true)
-  }, [open])
   return (
     <details className="cw-panel2" open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary className="cw-panel2-head" style={{ cursor: 'pointer' }}>
