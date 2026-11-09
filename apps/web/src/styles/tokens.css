@@ -936,3 +936,8 @@ kbd { font: 500 var(--text-micro) var(--font-mono); padding: 1px 5px; border: 1p
   .cw-dialog { margin-top: 6vh; }
 }
 .cw-answers .cw-pre-flush { max-height: 9.5em; overflow: auto; white-space: pre-wrap; }
+.cw-usage .cw-notice { margin-bottom: var(--space-xs); }
+.cw-meter { display: inline-block; vertical-align: middle; width: 72px; height: 6px; margin: 0 var(--space-2xs) 0 var(--space-xs); border-radius: var(--radius-pill); background: var(--surface-3); overflow: hidden; }
+.cw-meter > span { display: block; height: 100%; background: var(--status-ok); }
+.cw-meter[data-tone='warn'] > span { background: var(--status-attention); }
+.cw-meter[data-tone='danger'] > span { background: var(--status-danger); }

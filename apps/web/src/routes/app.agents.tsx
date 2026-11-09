@@ -920,29 +920,45 @@ function usd(micros: number) {
 function BudgetMeter({ budget }: { budget: Desk['budget'] }) {
   const context = budget.context
   const percent = context ? Math.round(context.utilization * 100) : null
+  const used = budget.dailyInputCap > 0 ? Math.min(100, Math.round((budget.inputTokens / budget.dailyInputCap) * 100)) : 0
+  const tone = used >= 100 ? 'danger' : used >= 80 ? 'warn' : 'ok'
   return (
-    <section aria-labelledby="budget-title">
+    <section aria-labelledby="budget-title" className="cw-usage">
       <h2 id="budget-title" className="cw-sr-only">
-        Usage
+        Usage today
       </h2>
+      {budget.unmeasured > 0 && (
+        <Notice tone="warn" title="Agent replies are paused until midnight UTC">
+          A model call today did not report how many tokens it used, so Crosswire cannot check the daily budget and refuses new calls. This is a safety rule. It clears at midnight UTC. If it keeps happening, check that the model endpoint returns token usage.
+        </Notice>
+      )}
+      {budget.unmeasured === 0 && used >= 80 && (
+        <Notice tone={used >= 100 ? 'error' : 'warn'} title={used >= 100 ? "Today's token budget is used up" : `${used}% of today's token budget is used`}>
+          {used >= 100 ? 'New agent replies are refused until midnight UTC.' : 'Agent replies stop when it reaches 100%.'} An owner can raise the limit in the deployment settings (BUDGET_DAILY_INPUT_TOKENS).
+        </Notice>
+      )}
       <dl className="cw-ctxbar" aria-label="Usage today">
         <div>
-          <dt>Input tokens</dt>
+          <dt>Input tokens today</dt>
           <dd className="num">
-            {budget.inputTokens} / {budget.dailyInputCap}
+            {budget.inputTokens.toLocaleString('en-AU')} of {budget.dailyInputCap.toLocaleString('en-AU')}
+            <span className="cw-meter" data-tone={tone} role="meter" aria-valuemin={0} aria-valuemax={100} aria-valuenow={used} aria-label="Share of the daily token budget used">
+              <span style={{ width: `${used}%` }} />
+            </span>
+            <span className="cw-muted">{used}%</span>
           </dd>
         </div>
         <div>
           <dt>Output tokens</dt>
-          <dd className="num">{budget.outputTokens}</dd>
+          <dd className="num">{budget.outputTokens.toLocaleString('en-AU')}</dd>
         </div>
         <div>
           <dt>Last measured call</dt>
           <dd>
             {context && percent !== null ? (
               <>
-                {context.occupiedTokens} of {context.contextWindowTokens} tokens ({percent}%). Refusal line is 80%.
-                {context.warning ? ' This call is at or over that line.' : ''}
+                {percent}% of the context window. Calls stop at 80%.
+                {context.warning ? ' This call was at or over that line.' : ''}
               </>
             ) : (
               'No measured call yet.'
@@ -953,7 +969,7 @@ function BudgetMeter({ budget }: { budget: Desk['budget'] }) {
           <dt>Spend</dt>
           <dd>
             {!budget.rateSet
-              ? 'No token price is configured.'
+              ? 'Unpriced (no token price is set).'
               : budget.unpriced > 0
                 ? 'Some calls have no price, so a spend cap cannot be checked.'
                 : budget.spendCapMicros !== null
@@ -962,11 +978,6 @@ function BudgetMeter({ budget }: { budget: Desk['budget'] }) {
           </dd>
         </div>
       </dl>
-      {budget.unmeasured > 0 && (
-        <p className="cw-help" role="status">
-          A call today has no token count, so the next model call is refused until that is resolved.
-        </p>
-      )}
     </section>
   )
 }
