@@ -2,11 +2,12 @@ import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { authed } from './middleware'
 import { decisionActors, searchDecisions } from '../server/agents/decisions'
-import { listRecentRuns, readRunReplay } from '../server/agents/runs'
+import { cancelRunAs, listRecentRuns, listRuns, readRunDetail, readRunReplay, RUN_STATUSES } from '../server/agents/runs'
+import { REVIEWED_SKILLS } from '../server/agents/skills'
 import { listOrgMembers } from '../server/orgs'
 import { budgetSnapshot } from '../server/agents/budgets'
 import { approveDirective, createDirective, listDirectives, retireDirective } from '../server/agents/directives'
-import { compactMemory, describeMemory, exportHistoryMarkdown, findMemory, getMemory, listMemoryEntries, promoteMemory, promptMembership, rememberOperator, replaceMemory } from '../server/agents/memory'
+import { compactMemory, describeMemory, exportHistoryMarkdown, findMemory, getMemory, listMemoryEntries, listReviewQueue, promoteBlockReason, promoteMemory, promptMembership, rememberOperator, replaceMemory } from '../server/agents/memory'
 import { AGENT_KEYS } from '../shared/agents'
 import { canApprove } from '../server/response/rbac'
 
@@ -173,3 +174,63 @@ export const runCompaction = createServerFn({ method: 'POST' })
     if (!canApprove(context.session.org.role)) throw new Error('Only owners and approvers can compact memory.')
     return compactMemory(context.session.org.id, data.agentKey)
   })
+
+/** Runs for the run view. Optional status, agent and conversation filters. This organisation only. */
+export const fetchRuns = createServerFn({ method: 'GET' })
+  .middleware([authed])
+  .validator(z.object({ status: z.enum(RUN_STATUSES).optional(), agentKey: z.enum(AGENT_KEYS).optional(), threadId: z.string().max(100).optional() }).optional())
+  .handler(async ({ context, data }) => ({
+    runs: await listRuns(context.session.org.id, { status: data?.status, agentKey: data?.agentKey, threadId: data?.threadId, limit: 100 }),
+    pricing: (await budgetSnapshot(context.session.org.id)).rateSet,
+  }))
+
+/** One run: summary, ordered events, redacted outputs, parent and children. Null in another organisation. */
+export const fetchRunDetail = createServerFn({ method: 'GET' })
+  .middleware([authed])
+  .validator(z.object({ runId: z.uuid() }))
+  .handler(async ({ context, data }) => {
+    const detail = await readRunDetail(context.session.org.id, data.runId)
+    if (!detail) return null
+    // Skills are reviewed per agent. Show the skill this agent runs under, with its version.
+    const skill = REVIEWED_SKILLS.find((item) => item.agent === detail.run.agentKey)
+    return { ...detail, skill: skill ? { name: skill.definition.name, version: skill.version } : null }
+  })
+
+/** Stop a running run. The server checks who may stop it; the UI only asks. */
+export const cancelRunFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ runId: z.uuid() }))
+  .handler(async ({ context, data }) => {
+    try {
+      return { ok: true as const, ...(await cancelRunAs(context.session.org.id, { userId: context.session.user.id, canApprove: canApprove(context.session.org.role) }, data.runId)) }
+    } catch (err) {
+      return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+/** Quarantined memory across all agents, with the reason this viewer can or cannot promote each one. */
+export const fetchReviewQueue = createServerFn({ method: 'GET' })
+  .middleware([authed])
+  .handler(async ({ context }) => {
+    const orgId = context.session.org.id
+    const viewer = { userId: context.session.user.id, canApprove: canApprove(context.session.org.role) }
+    const rows = await listReviewQueue(orgId)
+    const presented = await presentEntries(orgId, rows)
+    return presented.map((entry, i) => ({ ...entry, mine: rows[i]!.authorId === viewer.userId, blocked: promoteBlockReason(rows[i]!, viewer) }))
+  })
+
+/** Read-only view of the reviewed skills (runbooks) in code. */
+export const fetchSkills = createServerFn({ method: 'GET' })
+  .middleware([authed])
+  .handler(async () =>
+    REVIEWED_SKILLS.map((skill) => ({
+      agent: skill.agent,
+      name: skill.definition.name,
+      version: skill.version,
+      description: skill.definition.description,
+      domain: skill.definition.domain ?? null,
+      tools: [...skill.tools],
+      steps: (skill.definition.tools ?? []).map((tool) => ({ name: tool.name, when: tool.when ?? null })),
+      content: skill.definition.content ?? '',
+    })),
+  )

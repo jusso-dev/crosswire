@@ -15,7 +15,7 @@ import { exportOrgBundle, importOrgBundle } from '../src/server/agents/export-bu
 import { appendMemory, compactMemory, exportHistoryMarkdown, importHistoryMarkdown, listMemoryEntries, memoryContext, promoteMemory } from '../src/server/agents/memory'
 import { assertSkillTools, loadPolicy, renderRoutingMarkdown, renderTeamMarkdown, skillVersion } from '../src/server/agents/policy'
 import { approvalContentHash, createProposal, decideProposal, executeProposal, getProposal } from '../src/server/response/proposals'
-import { listRunOutputs, readRunReplay, reconcileStaleRuns, recordRunOutput, requestRunCancel, startRun } from '../src/server/agents/runs'
+import { listRunOutputs, readRunDetail, readRunReplay, reconcileStaleRuns, recordRunOutput, requestRunCancel, startRun } from '../src/server/agents/runs'
 import { DECISION_SUMMARY_LIMIT, decisionSummary, recordDecision } from '../src/server/agents/decisions'
 import { costTrackerForOrg, resetSquadSdkForTests, sharedCostTracker } from '../src/server/agents/squad-sdk'
 import { prepareToolResult, recordToolFailure } from '../src/server/agents/tools'
@@ -291,7 +291,12 @@ describe('budgets and egress', () => {
     expect(await readRunReplay(other, run!.id)).toBeNull()
     const agentsFn = readFileSync(path.resolve(__dirname, '../src/fns/agents.ts'), 'utf8')
     expect(agentsFn).toContain('readRunReplay(context.session.org.id, data.runId)')
-    expect(readFileSync(path.resolve(__dirname, '../src/routes/app.agents.tsx'), 'utf8')).toContain('fetchRunReplay')
+    // The Agents run view reads the same redacted rows through the org-scoped run detail.
+    expect(agentsFn).toContain('readRunDetail(context.session.org.id, data.runId)')
+    expect(readFileSync(path.resolve(__dirname, '../src/routes/app.agents.tsx'), 'utf8')).toContain('fetchRunDetail')
+    const detail = await readRunDetail(orgId, run!.id)
+    expect(detail?.outputs[0]?.body).toBe(output!.body)
+    expect(await readRunDetail(other, run!.id)).toBeNull()
   })
 
   it('redacts secrets and hunt samples on the way to the model', () => {
