@@ -5,6 +5,7 @@ import { redactString, redactValue, truncate } from '../lib/redact'
 import { writeAudit } from '../audit'
 import { getHunt } from './hunts'
 import { listSchedules } from './schedules'
+import { HIT_ANSWER, OUTCOME_LABEL, coverageOf } from '../../shared/indicator-playbooks'
 
 /** Bounds for a report so a huge hunt cannot produce an unbounded download (#94). */
 export const REPORT_MAX_CHARS = 200_000
@@ -79,6 +80,27 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
   if (origin) out.push(`- **Origin watch hit:** ${mdText(origin.title)} (${mdText(origin.source)}${origin.url ? `, <${md(origin.url).replace(/[<>\s]/g, '')}>` : ''})`)
   out.push('')
   if (hunt.hypothesis) out.push('## Hypothesis', '', mdText(hunt.hypothesis), '')
+
+  const coverage = coverageOf(
+    [...proposals].reverse().map((proposal) => ({
+      rationale: proposal.rationale,
+      kql: proposal.kql,
+      target: proposal.target,
+      status: proposal.status,
+      resultSummary: (proposal.resultSummary ?? null) as { rowCount?: number } | null,
+    })),
+  )
+  out.push('## What was checked', '')
+  if (!coverage.total) out.push('_No search has been proposed._', '')
+  else {
+    out.push(`- **Any hits:** ${HIT_ANSWER[coverage.answer]}`, `- **Checks ran:** ${coverage.ran} of ${coverage.total}`, '')
+    out.push('| Check | Where | Status | Rows | Result |', '| --- | --- | --- | --- | --- |')
+    for (const row of coverage.rows) {
+      const where = row.target === 'defender' ? 'Defender XDR' : row.target === 'sentinel' ? 'Sentinel' : md(row.target)
+      out.push(`| ${md(row.name)} | ${where} | ${md(row.status)} | ${row.rowCount ?? ''} | ${OUTCOME_LABEL[row.outcome]} |`)
+    }
+    out.push('')
+  }
 
   const ran = proposals.filter((p) => p.status === 'run').reverse()
   out.push('## Queries that ran', '')

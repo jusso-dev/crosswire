@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, sql } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { agentRuns, agentUsage } from '../db/schema'
 import { env } from '../env'
@@ -121,6 +121,55 @@ export async function claimDailyBudget(orgId: string, runId: string, input: { se
     })
     return preview
   })
+}
+
+/**
+ * Read-only desk figures from Postgres. This does not read the in-process CostTracker.
+ * Daily sums include unsettled reservations, matching the gate. Context is the last observed call
+ * that reported token counts, compared with BUDGET_CONTEXT_WINDOW_TOKENS at the 0.8 refusal line.
+ */
+export async function budgetSnapshot(orgId: string) {
+  const e = env()
+  const spent = await observedToday(orgId)
+  const [latest] = await getDb()
+    .select({
+      inputTokens: agentUsage.inputTokens,
+      outputTokens: agentUsage.outputTokens,
+      agentKey: agentUsage.agentKey,
+      createdAt: agentUsage.createdAt,
+    })
+    .from(agentUsage)
+    .where(and(eq(agentUsage.orgId, orgId), eq(agentUsage.observed, true), sql`${agentUsage.inputTokens} is not null`, sql`${agentUsage.outputTokens} is not null`))
+    .orderBy(desc(agentUsage.createdAt))
+    .limit(1)
+  const context = latest
+    ? assessContextWindow({
+        sessionId: 'desk',
+        inputTokens: latest.inputTokens ?? 0,
+        outputTokens: latest.outputTokens ?? 0,
+        contextWindowTokens: e.BUDGET_CONTEXT_WINDOW_TOKENS,
+      })
+    : null
+  return {
+    inputTokens: spent.inputTokens,
+    outputTokens: spent.outputTokens,
+    costMicros: spent.costMicros,
+    unpriced: spent.unpriced,
+    unmeasured: spent.unmeasured,
+    dailyInputCap: e.BUDGET_DAILY_INPUT_TOKENS,
+    spendCapMicros: e.BUDGET_MAX_SPEND_MICROS ?? null,
+    rateSet: e.BUDGET_USD_PER_MILLION_TOKENS !== undefined,
+    context: context
+      ? {
+          agentKey: latest!.agentKey,
+          at: latest!.createdAt,
+          occupiedTokens: context.occupiedTokens,
+          contextWindowTokens: context.contextWindowTokens,
+          utilization: context.utilization,
+          warning: context.warning,
+        }
+      : null,
+  }
 }
 
 /** Drop a reservation when the model call does not start. */

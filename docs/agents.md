@@ -100,7 +100,9 @@ shortened. Concurrent `appendRunEvent` calls can still lose a sequence number. T
    deleted). Quarantine stays live for review and is not folded into the prompt. Operator safety entries (containing "never", "do not", "must not", and not from an untrusted source) are never folded away and
    are copied verbatim into the body. Compaction is deterministic; it does not invent facts.
    Each run is audited (`category = 'memory'`).
-4. Reviewed skills live in `skills.ts` and are checked with `defineSkill`. Their tools must be inside that agent's allowlist. Org directives are separate rows. They are created as drafts. The author cannot approve one. Only approved directives enter the system prompt. Incident reviews, handovers and lessons do not promote policy. A lesson is a draft directive.
+4. Reviewed skills live in `skills.ts` and are checked with `defineSkill`. Their tools must be inside that agent's allowlist. Org directives are separate rows. They are created as drafts. The author cannot approve one. Only approved directives enter the system prompt. An owner or approver can retire an approved directive, which removes it from the prompt. Incident reviews, handovers and lessons do not promote policy. A lesson is a draft directive.
 
 **When to run:** weekly, or when an agent's live entries pass a few hundred. It is cheap and safe to
 run often.
+
+The Agents page searches memory across the organisation, including notes held out of the prompt. Each row shows trust, Squad class, source, and whether it is injected. An operator note is saved with source `operator`. Owners and approvers promote a quarantined note (not their own, and not injection text) or replace a note, which tombstones the old row. The usage strip reads `agent_usage` for this organisation. It does not read the in-process cost tracker. Context is the last observed call against `BUDGET_CONTEXT_WINDOW_TOKENS`, and the refusal line stays at 0.8.

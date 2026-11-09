@@ -127,6 +127,22 @@ linked response proposals (including rollbacks) and the evidence timeline. Each 
 export its hunts; exports are audited (`hunt_report_exported`). Reports are capped at 200,000
 characters. Full result sets stay in Defender / Sentinel.
 
+The same report starts with **What was checked**. It answers "any hits?" with yes (at least one
+check returned rows), no (every check ran and returned no rows), or not fully checked. Each
+proposed search is a row: where it ran, its status, the row count, and hit or no hit. A search
+that is still waiting for approval is listed as not run.
+
+## 3c. Indicator playbooks
+
+The Hunts page has **Check an indicator**. Pick a built-in pack (IP address, domain, or file
+hash) or a playbook saved for the organisation, enter one indicator, and click **Propose checks**.
+
+That click opens a hunt and proposes every check with the indicator filled in. It does not run
+KQL. Each check still needs a person to approve it (`approveAndRunKql` is the only execute path).
+A saved playbook is a name plus up to eight Defender or Sentinel templates. Each template must
+contain `{{indicator}}` and must pass the same KQL blocklist as any other proposal. Built-in
+packs cannot be deleted. Another organisation cannot see or start a saved playbook.
+
 ## 4. Safety rails (issue #49)
 
 - **Separate client.** `HuntingClient` is the only HTTP path for hunting. It has no generic

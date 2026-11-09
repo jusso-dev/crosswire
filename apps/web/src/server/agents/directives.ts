@@ -44,6 +44,10 @@ export async function createDirective(input: {
   return row!
 }
 
+export async function listDirectives(orgId: string) {
+  return getDb().select().from(orgDirectives).where(eq(orgDirectives.orgId, orgId)).orderBy(desc(orgDirectives.createdAt)).limit(50)
+}
+
 /** A different person approves a draft. The author cannot approve it. */
 export async function approveDirective(orgId: string, directiveId: string, approverUserId: string) {
   const [row] = await getDb().select().from(orgDirectives).where(and(eq(orgDirectives.orgId, orgId), eq(orgDirectives.id, directiveId))).limit(1)
@@ -57,6 +61,21 @@ export async function approveDirective(orgId: string, directiveId: string, appro
     .returning()
   if (!updated) throw new DirectiveError('Directive was already decided.')
   await writeAudit({ category: 'memory', action: 'directive_approve', actorType: 'user', actorId: approverUserId, orgId, targetId: directiveId })
+  return updated
+}
+
+/** Drop an approved directive out of the prompt. Drafts are not retired; they were never injected. */
+export async function retireDirective(orgId: string, directiveId: string, userId: string) {
+  const [row] = await getDb().select().from(orgDirectives).where(and(eq(orgDirectives.orgId, orgId), eq(orgDirectives.id, directiveId))).limit(1)
+  if (!row) throw new DirectiveError('Directive not found.')
+  if (row.status !== 'approved') throw new DirectiveError('Only an approved directive can be retired.')
+  const [updated] = await getDb()
+    .update(orgDirectives)
+    .set({ status: 'retired' })
+    .where(and(eq(orgDirectives.id, directiveId), eq(orgDirectives.status, 'approved')))
+    .returning()
+  if (!updated) throw new DirectiveError('Directive was already retired.')
+  await writeAudit({ category: 'memory', action: 'directive_retire', actorType: 'user', actorId: userId, orgId, targetId: directiveId })
   return updated
 }
 

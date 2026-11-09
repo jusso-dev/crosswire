@@ -1,10 +1,10 @@
-import { and, asc, desc, eq, isNull, ne, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { agentMemories, agentMemoryEntries } from '../db/schema'
 import { looksSecret, redactString, truncate } from '../lib/redact'
 import { writeAudit } from '../audit'
 import { env } from '../env'
-import type { AgentKey } from '../../shared/agents'
+import { isAgentKey, type AgentKey } from '../../shared/agents'
 import { sha256 } from './canonical'
 import { classifyWithSquad } from './squad-sdk'
 
@@ -32,6 +32,35 @@ function promptEligible(row: Pick<MemoryRow, 'trust' | 'tombstonedAt' | 'body'>)
   if (row.trust === 'quarantine') return false
   if (isPersistentInjection(row.body)) return false
   return true
+}
+
+/** Why a row is held out of the prompt. Null means it is eligible, subject to the newest-20 cap. */
+export function memoryBlockReason(row: Pick<MemoryRow, 'trust' | 'tombstonedAt' | 'body' | 'compactedAt'>): string | null {
+  if (row.compactedAt) return 'Folded into the compacted summary. Not injected as its own line.'
+  if (!governanceEnforced()) return null
+  if (row.tombstonedAt) return 'Tombstoned. Not in the prompt.'
+  if (row.trust === 'quarantine') return 'Quarantined. Not in the prompt until a different person promotes it.'
+  if (isPersistentInjection(row.body)) return 'Looks like an instruction override. Not in the prompt.'
+  return null
+}
+
+/** Ids injected for these agents: every eligible safety note, plus the 20 newest other eligible notes. */
+export async function promptMembership(orgId: string, agentKeys: string[]) {
+  const injected = new Set<string>()
+  for (const agentKey of [...new Set(agentKeys)]) {
+    const live = await listMemoryEntries(orgId, agentKey as AgentKey, { limit: 200 })
+    const eligible = live.filter((row) => promptEligible(row))
+    for (const row of eligible.filter((entry) => entry.kind === 'safety')) injected.add(row.id)
+    for (const row of eligible.filter((entry) => entry.kind !== 'safety').slice(0, 20)) injected.add(row.id)
+  }
+  return injected
+}
+
+export function describeMemory(row: Pick<MemoryRow, 'id' | 'trust' | 'tombstonedAt' | 'body' | 'compactedAt'>, injected: Set<string>) {
+  const blocked = memoryBlockReason(row)
+  const inPrompt = blocked === null && injected.has(row.id)
+  const reason = blocked ?? (inPrompt ? 'In the prompt.' : 'Kept in the record. Only the 20 newest non-safety notes are injected, plus every eligible safety note.')
+  return { inPrompt, reason }
 }
 
 /**
@@ -147,6 +176,19 @@ export async function searchMemory(orgId: string, query: string, limit = 10, age
   return rows.filter((row) => promptEligible(row)).map(({ agentKey: key, kind, body, createdAt }) => ({ agentKey: key, kind, body, createdAt }))
 }
 
+/** Org-wide find for the Agents page. Includes quarantine and tombstones so a person can review them. Agents keep using searchMemory. */
+export async function findMemory(orgId: string, query: string, limit = 50) {
+  const q = query.trim()
+  if (q.length < 2) return []
+  const pattern = `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`
+  return getDb()
+    .select()
+    .from(agentMemoryEntries)
+    .where(and(eq(agentMemoryEntries.orgId, orgId), sql`${agentMemoryEntries.body} ilike ${pattern}`))
+    .orderBy(desc(agentMemoryEntries.createdAt))
+    .limit(Math.min(limit, 50))
+}
+
 /** Export memory as a Squad-style history.md for git-centric workflows. */
 export async function exportHistoryMarkdown(orgId: string, agentKey: AgentKey) {
   const mem = await getMemory(orgId, agentKey)
@@ -255,9 +297,18 @@ export async function promoteMemory(orgId: string, entryId: string, approverUser
   return updated!
 }
 
-/** Keep the old row and point it at the replacement. Tombstoned rows stay out of the prompt. */
+/** Keep the old row and point it at the replacement. Tombstoned rows stay out of the prompt. The replacement must be in the same organisation and agent. */
 export async function supersedeMemory(orgId: string, entryId: string, replacementId: string) {
   if (entryId === replacementId) throw new Error('A memory entry cannot supersede itself.')
+  const rows = await getDb()
+    .select()
+    .from(agentMemoryEntries)
+    .where(and(eq(agentMemoryEntries.orgId, orgId), inArray(agentMemoryEntries.id, [entryId, replacementId])))
+  const existing = rows.find((row) => row.id === entryId)
+  const replacement = rows.find((row) => row.id === replacementId)
+  if (!existing) throw new Error('Memory entry not found.')
+  if (!replacement) throw new Error('Replacement memory was not found in this organisation.')
+  if (existing.agentKey !== replacement.agentKey) throw new Error('Replacement must belong to the same agent.')
   const [updated] = await getDb()
     .update(agentMemoryEntries)
     .set({ supersededBy: replacementId, tombstonedAt: new Date() })
@@ -265,4 +316,23 @@ export async function supersedeMemory(orgId: string, entryId: string, replacemen
     .returning()
   if (!updated) throw new Error('Memory entry not found.')
   return updated
+}
+
+/** Operator note. Source `operator` is trusted. Squad classify still refuses forbidden text, and injection text is quarantined. */
+export async function rememberOperator(orgId: string, userId: string, agentKey: AgentKey, body: string, kind?: 'fact' | 'safety') {
+  return appendMemory({ orgId, agentKey, body, kind, sourceType: 'operator', authorId: userId })
+}
+
+/** Write a replacement note, then tombstone the old row. */
+export async function replaceMemory(orgId: string, userId: string, entryId: string, body: string) {
+  const [existing] = await getDb()
+    .select()
+    .from(agentMemoryEntries)
+    .where(and(eq(agentMemoryEntries.orgId, orgId), eq(agentMemoryEntries.id, entryId)))
+    .limit(1)
+  if (!existing) throw new Error('Memory entry not found.')
+  if (!isAgentKey(existing.agentKey)) throw new Error('Memory entry has an unknown agent.')
+  const replacement = await rememberOperator(orgId, userId, existing.agentKey, body, existing.kind === 'safety' ? 'safety' : 'fact')
+  await supersedeMemory(orgId, entryId, replacement.id)
+  return replacement
 }

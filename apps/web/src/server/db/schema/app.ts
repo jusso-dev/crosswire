@@ -443,6 +443,23 @@ export const kqlProposals = pgTable(
   (t) => [index('kql_proposals_hunt_idx').on(t.huntId, t.createdAt)],
 )
 
+/** Org-saved indicator playbooks. Built-in IP, domain, and hash packs stay in code. */
+export const huntPlaybooks = pgTable(
+  'hunt_playbooks',
+  {
+    id: id(),
+    orgId: orgRef(),
+    name: text('name').notNull(),
+    description: text('description').notNull().default(''),
+    indicatorKind: text('indicator_kind', { enum: ['ip', 'domain', 'hash'] }).notNull(),
+    checks: jsonb('checks').$type<Array<{ name: string; target: 'defender' | 'sentinel'; kql: string }>>().notNull(),
+    createdBy: text('created_by').references(() => user.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [index('hunt_playbooks_org_idx').on(t.orgId, t.updatedAt), uniqueIndex('hunt_playbooks_org_name_uq').on(t.orgId, t.name)],
+)
+
 // ---------- Response (#50 - #56) ----------
 export const responseActionType = pgEnum('response_action_type', ['sentinel_playbook', 'logic_app', 'graph_containment', 'other'])
 export const responseStatus = pgEnum('response_status', ['pending', 'approved', 'rejected', 'expired', 'executed', 'failed'])

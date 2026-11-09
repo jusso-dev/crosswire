@@ -2,6 +2,8 @@ import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { authed } from './middleware'
 import { addEvidence, approveAndRunKql, createHunt, getHunt, listHunts, proposeKql, rejectKql, setHuntStatus } from '../server/hunting/hunts'
+import { deletePlaybook, listSavedPlaybooks, savePlaybook, startPlaybook } from '../server/hunting/playbooks'
+import { INDICATOR_KINDS } from '../shared/indicator-playbooks'
 import { getConnectorView, upsertConnector } from '../server/hunting/broker'
 import { env } from '../server/env'
 import { asJson } from '../shared/json'
@@ -180,6 +182,54 @@ export const reapproveScheduleFn = createServerFn({ method: 'POST' })
   .middleware([authed])
   .validator(z.object({ id: z.string().min(1), approvalDays: z.number().int().optional() }))
   .handler(async ({ context, data }) => wrap(() => reapproveSchedule(context.session.org.id, actorOf(context.session), data.id, data.approvalDays)))
+
+const playbookCheck = z.object({
+  name: z.string().min(1).max(80),
+  target: z.enum(['defender', 'sentinel']),
+  kql: z.string().min(1).max(10_000),
+})
+
+export const fetchPlaybooks = createServerFn({ method: 'GET' })
+  .middleware([authed])
+  .handler(async ({ context }) => {
+    const rows = await listSavedPlaybooks(context.session.org.id)
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      indicatorKind: row.indicatorKind,
+      checks: row.checks,
+    }))
+  })
+
+/** Propose every check on a new hunt. Does not run KQL. */
+export const startPlaybookFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ playbookId: z.string().min(1).max(80), indicator: z.string().min(1).max(253) }))
+  .handler(async ({ context, data }) => startPlaybook(context.session.org.id, context.session.user.id, data))
+
+export const savePlaybookFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(
+    z.object({
+      name: z.string().min(1).max(80),
+      description: z.string().max(500).optional(),
+      indicatorKind: z.enum(INDICATOR_KINDS),
+      checks: z.array(playbookCheck).min(1).max(8),
+    }),
+  )
+  .handler(async ({ context, data }) => {
+    const row = await savePlaybook(context.session.org.id, context.session.user.id, data)
+    return { id: row.id }
+  })
+
+export const deletePlaybookFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ playbookId: z.uuid() }))
+  .handler(async ({ context, data }) => {
+    await deletePlaybook(context.session.org.id, data.playbookId)
+    return { ok: true as const }
+  })
 
 /** Hunt report (#94): any member of the org can export its hunts. */
 export const huntReportFn = createServerFn({ method: 'GET' })

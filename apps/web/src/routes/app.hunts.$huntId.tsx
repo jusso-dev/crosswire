@@ -5,6 +5,7 @@ import { addNote, approveKqlFn, createScheduleFn, disableScheduleFn, fetchHunt, 
 import { fmtTime } from '../components/format'
 import { Notice, Term } from '../components/ui'
 import { kqlApprovalBlock } from '../shared/kql-approval'
+import { HIT_ANSWER, OUTCOME_LABEL, coverageOf } from '../shared/indicator-playbooks'
 import { Freshness, ModeTag, StatusTag, TARGET_LABEL } from '../components/signals'
 import { FilterChips, Inspector, ResultGrid, applyFilters, decodeFilters, decodeSort, encodeFilters, encodeSort, kqlIdentifier, kqlLiteral, sortRows, summariseEntities, type Filter, type Row, type Sort } from '../components/results'
 
@@ -67,6 +68,37 @@ function approvalBlock(a: ApprovalContext, p: Proposal, edited: boolean): string
   return null
 }
 
+function CoverageSummary({ proposals }: { proposals: Proposal[] }) {
+  if (!proposals.length) return null
+  const coverage = coverageOf(
+    [...proposals].reverse().map((proposal) => ({
+      rationale: proposal.rationale,
+      kql: proposal.kql,
+      target: proposal.target,
+      status: proposal.status,
+      resultSummary:
+        proposal.resultSummary && typeof proposal.resultSummary === 'object' && !Array.isArray(proposal.resultSummary)
+          ? (proposal.resultSummary as { rowCount?: number })
+          : null,
+    })),
+  )
+  return (
+    <section aria-label="What was checked" style={{ marginTop: 'var(--space-sm)' }}>
+      <p>
+        <strong>Any hits?</strong> {HIT_ANSWER[coverage.answer]} <span className="cw-muted">{coverage.ran} of {coverage.total} checks ran.</span>
+      </p>
+      <ul>
+        {coverage.rows.map((row, index) => (
+          <li key={`${row.name}-${index}`}>
+            {row.name}: {OUTCOME_LABEL[row.outcome]}
+            {row.rowCount !== null ? ` (${row.rowCount} rows)` : ''}
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 /** Plain message in place of the result grid once retention has removed a stored sample. */
 function expiredSampleText(s: Summary) {
   return s.sampleRetentionDays ? `Sample removed after ${s.sampleRetentionDays} days (retention). The row count and columns are kept.` : 'Sample removed by the retention policy. The row count and columns are kept.'
@@ -116,6 +148,7 @@ function HuntWorkspace() {
           <div>
             <h1>{hunt.title}</h1>
             <p>{hunt.hypothesis || <span>No hypothesis yet. Add a note saying what you suspect, so agents can suggest searches.</span>}</p>
+            <CoverageSummary proposals={proposals} />
           </div>
           <div className="cw-pagehead-actions">
             <ExportButton huntId={hunt.id} onError={setError} />
