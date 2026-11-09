@@ -3,7 +3,7 @@
 #   2. Image: build, SBOM, CRITICAL CVE gate (#85), push ghcr.io/<owner>/crosswire:sha-<sha>.
 #      Or pass an existing release tag (vX.Y.Z) to promote that exact image (#76).
 #   3. Optional staging (#86): deploy + migrate + smoke on the `staging` environment.
-#   4. Production: required-reviewer approval -> migration job (#69) -> update web/worker ->
+#   4. Production: migration job (#69) -> update web/worker ->
 #      smoke test (#75). Rollback: docs/runbooks/rollback.md (#71).
 # Azure auth: OIDC federation, no long-lived secrets. Setup: docs/runbooks/azure-deploy.md.
 name: Deploy

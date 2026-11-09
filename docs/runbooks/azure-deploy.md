@@ -142,7 +142,7 @@ See also: [migrations](migrations.md), [rollback](rollback.md), [staging](stagin
 `.github/workflows/deploy.yml` runs on **workflow_dispatch only** (never on pull requests). It
 deploys the commit you dispatch it on, or promotes an existing release with `image_tag=vX.Y.Z`:
 CI → build, SBOM, CRITICAL CVE gate, push `ghcr.io/<owner>/crosswire:sha-<sha>` → optional
-`staging` → **`production` environment approval** → migration job → update web and worker →
+`staging` → migration job → update web and worker →
 smoke test (`scripts/smoke.sh`). The job summary records the previous revision for
 [rollback](rollback.md). Restrict the `production` environment to the `main` branch
 (Environment → Deployment branches) so only reviewed code can be dispatched.
@@ -155,7 +155,7 @@ Setup:
    instead; if `azure/login` fails with `AADSTS700213`, copy the exact `subject claim` from the
    job log into the federated credential.
 2. Grant it **Contributor on the resource group only** (it updates container apps and starts the migration job).
-3. GitHub → Settings → Environments → `production`: add required reviewers.
+3. GitHub → Settings → Environments → `production`: do not add required reviewers. Deployment branches stay limited to `main`.
 4. **Environment** variables on `production` (staging gets its own set): `AZURE_CLIENT_ID`,
    `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`, `CROSSWIRE_NAME_PREFIX`
    (default `crosswire`), `CROSSWIRE_BASE_URL` (e.g. `https://crosswire.contoso.com`). No secrets needed.
