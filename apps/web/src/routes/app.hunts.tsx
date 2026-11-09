@@ -38,6 +38,11 @@ function Hunts() {
 
   const status = search.status ?? 'open'
   const q = (search.q ?? '').toLowerCase()
+  const startMore = Boolean(search.fromHit || search.title)
+  const [moreOpen, setMoreOpen] = useState(startMore)
+  useEffect(() => {
+    if (startMore) setMoreOpen(true)
+  }, [startMore])
   const shown = hunts.filter((h) => (status === 'all' || h.status === status) && (!q || h.title.toLowerCase().includes(q) || h.hypothesis.toLowerCase().includes(q)))
   const counts = { open: hunts.filter((h) => h.status === 'open').length, closed: hunts.filter((h) => h.status === 'closed').length, all: hunts.length }
   const set = (patch: { q?: string; status?: 'open' | 'closed' | 'all' }) => navigate({ search: (prev) => ({ ...prev, ...patch }), replace: true })
@@ -55,7 +60,7 @@ function Hunts() {
 
       <CheckIndicator autoFocus={Boolean(search.check)} />
 
-      <details className="cw-panel2" defaultOpen={Boolean(search.fromHit || search.title)}>
+      <details className="cw-panel2" open={moreOpen} onToggle={(event) => setMoreOpen(event.currentTarget.open)}>
         <summary className="cw-panel2-head" style={{ cursor: 'pointer' }}>
           <h2 style={{ display: 'inline' }}>Blank hunt and saved playbooks</h2>
         </summary>
@@ -137,8 +142,12 @@ function NewHunt({ open, initialTitle, fromHit }: { open: boolean; initialTitle:
   const [title, setTitle] = useState(initialTitle)
   const [hypothesis, setHypothesis] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [expanded, setExpanded] = useState(open)
+  useEffect(() => {
+    if (open) setExpanded(true)
+  }, [open])
   return (
-    <details className="cw-panel2" defaultOpen={open}>
+    <details className="cw-panel2" open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary className="cw-panel2-head" style={{ cursor: 'pointer' }}>
         <h2 style={{ display: 'inline' }}>Start a new hunt</h2>
         {fromHit && <span className="cw-badge" data-tone="info">From a watch hit</span>}
