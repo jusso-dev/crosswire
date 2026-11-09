@@ -4,7 +4,8 @@ import { fetchConnector, saveConnector } from '../fns/hunts'
 import { clearDigestEmailFn, fetchAuthAudit, fetchDigestEmail, fetchMembers, requestDigestEmailFn, setRoleFn } from '../fns/settings'
 import { addChannelFn, deleteChannelFn, fetchChannels, fetchResponseConnector, saveResponseConnector, testChannelFn, updateChannelFn } from '../fns/notify'
 import { fmtTime } from '../components/format'
-import { Notice, PageHead, TableWrap } from '../components/ui'
+import { Notice, PageHead, TableWrap, SkeletonPage } from '../components/ui'
+import { plainMessage } from '../shared/messages'
 import { Freshness } from '../components/signals'
 
 /**
@@ -16,10 +17,10 @@ export const Route = createFileRoute('/app/settings')({
     const [members, connector, audit, response, channels, digestEmail] = await Promise.all([fetchMembers(), fetchConnector(), fetchAuthAudit(), fetchResponseConnector(), fetchChannels(), fetchDigestEmail()])
     return { members, connector, audit, response, channels, digestEmail }
   },
-  pendingComponent: () => <p className="cw-muted">Loading settings…</p>,
+  pendingComponent: () => <SkeletonPage label="Loading settings" />,
   errorComponent: ({ error }) => (
-    <Notice tone="error" title="Could not load settings">
-      {error instanceof Error ? error.message : String(error)}
+    <Notice tone="error" title="Settings did not load">
+      {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
   component: Settings,
@@ -117,10 +118,10 @@ function Settings() {
 
 function Section({ id, title, intro, children }: { id: string; title: string; intro: string; children: ReactNode }) {
   return (
-    <section id={id} className="cw-panel2" aria-labelledby={`${id}-title`} style={{ scrollMarginTop: 64 }}>
-      <div className="cw-panel2-head" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 2 }}>
+    <section id={id} className="cw-panel2 cw-anchor" aria-labelledby={`${id}-title`}>
+      <div className="cw-panel2-head cw-stack-tight">
         <h2 id={`${id}-title`}>{title}</h2>
-        <p className="cw-muted" style={{ margin: 0 }}>
+        <p className="cw-muted cw-m0">
           {intro}
         </p>
       </div>
@@ -172,7 +173,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
     <div className="cw-field">
       <label htmlFor={id}>{label}</label>
       {hint && (
-        <p id={hintId} className="cw-help" style={{ margin: 0 }}>
+        <p id={hintId} className="cw-help cw-m0">
           {hint}
         </p>
       )}
@@ -259,7 +260,7 @@ function ConnectorForm({ data }: { data: Awaited<ReturnType<typeof fetchConnecto
   }
   return (
     <form className="cw-form" data-wide onSubmit={submit}>
-      <p className="cw-muted" style={{ margin: 0 }}>
+      <p className="cw-muted cw-m0">
         {status} Use a separate read-only app registration (see docs/hunting.md). Saving replaces the stored connection.
       </p>
       <fieldset className="cw-fieldgroup">
@@ -326,7 +327,7 @@ function ResponseConnectorForm({ data }: { data: Awaited<ReturnType<typeof fetch
         )
       }}
     >
-      <p className="cw-muted" style={{ margin: 0 }}>
+      <p className="cw-muted cw-m0">
         {status} Use a separate Entra app with response permissions only (see docs/runbooks/entra-setup.md). The read-only hunting app is never used for response.
       </p>
       <div className="cw-formgrid">
@@ -384,7 +385,7 @@ function Channels({ data }: { data: Awaited<ReturnType<typeof fetchChannels>> })
                   <td>{c.events.map((e) => EVENT_LABELS[e]).join(', ')}</td>
                   <td>{c.lastStatus ? <>{c.lastStatus} · <Freshness at={c.lastSentAt} /></> : <span className="cw-muted">never</span>}</td>
                   <td>
-                    <div className="cw-row" style={{ flexWrap: 'nowrap' }}>
+                    <div className="cw-row cw-nowrap-flex">
                       <button type="button" className="cw-btn" data-variant="ghost" data-size="sm" disabled={busy} onClick={() => run(() => testChannelFn({ data: { id: c.id } }).then((r) => (r.ok && !r.result.ok ? { ok: false, error: `Test failed: ${r.result.status}` } : r)), `Test sent to ${c.name}.`)}>
                         Send test<span className="cw-sr-only"> to {c.name}</span>
                       </button>
@@ -418,7 +419,7 @@ function Channels({ data }: { data: Awaited<ReturnType<typeof fetchChannels>> })
           }, 'Channel added.')
         }}
       >
-        <h3 id="add-channel-title" style={{ margin: 'var(--space-sm) 0 0' }}>
+        <h3 id="add-channel-title" className="cw-m0 cw-mt-sm">
           Add a channel
         </h3>
         <div className="cw-formgrid">
@@ -478,9 +479,9 @@ function DeleteChannel({ name, busy, onDelete }: { name: string; busy: boolean; 
     )
   return (
     <span
-      className="cw-row"
+      className="cw-row cw-nowrap-flex"
       data-center
-      style={{ flexWrap: 'nowrap' }}
+     
       onKeyDown={(e) => {
         if (e.key === 'Escape') cancel()
       }}
@@ -549,7 +550,7 @@ function DigestEmail({ data }: { data: DigestEmailData }) {
 
   return (
     <>
-      <p style={{ marginTop: 0 }}>
+      <p className="cw-mt0">
         Digests go to <strong>{current}</strong>
         {data.digestEmail ? ' (confirmed contact address).' : ' (your sign-in email).'}
       </p>
@@ -604,7 +605,7 @@ function DigestEmail({ data }: { data: DigestEmailData }) {
             {removeError}
           </Notice>
         )}
-        <p className="cw-help" role="status" style={{ margin: 0 }}>
+        <p className="cw-help cw-m0" role="status">
           {done ?? ''}
         </p>
       </form>

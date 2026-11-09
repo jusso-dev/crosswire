@@ -1,15 +1,16 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { fetchDigests } from '../fns/watches'
 import { fmtTime, getDisplayTimeZone } from '../components/format'
-import { Notice, PageHead } from '../components/ui'
+import { Notice, PageHead, SkeletonPage } from '../components/ui'
+import { plainMessage } from '../shared/messages'
 
 /** Daily digests: one per local day. Each day is a section with its hits as a compact list. */
 export const Route = createFileRoute('/app/digests')({
   loader: () => fetchDigests(),
-  pendingComponent: () => <p className="cw-muted">Loading digests…</p>,
+  pendingComponent: () => <SkeletonPage label="Loading digests" />,
   errorComponent: ({ error }) => (
-    <Notice tone="error" title="Could not load digests">
-      {error instanceof Error ? error.message : String(error)}
+    <Notice tone="error" title="Digests did not load">
+      {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
   component: Digests,
@@ -49,12 +50,12 @@ function Digests() {
                   <span className="cw-badge" data-tone={d.hitCount > 0 ? 'info' : undefined}>
                     {d.hitCount} hit{d.hitCount === 1 ? '' : 's'}
                   </span>
-                  <span className="cw-muted" style={{ marginLeft: 'auto' }}>
+                  <span className="cw-muted cw-ml-auto">
                     {d.emailedAt ? `Emailed ${fmtTime(d.emailedAt)}` : 'Not emailed'}
                   </span>
                 </div>
                 {d.hitCount === 0 ? (
-                  <p className="cw-empty" style={{ padding: 'var(--space-xs) var(--space-sm)', margin: 0 }}>
+                  <p className="cw-empty cw-m0 cw-pad-xs">
                     No new watch hits this day.
                   </p>
                 ) : (

@@ -1,7 +1,8 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { fetchCompare } from '../fns/watches'
 import { SeverityTag } from '../components/signals'
-import { Breadcrumbs, Notice, Term } from '../components/ui'
+import { Breadcrumbs, Notice, Term, SkeletonPage } from '../components/ui'
+import { plainMessage } from '../shared/messages'
 
 /**
  * Cross-source compare as a per-source grid (rows = fields, columns = sources), so agreement and
@@ -9,10 +10,10 @@ import { Breadcrumbs, Notice, Term } from '../components/ui'
  */
 export const Route = createFileRoute('/app/intel/$key')({
   loader: ({ params }) => fetchCompare({ data: { key: params.key } }),
-  pendingComponent: () => <p className="cw-muted">Loading sources…</p>,
+  pendingComponent: () => <SkeletonPage label="Loading sources" />,
   errorComponent: ({ error }) => (
-    <Notice tone="error" title="Could not load sources">
-      {error instanceof Error ? error.message : String(error)}
+    <Notice tone="error" title="The sources did not load">
+      {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
   component: Compare,
@@ -34,7 +35,7 @@ function Compare() {
       <Breadcrumbs items={[{ label: 'Watches', to: '/app/watches' }, { label: `Compare ${r.key}` }]} />
       <header className="cw-pagehead">
         <div>
-          <h1 className="mono" style={{ fontWeight: 600 }}>
+          <h1 className="mono cw-strong">
             {r.key}
           </h1>
           <p>What each intel source says, side by side. Sources are read as ingested; Crosswire does not score or merge them.</p>
@@ -53,13 +54,13 @@ function Compare() {
             {present.length} of {r.sources.length} sources have this {r.kind === 'cve' ? <Term k="cve">CVE</Term> : 'indicator'}
           </span>
           {r.orgHits > 0 && (
-            <Link to="/app/watches" style={{ marginLeft: 'auto' }}>
+            <Link to="/app/watches" className="cw-ml-auto">
               {r.orgHits} watch hit{r.orgHits === 1 ? '' : 's'} in your organisation
             </Link>
           )}
         </div>
         <div className="cw-panel2-body">
-          <ul style={{ margin: 0 }}>
+          <ul className="cw-m0">
             {r.agree.map((a) => (
               <li key={a}>{a}</li>
             ))}
@@ -69,7 +70,7 @@ function Compare() {
               </li>
             ))}
           </ul>
-          {r.kind === 'indicator' && <p className="cw-muted" style={{ marginTop: 'var(--space-xs)' }}>Non-CVE keys use a text search on pwn.watch, plus Cloudflare Radar for IPs and domains when enabled.</p>}
+          {r.kind === 'indicator' && <p className="cw-muted cw-mt-xs">Non-CVE keys use a text search on pwn.watch, plus Cloudflare Radar for IPs and domains when enabled.</p>}
         </div>
       </section>
 
@@ -141,7 +142,7 @@ function Compare() {
             <tr>
               <th scope="row">Summary</th>
               {r.sources.map((s) => (
-                <td key={s.source} style={{ minWidth: '28ch', maxWidth: '48ch' }}>
+                <td key={s.source} className="cw-cell-mid">
                   {!s.present ? '' : s.summary ? <span className="cw-muted">{s.summary.slice(0, 600)}</span> : <NotReported />}
                 </td>
               ))}

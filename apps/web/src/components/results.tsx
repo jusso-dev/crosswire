@@ -145,7 +145,7 @@ export function ResultGrid({
 
   return (
     <>
-      <div className="cw-row" data-center style={{ justifyContent: 'space-between', margin: '0 0 var(--space-2xs)' }}>
+      <div className="cw-row cw-between cw-m0 cw-mb-2xs" data-center>
         <span className="cw-muted">
           {caption}
           {sort && ` · sorted by ${sort.col} (${sort.dir === 'asc' ? 'ascending' : 'descending'}) within this sample`}
@@ -159,7 +159,7 @@ export function ResultGrid({
           </button>
         </span>
       </div>
-      <div className="cw-tablewrap" style={{ maxHeight: '60vh' }}>
+      <div className="cw-tablewrap cw-maxh-60">
         <table className="cw-table cw-grid-table" data-wrap={wrap} aria-label={caption} aria-rowcount={sorted.length + 1}>
           <thead>
             <tr>
@@ -216,9 +216,9 @@ export function ResultGrid({
 export function FilterChips({ filters, onRemove, onClear }: { filters: Filter[]; onRemove: (i: number) => void; onClear: () => void }) {
   if (!filters.length) return null
   return (
-    <div className="cw-row" data-center style={{ margin: '0 0 var(--space-xs)' }}>
+    <div className="cw-row cw-m0 cw-mb-xs" data-center>
       <span className="cw-muted">Filtered:</span>
-      <ul className="cw-chips" aria-label="Active filters" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+      <ul className="cw-chips cw-plain" aria-label="Active filters">
         {filters.map((f, i) => (
           <li key={`${f.col}-${i}`} className="cw-filterchip">
             <span>
@@ -356,7 +356,7 @@ export function Inspector({
         </button>
       </div>
       <div className="cw-inspector-body">
-        <div className="cw-row" data-center style={{ justifyContent: 'space-between' }}>
+        <div className="cw-row cw-between" data-center>
           <div className="cw-segmented" role="group" aria-label="View">
             <button type="button" aria-pressed={tab === 'fields'} onClick={() => setTab('fields')}>
               Fields
@@ -366,7 +366,7 @@ export function Inspector({
             </button>
           </div>
           {tab === 'fields' ? (
-            <label className="cw-check" style={{ fontSize: 'var(--text-caption)' }}>
+            <label className="cw-check cw-caption">
               <input type="checkbox" checked={hideEmpty} onChange={(e) => setHideEmpty(e.target.checked)} /> Hide empty fields
             </label>
           ) : (
@@ -375,7 +375,7 @@ export function Inspector({
             </button>
           )}
         </div>
-        <p className="cw-muted" role="status" aria-live="polite" style={{ minHeight: '1.2em', margin: 0 }}>
+        <p className="cw-muted cw-m0 cw-minh-line" role="status" aria-live="polite">
           {copied ?? ''}
         </p>
         {tab === 'fields' ? (

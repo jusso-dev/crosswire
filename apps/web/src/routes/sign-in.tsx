@@ -49,17 +49,17 @@ function SignIn() {
       <section className="cw-auth-panel" aria-labelledby="signin-title">
         <Wordmark tagline="Analyst workspace" />
         <h1 id="signin-title">{mode === 'in' ? 'Sign in to Crosswire' : 'Create your account'}</h1>
-        <p className="cw-muted" style={{ maxWidth: 380 }}>
+        <p className="cw-muted cw-maxw-380">
           One place to watch threat feeds, investigate in Microsoft Defender and Sentinel, and approve every response before it happens.
         </p>
         {config.entra && (
-          <p style={{ marginTop: 'var(--space-md)' }}>
+          <p className="cw-mt-md">
             <button
-              className="cw-btn"
+              className="cw-btn cw-maxw-380"
               data-size="lg"
               data-block
               type="button"
-              style={{ maxWidth: 380 }}
+             
               onClick={() => authClient.signIn.social({ provider: 'microsoft', callbackURL: target, errorCallbackURL: '/auth-error' })}
             >
               Sign in with Microsoft
