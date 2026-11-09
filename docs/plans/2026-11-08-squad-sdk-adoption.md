@@ -1,6 +1,6 @@
 # Crosswire Squad SDK adoption plan
 
-- **Status:** Planning handoff. CW-SDK-001 through CW-SDK-011 were later committed as `4b24ab1638c1dcd782ec7fe2af4241c3cd39ca74` and pushed to `main`. A same-day local follow-up, not committed and not pushed, stops file-URL imports of `UsageLedger` and `ContextUtilizationTracker`, stores an unset rate as null micros, claims each capacity slot on the run row, refuses a finished call that has no token count, redacts secrets in run replay, and aborts a live model call when another process requests cancel. That follow-up is not deployed. D3 and B4 below record the earlier plan. They are not the current production boundary. No further merge, deploy, restore, or external ticket authority.
+- **Status:** Planning handoff. CW-SDK-001 through CW-SDK-011 were later committed as `4b24ab1638c1dcd782ec7fe2af4241c3cd39ca74` and pushed to `main`. A same-day follow-up, merged to `main` in #117 (`a604371`), stops file-URL imports of `UsageLedger` and `ContextUtilizationTracker`, stores an unset rate as null micros, claims each capacity slot on the run row, refuses a finished call that has no token count, redacts secrets in run replay, and aborts a live model call when another process requests cancel. That follow-up is on `main`. It is not deployed. D3 and B4 below record the earlier plan. They are not the current production boundary. No further merge, deploy, restore, or external ticket authority.
 - **Date:** 08-11-2026
 - **Repo:** `jusso-dev/crosswire` only. Kelpie is out of scope.
 - **Tree verified:** `18234273d8f0687b4af13144727a730855a3b734` (`main`). Working tree was clean except the untracked handoff note `crosswire-squad-handoff-20261108-2051.txt`, which this plan does not edit.
@@ -25,7 +25,7 @@ Adopt these 1.1.0 runtime exports, from subpaths, and call them in process:
 | `UsageLedger` from `@bradygaster/squad-sdk/runtime/usage-ledger` | Append records only through an injected `UsageLedgerStorage`. | That storage writes Postgres. The default path `log/usage.jsonl` is not used. |
 | `ContextUtilizationTracker` from `@bradygaster/squad-sdk/runtime/context-utilization` | Record occupied tokens against a window. Default warning threshold is `0.8`. | Crosswire refuses the model call when the budget is exceeded. The tracker warns. It does not enforce. |
 
-The `UsageLedger` and `ContextUtilizationTracker` rows are the original plan. Commit `4b24ab1` loaded them by file URL. The unpushed follow-up does not import them. Postgres stores the tokens, and context refusal is local at 0.8.
+The `UsageLedger` and `ContextUtilizationTracker` rows are the original plan. Commit `4b24ab1` loaded them by file URL. The #117 follow-up does not import them. Postgres stores the tokens, and context refusal is local at 0.8.
 
 `@bradygaster/squad-sdk@1.1.0` `dist/index.js` does not import `dist/client/index.js`. `CopilotClient` is imported only by `dist/adapter/client.js`, which `dist/client/index.js` loads. The adopted subpaths do not load that module. `pnpm` will still download `@github/copilot-sdk` because it is a dependency of 1.1.0 (`^1.0.19`). Downloading it is not the same as starting it.
 
@@ -131,7 +131,7 @@ Every audit row is classified. “Audit” is the November report. “Now” is 
 | SDK client, coordinator, session pool | **skip** for SOC turns. | Equivalents that stay: TanStack `chat`, `LlmAgentRuntime`, Zod tools, DB threads. |
 | Hooks | **adapt** a small pre-egress and pre-memory check. **skip** file-write and shell guards. Agents have no such tools. | `defineHooks` may describe the policy. It does not become a second executor. |
 | Approval hashes and broker | **adapt** content hash and version on the existing proposal row. **skip** the preview broker and `HarnessAdapter`. | |
-| Result persistence, replay, cancellation | **adapt** | Crosswire run table. The plan injected SDK `UsageLedger` storage. The unpushed follow-up does not. Preview `readEvents` / `cancelRun` are not imported. |
+| Result persistence, replay, cancellation | **adapt** | Crosswire run table. The plan injected SDK `UsageLedger` storage. The #117 follow-up does not. Preview `readEvents` / `cancelRun` are not imported. |
 | Model selection and fallback | **keep** the configured provider. **adapt** an explicit approved fallback that refuses to change provider for sensitive content. | `_agentKey` may later select a deployment inside the same provider. |
 | Cost and token telemetry | **adopt** `CostTracker` and `ContextUtilizationTracker`. **adapt** the numbers into Postgres per org. | HTTP Azure Monitor stays for HTTP. It is not an agent ledger. |
 | Rate limiting | **keep** the shared request limiter and its fail-open behaviour, documented as a request limit. **adapt** a separate fail-closed in-flight and budget breaker. | |
@@ -162,13 +162,13 @@ Tickets live in `docs/plans/tickets/`. Each is local. None is a GitHub issue.
 | 8 | [CW-SDK-008](tickets/CW-SDK-008-soc-ceremonies.md) | After 007 |
 | 9 | [CW-SDK-009](tickets/CW-SDK-009-approval-binding.md) | Independent of the SDK pin after the proposal code is read again |
 | 10 | [CW-SDK-010](tickets/CW-SDK-010-export-diagnostics-docs.md) | Export and the config diagnostic only. After 002, 003, and 004. No design or ADR edits in this ticket. |
-| 11 | [CW-SDK-011](tickets/CW-SDK-011-docs-sync-final.md) | Documentation synchronisation. Started after 001 through 010 were implemented and the web Vitest suite passed. That sync is in `4b24ab1` on `main`. The later boundary doc pass is not pushed. |
+| 11 | [CW-SDK-011](tickets/CW-SDK-011-docs-sync-final.md) | Documentation synchronisation. Started after 001 through 010 were implemented and the web Vitest suite passed. That sync is in `4b24ab1` on `main`. The later boundary doc pass shipped in #117 (`a604371`). |
 
-Production SOC reliance waits until 001 through 006 are tested. 007 through 010 are required before calling the learning loop and the audit export complete. They do not block a dry-run lab that already has no live executors. The original gate was that CW-SDK-011 does not start until that code is in the tree and its tests have been run. That gate was met in this working tree. The CW-SDK-011 doc edit is in `4b24ab1` on `main`. It is not a production deploy. The follow-up doc pass is not pushed.
+Production SOC reliance waits until 001 through 006 are tested. 007 through 010 are required before calling the learning loop and the audit export complete. They do not block a dry-run lab that already has no live executors. The original gate was that CW-SDK-011 does not start until that code is in the tree and its tests have been run. That gate was met in this working tree. The CW-SDK-011 doc edit is in `4b24ab1` on `main`. It is not a production deploy. The follow-up doc pass shipped in #117.
 
 ## 5.1 Documentation synchronisation
 
-Status on 08-11-2026, after the implementation request: CW-SDK-001 through CW-SDK-010 are in this working tree and were exercised by Vitest (212 passed, 2 skipped) and `tsc --noEmit` before commit `4b24ab1`, which is on `main`. The SDK pin `@bradygaster/squad-sdk@1.1.0` is installed. The flags exist and default to `enforced`. That commit is not a production deploy. A later local follow-up re-ran the web suite with `PG_TEST_URL` unset on 08-11-2026: 25 files, 24 passed and 1 skipped; 234 tests, 229 passed and 5 skipped. `tsc --noEmit` passed. `pg-real.test.ts` then passed 5 tests on disposable Postgres 17 at `127.0.0.1:55432` (trust auth, database `crosswire_test`, Docker context `orbstack`, not port 5432), including the daily reservation lock. That container was removed. Playwright was not run. The Agents run-replay control was not clicked in a browser. That follow-up is not pushed and not deployed. The paragraph below is the original queue. It is no longer a description of the tree.
+Status on 08-11-2026, after the implementation request: CW-SDK-001 through CW-SDK-010 are in this working tree and were exercised by Vitest (212 passed, 2 skipped) and `tsc --noEmit` before commit `4b24ab1`, which is on `main`. The SDK pin `@bradygaster/squad-sdk@1.1.0` is installed. The flags exist and default to `enforced`. That commit is not a production deploy. A later local follow-up re-ran the web suite with `PG_TEST_URL` unset on 08-11-2026: 25 files, 24 passed and 1 skipped; 234 tests, 229 passed and 5 skipped. `tsc --noEmit` passed. `pg-real.test.ts` then passed 5 tests on disposable Postgres 17 at `127.0.0.1:55432` (trust auth, database `crosswire_test`, Docker context `orbstack`, not port 5432), including the daily reservation lock. That container was removed. Playwright was not run. The Agents run-replay control was not clicked in a browser. That follow-up shipped in #117 (`a604371`) and is not deployed. The paragraph below is the original queue. It is no longer a description of the tree.
 
 Original queue, kept so the instruction is still visible: Justin’s ordering instruction on 08-11-2026 was that documentation synchronisation is the final step, after the authorised Squad SDK adoption and security work is complete and verified. At the time of the planning handoff, implementation of CW-SDK-001 through CW-SDK-010 was unapproved and none of that code was in the tree.
 
@@ -180,8 +180,8 @@ Do not edit these files, and do not render a PDF, until that gate is met:
 | `docs/design/analyst-workspace-design.html` | Keep the unbranded architecture document: components, data flows, deployment boundaries, security practices. Add only what implementation verified. Do not insert branding or drop existing detail. |
 | `docs/design/analyst-workspace-design.pdf` | Regenerate from that HTML with the project script. |
 | `docs/design/render.sh` | The renderer. Command is `bash docs/design/render.sh` from the repo root. It writes the PDF beside the HTML. Run in this working tree on 08-11-2026. Exit 0. Not a merge. |
-| `docs/adr/0002-squad-sdk-embed.md` | Supersede the stale Copilot-seat sentence only after the pin and imports exist in code. Amendment applied. Spike text kept. The `4b24ab1` amendment is on `main`. The follow-up amendment (no file-URL import) is local and not pushed. |
-| `docs/adr/0004-chat-model-azure-openai.md` | Keep the customer-model decision. State the SDK boundary. The `4b24ab1` text is on `main`. The follow-up boundary (no file-URL import, unpriced null) is local and not pushed. |
+| `docs/adr/0002-squad-sdk-embed.md` | Supersede the stale Copilot-seat sentence only after the pin and imports exist in code. Amendment applied. Spike text kept. The `4b24ab1` amendment is on `main`. The follow-up amendment (no file-URL import) shipped in #117. |
+| `docs/adr/0004-chat-model-azure-openai.md` | Keep the customer-model decision. State the SDK boundary. The `4b24ab1` text is on `main`. The follow-up boundary (no file-URL import, unpriced null) shipped in #117. |
 | `docs/agents.md` | Match the running roster, charter load, memory trust, and model path. |
 
 The final pass must label each behaviour implemented, verified, planned, deferred, or unresolved. It must not describe a planned flag as live. Other Justin decisions and authorised Crosswire work stay. Kelpie, deploy, production, paid seats, and external tickets stay out.
@@ -244,14 +244,14 @@ Schema changes are additive. Charter files on disk stay where Docker copies them
 | --- | --- |
 | D1 | Pin `@bradygaster/squad-sdk@1.1.0`. Preview `2.0.0-preview.3` is not a production dependency. |
 | D2 | SOC model calls stay in `LlmAgentRuntime` through TanStack AI and `model.ts`. |
-| D3 | Planned runtime SDK use was the builders, `LocalMemoryStore`, `CostTracker`, injected `UsageLedger`, and `ContextUtilizationTracker`. Superseded in the unpushed follow-up: those two unexported modules are not imported. |
+| D3 | Planned runtime SDK use was the builders, `LocalMemoryStore`, `CostTracker`, injected `UsageLedger`, and `ContextUtilizationTracker`. Superseded in the #117 follow-up (`a604371`): those two unexported modules are not imported. |
 | D4 | Postgres remains the tenant store. SDK filesystem, Git, and SQLite providers are not wired to case data. |
 | D5 | Copilot seats are not required for D3. `SquadClient` BYOK exists in 1.1.0 and is not the adoption path. |
 | D6 | `HarnessAdapter` stays deferred. |
 | D7 | Crosswire keeps approval, allowlists, org isolation, and propose-only execution. The SDK does not replace them. |
 | D8 | SDK `POLICY` is not trusted just because `classify` returned it. Org policy requires human promotion. |
 | D9 | `.squad/team.md` and `.squad/routing.md` become generated views of the typed registry. They are not a second source of truth. |
-| D10 | Architecture docs must stop saying that every Crosswire run needs a Copilot seat. Copilot custom agents in `.github/agents/` remain optional and still need a Copilot licence for that product. Applied on 08-11-2026 in ADR 0002, ADR 0004, `docs/agents.md`, `design.md`, and the analyst-workspace HTML. That doc sync is in `4b24ab1` on `main`. The follow-up doc edit that drops the file-URL claim is local and not pushed. |
+| D10 | Architecture docs must stop saying that every Crosswire run needs a Copilot seat. Copilot custom agents in `.github/agents/` remain optional and still need a Copilot licence for that product. Applied on 08-11-2026 in ADR 0002, ADR 0004, `docs/agents.md`, `design.md`, and the analyst-workspace HTML. That doc sync is in `4b24ab1` on `main`. The follow-up doc edit that drops the file-URL claim shipped in #117. |
 
 ## 10. Blockers
 
@@ -260,12 +260,12 @@ Schema changes are additive. Charter files on disk stay where Docker copies them
 | B1 | This handoff does not authorise implementation, merge, deploy, paid seats, external tickets, or sending case data to a model. | Tickets wait for a separate implementation request. |
 | B2 | `LocalMemoryStore.classify` does not treat instruction injection as `FORBIDDEN`. | CW-SDK-002 is mandatory. Shipping classify alone would miss the attack the audit prioritised. |
 | B3 | `defineSquad` does not fail closed on a missing charter file. | CW-SDK-004 adds that check in Crosswire. |
-| B4 | `UsageLedger` defaults to `log/usage.jsonl`. | The unpushed follow-up does not construct it and does not file-URL import it. |
+| B4 | `UsageLedger` defaults to `log/usage.jsonl`. | The #117 follow-up does not construct it and does not file-URL import it. |
 | B5 | `loadConfig` throws `ConfigValidationError` on invalid config. Whether it refuses a missing charter file was not executed. | CW-SDK-004 tests it. Crosswire’s own check remains even if `loadConfig` is stricter than expected. |
 | B6 | `SquadClient` BYOK was not re-run. ADR 0004 is the only runtime evidence of a customer model without a GitHub account. | Does not block D2 and D3. |
 | B7 | Developer machines were not probed for Node 24. The repo engine and Dockerfile already require it. | Implementation CI uses the repo engine. |
 | B8 | No pre-existing local ticket file was in the tree to extend. | These drafts are the first set. |
-| B9 | Documentation synchronisation was queued until 001 through 010 existed and tests had run. | CW-SDK-011 is in `4b24ab1` on `main`. The follow-up doc pass is local, not pushed, and not deployed. |
+| B9 | Documentation synchronisation was queued until 001 through 010 existed and tests had run. | CW-SDK-011 is in `4b24ab1` on `main`. The follow-up doc pass shipped in #117 and is not deployed. |
 
 ## 11. Out of scope
 
