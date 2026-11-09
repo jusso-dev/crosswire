@@ -9,6 +9,8 @@ const stamp = Date.now()
 
 async function signUpWithDemo(page: Page, email: string) {
   await page.goto('/sign-in')
+  // Wait for hydration: a click before React attaches its handlers does nothing.
+  await page.waitForLoadState('networkidle')
   await page.getByRole('button', { name: 'Create an account' }).click()
   await page.getByLabel('Email').fill(email)
   await page.getByLabel('Password').fill('correct horse battery staple')
