@@ -13,8 +13,10 @@ version 1.7.18.
 - Rate limiting: Better Auth limiter, 5 sign-in attempts per minute per IP (30 requests per minute
   for other `/api/auth/*` endpoints). Counters live in the `rate_limit` table, so every replica
   shares them (`RATE_LIMIT_STORAGE=database`, the default; `memory` makes them per process). Client
-  IP comes from `X-Forwarded-For`; set `TRUSTED_PROXIES` (comma-separated IPs/CIDRs of your proxy)
-  so multi-hop headers resolve correctly. Audit rows record the right-most hop (the one your proxy
+  IP comes from `X-Forwarded-For`; set `TRUSTED_PROXIES` (comma-separated IPv4 or IPv6 addresses
+  or CIDR ranges of your proxies, for example `10.0.0.0/8, fd00::/8`) so multi-hop headers resolve
+  correctly. Both the sign-in limiter and the chat limiter skip trusted hops. An entry that is not
+  an address or range stops the server at start-up. Audit rows record the right-most hop (the one your proxy
   appended).
 - Sessions: database sessions with an idle timeout and an absolute cap (see
   [Session lifetime](#session-lifetime)). No hand-rolled JWT store.
