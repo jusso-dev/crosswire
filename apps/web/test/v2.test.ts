@@ -427,13 +427,18 @@ describe('parallel Lead fan-out (#93)', () => {
     let inFlight = 0
     let maxInFlight = 0
     // Real model calls against a local mock endpoint. Scribe's model call fails.
+    // Intel and Hunter each wait until both are in flight, so the test proves they overlap without
+    // a fixed sleep (#178). Run one after the other, they would wait forever and the test times out.
+    let bothArrived!: () => void
+    const barrier = new Promise<void>((resolve) => (bothArrived = resolve))
     const mock = await startMockModel(async (req) => {
-      inFlight++
-      maxInFlight = Math.max(maxInFlight, inFlight)
-      await new Promise((r) => setTimeout(r, 150))
-      inFlight--
       const who = /^# (\w+)/m.exec(req.system)?.[1]?.toLowerCase() ?? 'unknown'
       if (who === 'scribe') return { status: 500, body: JSON.stringify({ error: { message: 'scribe exploded' } }) }
+      inFlight++
+      maxInFlight = Math.max(maxInFlight, inFlight)
+      if (inFlight >= 2) bothArrived()
+      await barrier
+      inFlight--
       return { text: `${who} answer` }
     })
     const saved = { ...process.env }
