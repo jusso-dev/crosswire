@@ -7,6 +7,7 @@ import { EmptyState, Notice, Term, SkeletonPage } from '../components/ui'
 import { listKeys } from '../components/keys'
 import { plainMessage } from '../shared/messages'
 import { Freshness, StatusTag } from '../components/signals'
+import { pageTitle } from '../components/errors'
 
 /** Approvals inbox: Waiting / Decided / All, like an action centre's Pending vs History split. */
 export const Route = createFileRoute('/app/approvals')({
@@ -18,6 +19,7 @@ export const Route = createFileRoute('/app/approvals')({
       {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
+  head: () => ({ meta: [{ title: pageTitle('Approvals') }] }),
   component: Approvals,
 })
 

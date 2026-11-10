@@ -3,6 +3,7 @@ import './zod-config'
 import { createRouter } from '@tanstack/react-router'
 import { getGlobalStartContext } from '@tanstack/react-start'
 import { routeTree } from './routeTree.gen'
+import { RouteError } from './components/errors'
 
 /**
  * Per-request CSP nonce from the request middleware in src/start.ts. Server only: on the client
@@ -24,6 +25,8 @@ export function getRouter() {
     routeTree,
     scrollRestoration: true,
     defaultPreload: 'intent',
+    // Every route gets a plain-words error screen, even one that forgets to set its own.
+    defaultErrorComponent: ({ error }) => <RouteError error={error} />,
     ...(nonce ? { ssr: { nonce } } : {}),
   })
 }

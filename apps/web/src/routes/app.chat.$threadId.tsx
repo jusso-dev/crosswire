@@ -10,6 +10,7 @@ import { plainMessage, isBudgetRefusal } from '../shared/messages'
 import { RunStatusTag, StopRunButton } from '../components/runs'
 import { AGENT_KEYS, AGENT_LABELS, ORCHESTRATE_KEY, toAgentSelection, type AgentSelection } from '../shared/agents'
 import { Notice, SkeletonPage } from '../components/ui'
+import { pageTitle } from '../components/errors'
 
 /**
  * One conversation, ChatGPT-style: centred transcript, markdown answers that stream token by token,
@@ -34,6 +35,7 @@ export const Route = createFileRoute('/app/chat/$threadId')({
       </Link>
     </div>
   ),
+  head: ({ loaderData }) => ({ meta: [{ title: pageTitle(loaderData?.thread.title || 'Conversation') }] }),
   component: Thread,
 })
 

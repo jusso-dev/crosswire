@@ -1,6 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { z } from 'zod'
 import { Wordmark } from '../components/ui'
+import { pageTitle } from '../components/errors'
 
 const MESSAGES: Record<string, string> = {
   unknown_tenant: 'Your Microsoft Entra tenant is not connected to this Crosswire installation. Ask an administrator to add your tenant (docs/auth.md).',
@@ -14,6 +15,7 @@ const MESSAGES: Record<string, string> = {
 /** Readable SSO failure page (#19); never shows stack traces or raw provider payloads. */
 export const Route = createFileRoute('/auth-error')({
   validateSearch: z.object({ error: z.string().optional(), error_description: z.string().optional() }),
+  head: () => ({ meta: [{ title: pageTitle('Sign-in problem') }] }),
   component: AuthError,
 })
 

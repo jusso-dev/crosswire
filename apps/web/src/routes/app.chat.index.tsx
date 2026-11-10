@@ -5,11 +5,13 @@ import { z } from 'zod'
 import { plainMessage } from '../shared/messages'
 import { newThread } from '../fns/chat'
 import { AGENT_KEYS, AGENT_LABELS, type AgentKey } from '../shared/agents'
+import { pageTitle } from '../components/errors'
 
 /** Empty state: pick who to talk to, which starts a conversation with that agent selected. */
 export const Route = createFileRoute('/app/chat/')({
   // Triage hand-off: ?agent=intel&q=... opens a conversation with that question ready to send.
   validateSearch: z.object({ agent: z.string().optional(), q: z.string().max(2000).optional() }),
+  head: () => ({ meta: [{ title: pageTitle('Ask an agent') }] }),
   component: ChatHome,
 })
 
