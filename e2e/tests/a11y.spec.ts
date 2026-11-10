@@ -1,12 +1,13 @@
 import AxeBuilder from '@axe-core/playwright'
 import { expect, test, type Page } from '@playwright/test'
+import { horizontalOverflow } from '../support/helpers'
 
 /**
  * Automated WCAG 2.2 AA scan (axe-core) of every app page in light and dark themes.
  * Automated checks catch roughly a third of issues; keyboard and screen-reader behaviour is
- * covered by hunt-workspace.spec.ts and manual review. Needs a running app with demo fixtures.
+ * covered by hunt-workspace.spec.ts and manual review. Uses the shared owner with [DEMO] data
+ * from global-setup.ts.
  */
-const stamp = Date.now()
 const TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']
 
 async function scan(page: Page, label: string) {
@@ -15,21 +16,18 @@ async function scan(page: Page, label: string) {
   return summary
 }
 
-test('every page passes axe WCAG 2.2 AA in light and dark', async ({ page }) => {
+test('every page passes axe WCAG 2.2 AA in light and dark', async ({ page, browser }) => {
   test.setTimeout(240_000)
   await page.setViewportSize({ width: 1280, height: 900 })
   const problems: string[] = []
 
-  await page.goto('/sign-in')
-  problems.push(...(await scan(page, 'sign-in')))
-
-  await page.getByRole('button', { name: 'Create an account' }).click()
-  await page.getByLabel('Email').fill(`a11y-${stamp}@example.test`)
-  await page.getByLabel('Password').fill('correct horse battery staple')
-  await page.getByRole('button', { name: 'Create account' }).click()
-  await page.waitForURL(/\/app/)
-  await page.getByRole('button', { name: 'Load demo data' }).click()
-  await expect(page.getByText(/Demo data loaded/)).toBeVisible()
+  // Sign-in page, signed out (a fresh context without the shared session).
+  const anon = await browser.newContext({ storageState: { cookies: [], origins: [] } })
+  const anonPage = await anon.newPage()
+  await anonPage.goto('/sign-in')
+  await anonPage.waitForLoadState('networkidle')
+  problems.push(...(await scan(anonPage, 'sign-in')))
+  await anon.close()
 
   await page.goto('/app/hunts')
   const huntHref = await page.getByRole('link', { name: /\[DEMO\] Suspicious PowerShell/ }).first().getAttribute('href')
@@ -88,8 +86,8 @@ test('every page passes axe WCAG 2.2 AA in light and dark', async ({ page }) => 
       await page.goto(path)
       await page.waitForLoadState('networkidle')
       problems.push(...(await scan(page, `${label} [${theme}]`)))
-      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
-      if (overflow > 1) problems.push(`${label} [${theme}] · horizontal overflow of ${overflow}px at 390 px`)
+      const overflow = await horizontalOverflow(page)
+      if (overflow.px > 1) problems.push(`${label} [${theme}] · horizontal overflow of ${overflow.px}px at 390 px (${overflow.culprit})`)
     }
     await page.setViewportSize({ width: 1280, height: 900 })
   }

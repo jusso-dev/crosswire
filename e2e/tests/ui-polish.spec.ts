@@ -1,33 +1,20 @@
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test } from '@playwright/test'
+import { loadDemo, releaseMock, signUp, testId } from '../support/helpers'
 
 /**
  * UI polish pass: command palette, shortcuts, run view with Stop, chat to run link, and the
- * approval confirmation. Needs the app with demo fixtures and the mock model
- * (e2e/support/mock-model.mjs, MODEL_PROVIDER=openai-compatible). See chat.spec.ts for setup.
+ * approval confirmation. Uses the mock model started by playwright.config.ts. The first test uses
+ * the shared owner from global-setup.ts; the second creates its own users because it approves.
  */
-const stamp = Date.now()
-const MOCK = process.env.MOCK_MODEL_URL ?? 'http://127.0.0.1:18099'
-
-async function signUp(page: Page, tag: string) {
-  await page.goto('/sign-in')
-  await page.waitForLoadState('networkidle')
-  await page.getByRole('button', { name: 'Create an account' }).click()
-  await page.getByLabel('Email').fill(`${tag}-${stamp}@example.test`)
-  await page.getByLabel('Password').fill('correct horse battery staple')
-  await page.getByRole('button', { name: 'Create account' }).click()
-  await page.waitForURL(/\/app/)
-  await page.waitForLoadState('networkidle')
-}
-
-test('palette, shortcuts, run view with Stop, and a deliberate approval', async ({ page, request }) => {
+test('palette, shortcuts, run view with Stop, and a deliberate approval', async ({ page, request }, info) => {
   test.setTimeout(150_000)
+  const key = testId(info, 'polish')
   await page.setViewportSize({ width: 1280, height: 900 })
-  await signUp(page, 'polish')
-  await page.getByRole('button', { name: 'Load demo data' }).click()
-  await expect(page.getByText(/Demo data loaded/)).toBeVisible()
+  await page.goto('/app')
+  await page.waitForLoadState('networkidle')
 
   // First-run checklist is there and can be hidden; it stays hidden after reload.
   await expect(page.getByRole('heading', { name: 'Get started' })).toBeVisible()
@@ -78,16 +65,16 @@ test('palette, shortcuts, run view with Stop, and a deliberate approval', async 
   await page.waitForLoadState('networkidle')
   await page.getByRole('button', { name: /Chat with Intel/ }).click()
   await page.waitForURL(/\/app\/chat\/.+/)
-  await page.getByRole('textbox', { name: /Message to Intel/ }).fill('What is new for Fortinet?')
+  await page.getByRole('textbox', { name: /Message to Intel/ }).fill(`What is new for Fortinet? [t:${key}]`)
   await page.keyboard.press('Enter')
   const bar = page.locator('.cw-livebar')
   await expect(bar).toContainText('Intel is working', { timeout: 30_000 })
   await expect(bar.getByText('Running')).toBeVisible({ timeout: 15_000 })
   await bar.getByRole('button', { name: 'Stop run' }).click()
-  // Confirmation lands on the safe choice.
-  await expect(bar.getByRole('button', { name: 'Yes, stop it' })).toBeFocused()
+  // Confirmation lands on the safe choice: keep the run going.
+  await expect(bar.getByRole('button', { name: 'Keep running' })).toBeFocused()
   await bar.getByRole('button', { name: 'Yes, stop it' }).click()
-  await request.post(`${MOCK}/__release`)
+  await releaseMock(request, key)
   await expect(page.getByRole('button', { name: 'Send' })).toBeVisible({ timeout: 20_000 })
 
   // The reply links to its run; the run view shows status, steps and the stop.
@@ -113,30 +100,34 @@ test('palette, shortcuts, run view with Stop, and a deliberate approval', async 
   await expect(page.getByRole('heading', { name: /Held for review/ })).toBeVisible()
 })
 
-test('a second approver approves through a confirmation that names the target', async ({ browser }) => {
+test('a second approver approves through a confirmation that names the target', async ({ browser }, info) => {
   test.setTimeout(120_000)
-  // Owner loads demo data; the demo action is requested on the owner's behalf.
-  const ownerCtx = await browser.newContext()
-  const owner = await ownerCtx.newPage()
-  await signUp(owner, 'polish-owner')
-  await owner.getByRole('button', { name: 'Load demo data' }).click()
-  await expect(owner.getByText(/Demo data loaded/)).toBeVisible()
-  const ownerEmail = `polish-owner-${stamp}@example.test`
-  await ownerCtx.close()
-
   // No invite flow exists in the UI, so this check runs only when the test can make a second
-  // approver in the same org through PG_E2E_URL (the disposable database). Skipped otherwise.
+  // approver in the same org through PG_E2E_URL (the disposable database). Skipped otherwise,
+  // before any set-up work runs.
   const url = process.env.PG_E2E_URL
   test.skip(!url, 'Set PG_E2E_URL to the disposable database to add a second approver.')
+
+  // Owner loads demo data; the demo action is requested on the owner's behalf.
+  const ownerEmail = `${testId(info, 'polish-owner')}@example.test`
+  const approverEmail = `${testId(info, 'polish-approver')}@example.test`
+  const signedOut = { storageState: { cookies: [], origins: [] } }
+  const ownerCtx = await browser.newContext(signedOut)
+  const owner = await ownerCtx.newPage()
+  await signUp(owner, ownerEmail)
+  await loadDemo(owner)
+  await ownerCtx.close()
   // Reuse the web app's postgres client rather than adding a dependency to the e2e package.
-  const postgres = createRequire(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../apps/web/package.json'))('postgres') as typeof import('postgres')
+  type Sql = ((strings: TemplateStringsArray, ...values: unknown[]) => Promise<Array<Record<string, string>>>) & { end(): Promise<void> }
+  const mod = createRequire(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../apps/web/package.json'))('postgres') as { default?: unknown }
+  const postgres = (mod.default ?? mod) as (url: string) => Sql
   const sql = postgres(url!)
   try {
-    const approverCtx = await browser.newContext()
+    const approverCtx = await browser.newContext(signedOut)
     const page = await approverCtx.newPage()
-    await signUp(page, 'polish-approver')
+    await signUp(page, approverEmail)
     const [o] = await sql`select m.org_id from org_memberships m join "user" u on u.id = m.user_id where u.email = ${ownerEmail}`
-    const [a] = await sql`select id from "user" where email = ${`polish-approver-${stamp}@example.test`}`
+    const [a] = await sql`select id from "user" where email = ${approverEmail}`
     await sql`insert into org_memberships (id, org_id, user_id, role) values (${crypto.randomUUID()}, ${o!.org_id}, ${a!.id}, 'approver')`
     await sql`delete from org_memberships where user_id = ${a!.id} and org_id <> ${o!.org_id}`
     await page.goto('/app/approvals')

@@ -1,23 +1,18 @@
 import { expect, test } from '@playwright/test'
+import { signUp, testId } from '../support/helpers'
 
 /**
  * Golden path (#80): local sign-in (stand-in for SSO) -> load [DEMO] fixtures -> watch hit ->
  * hunt with a proposed KQL -> approve & run (demo mode) -> response proposal -> approver dry-run.
  * Asserts the executor never performs a live call: the proposal stays non-executed and the dry
- * run lists planned calls only.
+ * run lists planned calls only. Signs up its own user: it approves the demo search, which would
+ * change the shared owner's data for other specs.
  */
-const stamp = Date.now()
-const owner = { email: `owner-${stamp}@example.test`, password: 'correct horse battery staple' }
+test.use({ storageState: { cookies: [], origins: [] } })
 
-test('SSO stand-in -> watch hit -> hunt proposal -> dry-run approval', async ({ page, request }) => {
+test('SSO stand-in -> watch hit -> hunt proposal -> dry-run approval', async ({ page, request }, info) => {
   // 1. Sign up (local stand-in for Entra SSO). First user owns a personal workspace.
-  await page.goto('/sign-in')
-  // Wait for hydration: a click before React attaches its handlers does nothing.
-  await page.waitForLoadState('networkidle')
-  await page.getByRole('button', { name: 'Create an account' }).click()
-  await page.getByLabel('Email').fill(owner.email)
-  await page.getByLabel('Password').fill(owner.password)
-  await page.getByRole('button', { name: 'Create account' }).click()
+  await signUp(page, `${testId(info, 'golden')}@example.test`)
   await expect(page.getByRole('heading', { name: /^Good (morning|afternoon|evening)/ })).toBeVisible()
   await expect(page.getByText(/Response safety: dry-run ON/)).toBeVisible()
 

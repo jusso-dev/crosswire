@@ -1,31 +1,21 @@
 import { expect, test, type Page } from '@playwright/test'
+import { horizontalOverflow } from '../support/helpers'
 
 /**
  * Hunt workspace interactions (design.md §4): keyboard row navigation, inspector, URL-kept filters
  * and selection across reload and back/forward, theme persistence, and narrow layout.
- * Uses [DEMO] fixtures; needs a running app (see playwright.config.ts).
+ * Uses the shared owner with [DEMO] fixtures from global-setup.ts (read-only on that data).
  */
-const stamp = Date.now()
-
-async function signUpWithDemo(page: Page, email: string) {
-  await page.goto('/sign-in')
-  // Wait for hydration: a click before React attaches its handlers does nothing.
-  await page.waitForLoadState('networkidle')
-  await page.getByRole('button', { name: 'Create an account' }).click()
-  await page.getByLabel('Email').fill(email)
-  await page.getByLabel('Password').fill('correct horse battery staple')
-  await page.getByRole('button', { name: 'Create account' }).click()
-  await page.waitForURL(/\/app/)
-  await page.getByRole('button', { name: 'Load demo data' }).click()
-  await expect(page.getByText(/Demo data loaded/)).toBeVisible()
+async function openDemoHunt(page: Page) {
   await page.goto('/app/hunts')
+  await page.waitForLoadState('networkidle')
   await page.getByRole('link', { name: /\[DEMO\] Suspicious PowerShell/ }).first().click()
   await page.waitForURL(/\/app\/hunts\/[^/?]+/)
 }
 
 test('hunt workspace: keyboard, inspector, filters, history, theme', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
-  await signUpWithDemo(page, `ws-${stamp}@example.test`)
+  await openDemoHunt(page)
 
   // Demo data is labelled at the result, not only in a banner.
   await expect(page.getByText('Demo data').first()).toBeVisible()
@@ -89,11 +79,11 @@ test('hunt workspace: keyboard, inspector, filters, history, theme', async ({ pa
 
 test('hunt workspace: long values and narrow width stay usable', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
-  await signUpWithDemo(page, `ws-narrow-${stamp}@example.test`)
+  await openDemoHunt(page)
   await page.locator('.cw-qitem', { hasText: 'Ran' }).first().click()
   // No horizontal page scroll: wide grids scroll inside their own container.
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)
-  expect(overflow).toBeLessThanOrEqual(0)
+  const overflow = await horizontalOverflow(page)
+  expect(overflow.px, `overflow caused by ${overflow.culprit}`).toBeLessThanOrEqual(1)
   // At narrow widths the inspector is a modal dialog: focus moves in, cannot leave, and returns on close.
   const grid = page.getByRole('table', { name: /sample rows/ })
   await grid.locator('tbody tr').first().click()
@@ -114,7 +104,7 @@ test('hunt workspace: long values and narrow width stay usable', async ({ page }
 
 test('hunt workspace: at 1000px the inspector overlay keeps focus and the background inert', async ({ page }) => {
   await page.setViewportSize({ width: 1000, height: 800 })
-  await signUpWithDemo(page, `ws-mid-${stamp}@example.test`)
+  await openDemoHunt(page)
   await page.locator('.cw-qitem', { hasText: 'Ran' }).first().click()
   const grid = page.getByRole('table', { name: /sample rows/ })
   await grid.locator('tbody tr').first().click()
