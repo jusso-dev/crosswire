@@ -1,3 +1,4 @@
+import { BlockList, isIP } from 'node:net'
 import { z } from 'zod'
 
 /**
@@ -38,8 +39,17 @@ const schema = z.object({
   ENTRA_CLIENT_SECRET: z.string().optional(),
   ENTRA_TENANT_ID: z.string().default('organizations'),
   ENTRA_ORG_NAME: z.string().default('Entra organisation'),
-  /** Comma-separated proxy IPs/CIDRs whose X-Forwarded-For entries are trusted (Better Auth). */
-  TRUSTED_PROXIES: z.string().optional(),
+  /**
+   * Comma-separated proxy IPs or CIDR ranges (IPv4 or IPv6) whose X-Forwarded-For entries are
+   * trusted, by Better Auth and the chat rate limiter (#157). An invalid entry stops the server.
+   */
+  TRUSTED_PROXIES: z
+    .string()
+    .optional()
+    .superRefine((v, ctx) => {
+      const { invalid } = parseTrustedProxies(v)
+      if (invalid.length) ctx.addIssue({ code: 'custom', message: `not an IP address or CIDR range: ${invalid.join(', ')}` })
+    }),
   ENTRA_AUTO_PROVISION_ORGS: bool(false),
 
   SMTP_HOST: z.string().optional(),
@@ -104,6 +114,8 @@ const schema = z.object({
   CLOUDFLARE_API_TOKEN: z.string().optional(),
 
   WORKER_TIMEZONE: z.string().default('UTC'),
+  /** Port of the worker's health server (GET /healthz), used by container probes (#142, #151). */
+  WORKER_HEALTH_PORT: z.coerce.number().int().positive().max(65535).default(3001),
   /** v2 (#92): scheduled hunts. Off switch for the worker loop; schedules still need human approval. */
   SCHEDULED_HUNTS_ENABLED: bool(true),
   /** v2 (#91): outbound webhook notifications (Teams/Slack). Channels are configured per org. */
@@ -165,7 +177,16 @@ const schema = z.object({
   BUDGET_MAX_SPEND_MICROS: z.coerce.number().int().nonnegative().optional(),
   /** Customer-supplied price. Crosswire does not invent a price for an Azure deployment. */
   BUDGET_USD_PER_MILLION_TOKENS: z.coerce.number().positive().optional(),
+
+  /**
+   * Silences the production warning for a DATABASE_URL without sslmode=verify-full (#134), for a
+   * database on a private network that has no TLS. It does not change how the driver connects.
+   */
+  DATABASE_TLS_INSECURE_OK: bool(false),
 })
+
+/** Every variable the server reads through env(). Used by the Bicep coverage test (#133). */
+export const ENV_KEYS = Object.keys(schema.shape) as Array<keyof z.infer<typeof schema>>
 
 export type Env = z.infer<typeof schema>
 
@@ -191,9 +212,53 @@ export function parseEnv(source: Record<string, string | undefined>): Env {
   return result.data
 }
 
+/**
+ * Configuration that starts but is weaker than it should be. Logged loudly at start-up; never
+ * refuses to start, so an existing deployment keeps running while it is fixed.
+ */
+export function startupWarnings(e: Env): string[] {
+  const warnings: string[] = []
+  if (e.NODE_ENV === 'production' && !e.DATABASE_TLS_INSECURE_OK && databaseSslMode(e.DATABASE_URL) !== 'verify-full') {
+    warnings.push(
+      'DATABASE_URL does not set sslmode=verify-full, so the Postgres server certificate and host name are not checked. ' +
+        'Add ?sslmode=verify-full (see docs/configuration.md). Set DATABASE_TLS_INSECURE_OK=true only for a database without TLS on a private network.',
+    )
+  }
+  return warnings
+}
+
+/** The sslmode in a Postgres URL (lower case), or null when it has none or cannot be parsed. */
+export function databaseSslMode(url: string): string | null {
+  try {
+    const params = new URL(url).searchParams
+    // sslrootcert=system implies verify-full in postgres.js.
+    if (params.get('sslrootcert') === 'system') return 'verify-full'
+    return params.get('sslmode')?.toLowerCase() ?? null
+  } catch {
+    return null
+  }
+}
+
+const WARNED = Symbol.for('crosswire.startupWarningsLogged')
+
+/**
+ * Log start-up warnings once per process, as JSON lines in the logger's format (env.ts stays free
+ * of other app imports because server.mjs loads it as a separate bundle). The flag lives on
+ * globalThis so the env-check bundle and the server bundle share it.
+ */
+export function logStartupWarnings(e: Env, write: (line: string) => void = (l) => process.stdout.write(`${l}\n`)) {
+  const g = globalThis as unknown as Record<symbol, boolean>
+  if (g[WARNED]) return
+  g[WARNED] = true
+  for (const w of startupWarnings(e)) write(JSON.stringify({ time: new Date().toISOString(), level: 'warn', msg: 'startup configuration warning', warning: w }))
+}
+
 let cached: Env | undefined
 export function env(): Env {
-  cached ??= parseEnv(process.env)
+  if (!cached) {
+    cached = parseEnv(process.env)
+    logStartupWarnings(cached)
+  }
   return cached
 }
 
@@ -232,4 +297,42 @@ export function responseSafety(e: Env = env()): ResponseSafety {
     }
   }
   return { dryRun, executors, warnings }
+}
+
+/** Matches client IPs against TRUSTED_PROXIES entries. */
+export interface ProxyMatcher {
+  has(ip: string): boolean
+}
+
+/**
+ * Parse a comma-separated TRUSTED_PROXIES value (#157). Each entry is an IPv4 or IPv6 address, or
+ * a CIDR range such as `10.0.0.0/8` or `fd00::/8`. Returns the matcher and any invalid entries.
+ * IPv4 entries also match the IPv4-mapped IPv6 form (`::ffff:10.0.0.1`). Uses node:net BlockList.
+ */
+export function parseTrustedProxies(value: string | undefined): { matcher: ProxyMatcher; invalid: string[] } {
+  const list = new BlockList()
+  const invalid: string[] = []
+  for (const raw of (value ?? '').split(',').map((s) => s.trim()).filter(Boolean)) {
+    const [addr = '', bits, extra] = raw.split('/')
+    const family = isIP(addr)
+    const type = family === 4 ? 'ipv4' : 'ipv6'
+    if (!family || extra !== undefined) {
+      invalid.push(raw)
+    } else if (bits === undefined) {
+      list.addAddress(addr, type)
+    } else {
+      const prefix = /^\d{1,3}$/.test(bits) ? Number(bits) : NaN
+      if (prefix >= 0 && prefix <= (family === 4 ? 32 : 128)) list.addSubnet(addr, prefix, type)
+      else invalid.push(raw)
+    }
+  }
+  return {
+    invalid,
+    matcher: {
+      has(ip: string) {
+        const family = isIP(ip)
+        return family !== 0 && list.check(ip, family === 4 ? 'ipv4' : 'ipv6')
+      },
+    },
+  }
 }
