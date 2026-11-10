@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { isTyping } from './keys'
 
 export type Row = Record<string, unknown>
 export type Filter = { col: string; op: 'eq' | 'ne'; value: string }
@@ -130,6 +131,8 @@ export function ResultGrid({
   }
 
   const onKey = (e: KeyboardEvent<HTMLTableSectionElement>) => {
+    // Cmd/Ctrl/Alt combinations (copy, find, browser keys) belong to the browser, not the grid.
+    if (e.metaKey || e.ctrlKey || e.altKey) return
     const focused = (e.target as HTMLElement).closest<HTMLTableRowElement>('tr[data-index]')
     const from = focused ? Number(focused.dataset.index) : null
     if (e.key === 'j' || e.key === 'ArrowDown') {
@@ -159,8 +162,10 @@ export function ResultGrid({
           </button>
         </span>
       </div>
-      <div className="cw-tablewrap cw-maxh-60">
-        <table className="cw-table cw-grid-table" data-wrap={wrap} aria-label={caption} aria-rowcount={sorted.length + 1}>
+      {/* A focusable, named region so keyboard users can scroll a wide or long sample. */}
+      <div className="cw-tablewrap cw-maxh-60" role="region" aria-label="Result rows" tabIndex={0}>
+        <table className="cw-table cw-grid-table" data-wrap={wrap}>
+          <caption className="cw-sr-only">{caption}</caption>
           <thead>
             <tr>
               <th className="num" scope="col">
@@ -186,9 +191,11 @@ export function ResultGrid({
                 key={index}
                 data-index={index}
                 tabIndex={selected === index || (selected === null && index === sorted[0]?.index) ? 0 : -1}
-                aria-selected={selected === index}
+                // A plain table, not an ARIA grid: the open row is marked as current, not selected.
+                aria-current={selected === index ? 'true' : undefined}
                 onClick={() => onSelect(index)}
                 onKeyDown={(e) => {
+                  if (e.metaKey || e.ctrlKey || e.altKey) return
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault()
                     onSelect(index)
@@ -327,8 +334,9 @@ export function Inspector({
       aria-modal={overlay ? true : undefined}
       onKeyDown={(e) => {
         trap(e)
-        // Same keys as the grid, so analysts can step through rows from either side.
-        const typing = (e.target as HTMLElement).closest('input, textarea, select')
+        // Same keys as the grid, so analysts can step through rows from either side. Never while
+        // typing (fields, the KQL editor, contenteditable) or with a modifier held.
+        const typing = isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey
         if (e.key === 'Escape') onClose()
         else if (!typing && (e.key === 'j' || e.key === 'ArrowDown') && onNext) {
           e.preventDefault()
