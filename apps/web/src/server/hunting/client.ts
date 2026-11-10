@@ -117,7 +117,11 @@ function translateError(status: number, json: Record<string, unknown>) {
           : status === 429
             ? 'Microsoft throttled the request. Wait and try again.'
             : 'Microsoft API error.'
-  return `${hint} (HTTP ${status}${err.code ? `, ${err.code}` : ''}${err.message ? `: ${String(err.message).slice(0, 300)}` : ''})`
+  // Shown to the analyst and stored on the search, so keep Microsoft's detail short and free of
+  // request ids; the screen falls back to a generic sentence for long or id-bearing text (#129).
+  const detail = err.message ? String(err.message).replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '(id removed)').replace(/\s+/g, ' ').trim() : ''
+  const code = err.code ? String(err.code).slice(0, 40) : ''
+  return `${hint} (HTTP ${status}${code ? `, ${code}` : ''}${detail ? `: ${detail.length > 110 ? `${detail.slice(0, 110)}…` : detail}` : ''})`
 }
 
 let client: HuntingClient | undefined

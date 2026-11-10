@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { and, eq } from 'drizzle-orm'
 import { getDb } from '../src/server/db/client'
 import { auditEvents, orgConnectors } from '../src/server/db/schema'
-import { HuntingNotConfiguredError, TokenBroker, allowedSecretRefPrefix, resolveClientSecret, upsertConnector, type Sts } from '../src/server/hunting/broker'
+import { HuntingNotConfiguredError, TokenBroker, allowedSecretRefPrefix, resolveClientSecret, setTokenBroker, upsertConnector, type Sts } from '../src/server/hunting/broker'
+import { HuntingClient } from '../src/server/hunting/client'
+import { plainMessage } from '../src/shared/messages'
 import { refusalMessage } from '../src/server/hunting/errors'
 import { StateError } from '../src/server/hunting/hunts'
 import { UnsafeQueryError } from '../src/server/hunting/safety'
@@ -112,5 +114,20 @@ describe('hunting errors shown to the analyst (#129)', () => {
     expect(shown).not.toContain('duplicate key')
     expect(shown).not.toContain('5b1c')
     expect(shown).toMatch(/^Something went wrong on the server\. .*reference: [0-9a-f]{8}\.$/)
+  })
+})
+
+describe('Microsoft API errors on a failed search (#129)', () => {
+  it('keep the plain hint, drop request ids and cap the detail', async () => {
+    const org = await makeOrg('GraphError')
+    await upsertConnector(org, { tenantId: TENANT, clientId: CLIENT, clientSecret: 'x' })
+    setTokenBroker(new TokenBroker({ clientCredentials: async () => ({ accessToken: 't', expiresAt: Date.now() + 3600_000 }) }))
+    const body = { error: { code: 'BadRequest', message: `Query failed. request-id: 9f1c2d3e-4b5a-6789-abcd-ef0123456789 ${'x'.repeat(400)}` } }
+    const client = new HuntingClient((async () => Response.json(body, { status: 400 })) as unknown as typeof fetch)
+    const err = (await client.runAdvancedHunting({ orgId: org, kql: 'T | take 1' }).then(() => new Error('expected a failure'), (e: unknown) => e)) as Error
+    expect(err.message).toMatch(/^The query was rejected\. Check the KQL syntax and table names\. \(HTTP 400, BadRequest: Query failed\./)
+    expect(err.message).not.toContain('9f1c2d3e')
+    expect(err.message.length).toBeLessThan(300)
+    expect(plainMessage(err)).toBe(err.message)
   })
 })
