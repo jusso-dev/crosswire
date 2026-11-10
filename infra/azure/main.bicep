@@ -10,7 +10,7 @@ param prefix string = 'crosswire'
 
 param location string = resourceGroup().location
 
-@description('Container image, for example ghcr.io/jusso-dev/crosswire:<sha>.')
+@description('Container image, for example ghcr.io/jusso-dev/crosswire:sha-<40 hex> or :vX.Y.Z.')
 param image string
 
 @description('Public URL of the app (custom domain or the ACA FQDN once known).')
@@ -20,8 +20,34 @@ param appUrl string
 param postgresAdminLogin string = 'crosswireadmin'
 
 @secure()
-@description('Postgres admin password. Passed once at deploy time, stored in Key Vault as database-url.')
+@minLength(16)
+@description('Postgres admin password. Required on every run (no default), but applied only when rotatePostgresPassword is true. Stored in Key Vault as database-url (migration job only).')
 param postgresAdminPassword string
+
+@description('Set postgresAdminPassword on the server and rewrite database-url. True on the first deployment and for a deliberate rotation; leave false on routine redeploys (#137). See docs/runbooks/azure-deploy.md.')
+param rotatePostgresPassword bool = false
+
+@description('Least-privilege Postgres role for web and worker (#135). Created by the migration job.')
+param postgresAppLogin string = 'crosswire_app'
+
+@secure()
+@minLength(16)
+@description('Password for the app role. Required on every run (no default), but written to Key Vault (database-url-app) only when rotateAppDatabasePassword is true.')
+param postgresAppPassword string
+
+@description('Write database-url-app. True on the first deployment, when adding the app role to an existing deployment, and for a rotation.')
+param rotateAppDatabasePassword bool = false
+
+@description('Postgres backup retention in days (7 to 35). Production: 14 or more. See docs/runbooks/backup-restore.md.')
+param postgresBackupRetentionDays int = 7
+@description('Geo-redundant backup (Disabled or Enabled). Set at server creation only.')
+param postgresGeoRedundantBackup string = 'Disabled'
+@description('Postgres high availability (Disabled, SameZone, ZoneRedundant). Needs General Purpose or Memory Optimized.')
+param postgresHighAvailability string = 'Disabled'
+param postgresSkuName string = 'Standard_B1ms'
+param postgresSkuTier string = 'Burstable'
+@description('CanNotDelete locks on Postgres and Key Vault. Recommended for production.')
+param enableDeleteLocks bool = false
 
 @description('Lab shortcut (opt-in): public Postgres access with the "Allow Azure services" rule. That admits any Azure-hosted client that has the credentials. Default false; see the runbook for private networking.')
 param postgresPublicAccess bool = false
@@ -35,8 +61,11 @@ param vnetAddressPrefix string = '10.40.0.0/22'
 @description('Object ID of the operator who seeds Key Vault secrets (gets Key Vault Secrets Officer).')
 param operatorObjectId string = ''
 
-@description('Email for alert notifications (#73). Empty = no action group.')
+@description('Email for alert notifications (#73, #153). Required unless allowAlertsWithoutEmail is true.')
 param alertEmail string = ''
+
+@description('Lab only: allow a deployment whose alerts notify nobody.')
+param allowAlertsWithoutEmail bool = false
 
 @description('Optional custom domain (#70), e.g. crosswire.contoso.com. Bind after DNS is in place; see docs/runbooks/custom-domain.md.')
 param customDomain string = ''
@@ -47,6 +76,26 @@ param entraTenantId string = ''
 
 @description('IANA time zone for displayed times and the daily digest day.')
 param appTimeZone string = 'Australia/Sydney'
+
+@description('Who may approve and run a read-only KQL search: member, approver or second-person (#133).')
+@allowed(['member', 'approver', 'second-person'])
+param kqlApprovalPolicy string = 'member'
+@description('Allow the requester to approve their own response action. Keep false.')
+param responseAllowSelfApproval bool = false
+param sessionMaxAgeHours int = 12
+param sessionIdleMinutes int = 60
+param retentionChatDays int = 365
+param retentionDecisionsDays int = 365
+param retentionSamplesDays int = 180
+param retentionAuditDays int = 730
+param rateLimitChatPerMin int = 20
+@allowed(['database', 'memory'])
+param rateLimitStorage string = 'database'
+@description('Comma-separated proxy IPs or CIDR ranges trusted for X-Forwarded-For. Empty suits Container Apps ingress.')
+param trustedProxies string = ''
+@description('Lab only: hunting demo mode and [DEMO] fixtures. Off in production.')
+param huntingDemoMode bool = false
+param allowDemoFixtures bool = false
 
 @description('Chat: endpoint of an existing Azure OpenAI resource, e.g. https://contoso-ai.openai.azure.com. Empty = chat off. See docs/chat-model.md.')
 param azureOpenAiEndpoint string = ''
@@ -70,6 +119,11 @@ var names = {
 var pgPublic = privateNetworking && postgresPublicAccess
   ? fail('postgresPublicAccess and privateNetworking cannot both be true. Private networking has no public Postgres endpoint; set postgresPublicAccess=false.')
   : postgresPublicAccess
+
+// Fail closed (#153): alerts that notify nobody look like monitoring but are not.
+var alertTarget = empty(alertEmail) && !allowAlertsWithoutEmail
+  ? fail('alertEmail is empty, so no alert would notify anyone. Set alertEmail, or allowAlertsWithoutEmail=true for a lab.')
+  : alertEmail
 
 module network 'modules/network.bicep' = if (privateNetworking) {
   name: 'network'
@@ -108,6 +162,16 @@ module data 'modules/data.bicep' = {
     pgName: names.pg
     postgresAdminLogin: postgresAdminLogin
     postgresAdminPassword: postgresAdminPassword
+    rotatePostgresPassword: rotatePostgresPassword
+    postgresAppLogin: postgresAppLogin
+    postgresAppPassword: postgresAppPassword
+    rotateAppDatabasePassword: rotateAppDatabasePassword
+    backupRetentionDays: postgresBackupRetentionDays
+    geoRedundantBackup: postgresGeoRedundantBackup
+    highAvailabilityMode: postgresHighAvailability
+    postgresSkuName: postgresSkuName
+    postgresSkuTier: postgresSkuTier
+    enableDeleteLocks: enableDeleteLocks
     postgresPublicAccess: pgPublic
     pgDelegatedSubnetId: privateNetworking ? network!.outputs.pgSubnetId : ''
     pgPrivateDnsZoneId: privateNetworking ? network!.outputs.pgDnsZoneId : ''
@@ -138,6 +202,19 @@ module apps 'modules/apps.bicep' = {
     azureOpenAiDeployment: azureOpenAiDeployment
     identityClientId: identity.properties.clientId
     infrastructureSubnetId: privateNetworking ? network!.outputs.acaSubnetId : ''
+    kqlApprovalPolicy: kqlApprovalPolicy
+    responseAllowSelfApproval: responseAllowSelfApproval
+    sessionMaxAgeHours: sessionMaxAgeHours
+    sessionIdleMinutes: sessionIdleMinutes
+    retentionChatDays: retentionChatDays
+    retentionDecisionsDays: retentionDecisionsDays
+    retentionSamplesDays: retentionSamplesDays
+    retentionAuditDays: retentionAuditDays
+    rateLimitChatPerMin: rateLimitChatPerMin
+    rateLimitStorage: rateLimitStorage
+    trustedProxies: trustedProxies
+    huntingDemoMode: huntingDemoMode
+    allowDemoFixtures: allowDemoFixtures
   }
 }
 
@@ -162,11 +239,15 @@ module alerts 'modules/alerts.bicep' = {
     location: location
     prefix: prefix
     logsWorkspaceId: logs.id
-    alertEmail: alertEmail
+    alertEmail: alertTarget
+    workerAppName: names.worker
+    migrateJobName: '${names.web}-migrate'
+    postgresId: data.outputs.postgresId
   }
 }
 
 output webFqdn string = apps.outputs.webFqdn
+output kqlApprovalPolicy string = kqlApprovalPolicy
 output keyVaultName string = names.kv
 output postgresHost string = data.outputs.postgresHost
 output identityClientId string = identity.properties.clientId
