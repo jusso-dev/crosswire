@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, isNull, lt, ne, or, sql } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { agentMemories, agentMemoryEntries } from '../db/schema'
 import { looksSecret, redactString, truncate } from '../lib/redact'
@@ -342,12 +342,33 @@ export async function replaceMemory(orgId: string, userId: string, entryId: stri
  * Tombstoned and compacted rows are not in the queue.
  */
 export async function listReviewQueue(orgId: string, limit = 100) {
-  return getDb()
+  return (await listReviewQueuePage(orgId, { limit })).rows
+}
+
+/**
+ * One page of the review queue, newest first, with `hasMore` when older held notes exist (#171).
+ * `before` is the createdAt of the oldest note already shown.
+ */
+export async function listReviewQueuePage(orgId: string, opts: { limit?: number; before?: Date } = {}) {
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 200)
+  const conds = [eq(agentMemoryEntries.orgId, orgId), eq(agentMemoryEntries.trust, 'quarantine'), isNull(agentMemoryEntries.tombstonedAt), isNull(agentMemoryEntries.compactedAt)]
+  if (opts.before) conds.push(lt(agentMemoryEntries.createdAt, opts.before))
+  const rows = await getDb()
     .select()
     .from(agentMemoryEntries)
-    .where(and(eq(agentMemoryEntries.orgId, orgId), eq(agentMemoryEntries.trust, 'quarantine'), isNull(agentMemoryEntries.tombstonedAt), isNull(agentMemoryEntries.compactedAt)))
+    .where(and(...conds))
     .orderBy(desc(agentMemoryEntries.createdAt))
-    .limit(Math.min(Math.max(limit, 1), 200))
+    .limit(limit + 1)
+  return { rows: rows.slice(0, limit), hasMore: rows.length > limit }
+}
+
+/** Every held note in the queue, not capped, for the "Showing the latest N of M" note. */
+export async function countReviewQueue(orgId: string) {
+  const [row] = await getDb()
+    .select({ n: sql<number>`count(*)::int` })
+    .from(agentMemoryEntries)
+    .where(and(eq(agentMemoryEntries.orgId, orgId), eq(agentMemoryEntries.trust, 'quarantine'), isNull(agentMemoryEntries.tombstonedAt), isNull(agentMemoryEntries.compactedAt)))
+  return Number(row?.n ?? 0)
 }
 
 /**
