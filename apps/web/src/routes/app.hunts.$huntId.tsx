@@ -152,7 +152,7 @@ function HuntWorkspace() {
             <ApproveAllButton allowed={canApproveEveryProposal(data.kqlApprovalPolicy, { userId: data.userId, role: data.role }, proposals)} proposals={proposals} edits={edits} />
             {proposals.length > 0 && <CopyAnswerButton proposals={proposals} />}
             <ExportButton huntId={hunt.id} />
-            <HuntStatusButton hunt={hunt} activeSchedules={activeSchedules} />
+            <HuntStatusButton hunt={hunt} activeSchedules={activeSchedules} canManage={data.canApprove} />
           </div>
         </header>
         <dl className="cw-ctxbar" aria-label="Hunt context">

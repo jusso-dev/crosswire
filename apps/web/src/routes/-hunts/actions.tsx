@@ -103,17 +103,19 @@ export function ApproveAllButton({ allowed, proposals, edits }: { allowed: boole
 }
 
 /** Close or reopen the hunt. Closing pauses every repeat search on it, so it asks first (#130). */
-export function HuntStatusButton({ hunt, activeSchedules }: { hunt: { id: string; title: string; status: string }; activeSchedules: number }) {
+export function HuntStatusButton({ hunt, activeSchedules, canManage }: { hunt: { id: string; title: string; status: string }; activeSchedules: number; canManage: boolean }) {
   const router = useRouter()
   const { run, busy, error, setError } = useAction()
   const [confirming, setConfirming] = useState(false)
   const closing = hunt.status === 'open'
+  // The server refuses anyone else; say so here instead of offering a button that fails.
+  if (!canManage) return <span className="cw-muted">An owner or approver can {closing ? 'close' : 'reopen'} this hunt.</span>
 
   const apply = async () => {
     const r = await run('status', async () => {
-      await setHuntStatusFn({ data: { huntId: hunt.id, status: closing ? 'closed' : 'open' } })
-      await router.invalidate()
-      return { ok: true as const }
+      const r = await setHuntStatusFn({ data: { huntId: hunt.id, status: closing ? 'closed' : 'open' } })
+      if (r.ok) await router.invalidate()
+      return r
     })
     if (r?.ok) setConfirming(false)
   }

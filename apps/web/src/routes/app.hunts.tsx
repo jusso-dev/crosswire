@@ -32,6 +32,7 @@ export const Route = createFileRoute('/app/hunts')({
 
 function Hunts() {
   const { hunts, playbooks } = Route.useLoaderData()
+  const { session } = Route.useRouteContext()
   const search = Route.useSearch()
   const navigate = useNavigate({ from: '/app/hunts' })
   const matchRoute = useMatchRoute()
@@ -59,7 +60,7 @@ function Hunts() {
 
       <Disclosure title="Blank hunt and saved playbooks" open={moreOpen} onToggle={setMoreOpen}>
         <NewHunt open={Boolean(search.fromHit || search.title)} initialTitle={search.title ?? ''} fromHit={search.fromHit} />
-        <SavedPlaybookStart saved={playbooks} />
+        <SavedPlaybookStart saved={playbooks} canDelete={session.canApprove} />
         <SavePlaybook />
       </Disclosure>
 
@@ -252,7 +253,7 @@ function CheckIndicator({ autoFocus }: { autoFocus: boolean }) {
 
 type SavedPlaybook = { id: string; name: string; description: string; indicatorKind: IndicatorKind; checks: PlaybookCheck[] }
 
-function SavedPlaybookStart({ saved }: { saved: SavedPlaybook[] }) {
+function SavedPlaybookStart({ saved, canDelete }: { saved: SavedPlaybook[]; canDelete: boolean }) {
   const navigate = useNavigate()
   const router = useRouter()
   const [playbookId, setPlaybookId] = useState(saved[0]?.id ?? '')
@@ -264,10 +265,11 @@ function SavedPlaybookStart({ saved }: { saved: SavedPlaybook[] }) {
 
   const remove = async (playbook: SavedPlaybook) => {
     const r = await run('delete', async () => {
-      await deletePlaybookFn({ data: { playbookId: playbook.id } })
+      const r = await deletePlaybookFn({ data: { playbookId: playbook.id } })
+      if (!r.ok) return r
       setPlaybookId(saved.find((p) => p.id !== playbook.id)?.id ?? '')
       await router.invalidate()
-      return { ok: true as const }
+      return r
     })
     if (r?.ok) setDeleting(null)
   }
@@ -313,18 +315,22 @@ function SavedPlaybookStart({ saved }: { saved: SavedPlaybook[] }) {
         <button className="cw-btn" type="submit" disabled={busy !== null || !indicator.trim()} aria-busy={busy === 'start' || undefined}>
           {busy === 'start' ? 'Proposing…' : 'Propose checks'}
         </button>
-        <button
-          className="cw-btn"
-          data-variant="ghost"
-          type="button"
-          disabled={busy !== null}
-          onClick={() => {
-            setError(null)
-            setDeleting(selected)
-          }}
-        >
-          Delete saved playbook…
-        </button>
+        {canDelete ? (
+          <button
+            className="cw-btn"
+            data-variant="ghost"
+            type="button"
+            disabled={busy !== null}
+            onClick={() => {
+              setError(null)
+              setDeleting(selected)
+            }}
+          >
+            Delete saved playbook…
+          </button>
+        ) : (
+          <span className="cw-help">An owner or approver can delete saved playbooks.</span>
+        )}
       </div>
       <ConfirmDialog
         open={deleting !== null}

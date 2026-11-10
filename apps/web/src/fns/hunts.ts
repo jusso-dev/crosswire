@@ -15,6 +15,8 @@ import { canApprove } from '../server/response/rbac'
 
 const iso = (d: Date | null) => d?.toISOString() ?? null
 
+const actorOf = (s: { user: { id: string }; org: { role: 'owner' | 'approver' | 'analyst' } }) => ({ userId: s.user.id, role: s.org.role })
+
 const refuse = (err: unknown, step: string) => ({ ok: false as const, error: refusalMessage(err, step) })
 
 export const fetchHunts = createServerFn({ method: 'GET' })
@@ -102,8 +104,12 @@ export const setHuntStatusFn = createServerFn({ method: 'POST' })
   .middleware([authed])
   .validator(z.object({ huntId: z.string().min(1), status: z.enum(['open', 'closed']) }))
   .handler(async ({ context, data }) => {
-    await setHuntStatus(context.session.org.id, data.huntId, data.status)
-    return { ok: true }
+    try {
+      await setHuntStatus(context.session.org.id, actorOf(context.session), data.huntId, data.status)
+      return { ok: true as const }
+    } catch (err) {
+      return refuse(err, 'status')
+    }
   })
 
 export const proposeKqlFn = createServerFn({ method: 'POST' })
@@ -169,7 +175,6 @@ export const saveConnector = createServerFn({ method: 'POST' })
   })
 
 
-const actorOf = (s: { user: { id: string }; org: { role: 'owner' | 'approver' | 'analyst' } }) => ({ userId: s.user.id, role: s.org.role })
 const wrap = async <T>(step: string, fn: () => Promise<T>) => {
   try {
     return { ok: true as const, result: await fn() }
@@ -238,8 +243,12 @@ export const deletePlaybookFn = createServerFn({ method: 'POST' })
   .middleware([authed])
   .validator(z.object({ playbookId: z.uuid() }))
   .handler(async ({ context, data }) => {
-    await deletePlaybook(context.session.org.id, data.playbookId)
-    return { ok: true as const }
+    try {
+      await deletePlaybook(context.session.org.id, actorOf(context.session), data.playbookId)
+      return { ok: true as const }
+    } catch (err) {
+      return refuse(err, 'delete playbook')
+    }
   })
 
 /** Hunt report (#94): any member of the org can export its hunts. */

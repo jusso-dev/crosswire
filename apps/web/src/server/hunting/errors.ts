@@ -1,10 +1,10 @@
 import { logger } from '../lib/logger'
 import { HuntingNotConfiguredError } from './broker'
-import { NotFoundError, StateError } from './hunts'
+import { ForbiddenStepError, NotFoundError, StateError } from './hunts'
 import { UnsafeQueryError } from './safety'
 
 /** Errors whose message was written for the analyst. Anything else may hold SQL, ids or a Graph body. */
-const SAFE_ERRORS = [StateError, NotFoundError, UnsafeQueryError, HuntingNotConfiguredError]
+const SAFE_ERRORS = [StateError, NotFoundError, ForbiddenStepError, UnsafeQueryError, HuntingNotConfiguredError]
 
 /**
  * The reason to show for a refused hunting step (#129). Known rule errors keep their plain message.
