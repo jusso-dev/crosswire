@@ -31,6 +31,13 @@ describe('formatters (#161)', () => {
     expect(humanise('graph_containment_extra')).toBe('graph containment extra')
   })
 
+  it('rounds relative times down', () => {
+    const now = Date.parse('2026-11-11T12:00:00Z')
+    expect(fmtAgo(new Date(now - 59.5 * 60_000), now)).toBe('59 min ago')
+    expect(fmtAgo(new Date(now - 23.9 * 3_600_000), now)).toBe('23 h ago')
+    expect(fmtAgo(new Date(now - 20_000), now)).toBe('just now')
+  })
+
   it('names the currency', () => {
     expect(fmtUsd(1_234_567)).toBe('US$1.23')
     expect(fmtUsd(1_234_567, 4)).toBe('US$1.2346')
