@@ -14,7 +14,8 @@ test('SSO stand-in -> watch hit -> hunt proposal -> dry-run approval', async ({ 
   // 1. Sign up (local stand-in for Entra SSO). First user owns a personal workspace.
   await signUp(page, `${testId(info, 'golden')}@example.test`)
   await expect(page.getByRole('heading', { name: /^Good (morning|afternoon|evening)/ })).toBeVisible()
-  await expect(page.getByText(/Response safety: dry-run ON/)).toBeVisible()
+  // Safety lamp and its words come from one value (#165): safe mode means dry run on, nothing live.
+  await expect(page.locator('.cw-lamp')).toHaveText('Safe mode on')
 
   // 2. Load the obviously fake demo pack.
   await page.getByRole('button', { name: 'Load demo data' }).click()

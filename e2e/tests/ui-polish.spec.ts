@@ -69,7 +69,7 @@ test('palette, shortcuts, run view with Stop, and a deliberate approval', async 
   await page.keyboard.press('Enter')
   const bar = page.locator('.cw-livebar')
   await expect(bar).toContainText('Intel is working', { timeout: 30_000 })
-  await expect(bar.getByText('Running')).toBeVisible({ timeout: 15_000 })
+  await expect(bar.getByText('Running', { exact: true })).toBeVisible({ timeout: 15_000 })
   await bar.getByRole('button', { name: 'Stop run' }).click()
   // Confirmation lands on the safe choice: keep the run going.
   await expect(bar.getByRole('button', { name: 'Keep running' })).toBeFocused()

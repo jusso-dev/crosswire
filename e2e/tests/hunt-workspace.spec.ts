@@ -50,7 +50,8 @@ test('hunt workspace: keyboard, inspector, filters, history, theme', async ({ pa
   await page.getByRole('button', { name: /Show only rows where DeviceName is demo-wks-002/ }).click()
   await expect(page.locator('.cw-filterchip')).toHaveCount(1)
   await expect(page).toHaveURL(/f=eq%3ADeviceName%3Ddemo-wks-002/)
-  await expect(page.getByText(/4 of 20 sample rows match the filters/)).toBeVisible()
+  // The same text is also the table caption for screen readers (#163), so check the visible line.
+  await expect(page.locator('span.cw-muted', { hasText: /4 of 20 sample rows match the filters/ })).toBeVisible()
 
   // Reload keeps the filter; Back returns to exactly the unfiltered, inspected view.
   await page.reload()
