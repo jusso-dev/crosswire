@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, isNull, lt, or } from 'drizzle-orm'
+import { and, asc, count, desc, eq, gt, inArray, isNull, lt, notInArray, or, sql } from 'drizzle-orm'
 import { z } from 'zod'
 import { getDb } from '../db/client'
 import { huntCases, responseEvents, responseProposals } from '../db/schema'
@@ -154,6 +154,58 @@ export async function listProposals(orgId: string, status?: Row['status']) {
   return getDb().select().from(responseProposals).where(where).orderBy(desc(responseProposals.createdAt)).limit(200)
 }
 
+/** Statuses that still need a person: a decision (pending) or an execution (approved). */
+export const WAITING_STATUSES = ['pending', 'approved'] as const
+
+/**
+ * Every proposal still waiting, soonest expiry first. Queried on its own, with no cap, so a pending
+ * item is never pushed out of view by a long history. Waiting items are bounded by the approval TTL.
+ */
+export async function listWaitingProposals(orgId: string) {
+  return getDb()
+    .select()
+    .from(responseProposals)
+    .where(and(eq(responseProposals.orgId, orgId), inArray(responseProposals.status, [...WAITING_STATUSES])))
+    .orderBy(asc(responseProposals.expiresAt), asc(responseProposals.id))
+}
+
+/**
+ * History, newest first, one page at a time. `before` is the id of the last row already shown; the
+ * keyset compares (created_at, id) in SQL so rows sharing a timestamp are never skipped or repeated.
+ */
+export async function listProposalHistory(orgId: string, opts: { view: 'decided' | 'all'; before?: string; limit?: number }) {
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200)
+  const t = responseProposals
+  const rows = await getDb()
+    .select()
+    .from(t)
+    .where(
+      and(
+        eq(t.orgId, orgId),
+        opts.view === 'decided' ? notInArray(t.status, [...WAITING_STATUSES]) : undefined,
+        opts.before ? sql`(${t.createdAt}, ${t.id}) < (select c.created_at, c.id from response_proposals c where c.id = ${opts.before} and c.org_id = ${orgId})` : undefined,
+      ),
+    )
+    .orderBy(desc(t.createdAt), desc(t.id))
+    .limit(limit + 1)
+  return { items: rows.slice(0, limit), hasMore: rows.length > limit }
+}
+
+/** Tab counts from count(*), never from a capped list. `expiringSoon`: pending, expiring within 3 hours. */
+export async function countInbox(orgId: string, now = new Date()) {
+  const t = responseProposals
+  const [byStatus, [soon]] = await Promise.all([
+    getDb().select({ status: t.status, n: count() }).from(t).where(eq(t.orgId, orgId)).groupBy(t.status),
+    getDb()
+      .select({ n: count() })
+      .from(t)
+      .where(and(eq(t.orgId, orgId), eq(t.status, 'pending'), gt(t.expiresAt, now), lt(t.expiresAt, new Date(now.getTime() + 3 * 3_600_000)))),
+  ])
+  const all = byStatus.reduce((sum, r) => sum + Number(r.n), 0)
+  const waiting = byStatus.filter((r) => (WAITING_STATUSES as readonly string[]).includes(r.status)).reduce((sum, r) => sum + Number(r.n), 0)
+  return { waiting, decided: all - waiting, all, expiringSoon: Number(soon?.n ?? 0) }
+}
+
 export async function countPending(orgId: string) {
   const [r] = await getDb().select({ n: count() }).from(responseProposals).where(and(eq(responseProposals.orgId, orgId), eq(responseProposals.status, 'pending')))
   return r?.n ?? 0
@@ -254,7 +306,7 @@ export async function executeProposal(orgId: string, actor: { userId: string; ro
   // Claim before any side effect: only one caller can set `execution` on an approved proposal.
   const [claimed] = await getDb()
     .update(responseProposals)
-    .set({ execution: { status: 'in_progress', by: actor.userId, at: new Date().toISOString() } })
+    .set({ execution: { status: 'in_progress', mode: 'live', by: actor.userId, at: new Date().toISOString() } })
     .where(and(eq(responseProposals.id, id), eq(responseProposals.status, 'approved'), isNull(responseProposals.execution)))
     .returning({ id: responseProposals.id })
   if (!claimed) throw new ProposalStateError('Execution already started for this proposal.')
@@ -278,6 +330,45 @@ export async function executeProposal(orgId: string, actor: { userId: string; ro
     link: `/app/approvals/${id}`,
   })
   return outcome
+}
+
+export const STALE_EXECUTION_ERROR = 'Outcome unknown. The process stopped before the result was recorded. Check the tenant before doing anything else.'
+
+/**
+ * Worker sweep (#121). A live execution claim that never recorded its result (the process stopped
+ * between the claim and the final write) becomes `failed` with "outcome unknown", gets an event and
+ * notifies like any failed execution. It is never retried: calls may already have reached the tenant.
+ * Only claims still `in_progress` are touched, so a result that is recorded meanwhile is kept.
+ */
+export async function failStaleExecutions(olderThanMs = 10 * 60_000, now = new Date()) {
+  const t = responseProposals
+  // Claim times are written with toISOString (UTC, fixed width), so text order is time order and a
+  // malformed value can never make the sweep throw.
+  const cutoff = new Date(now.getTime() - olderThanMs).toISOString()
+  const inProgress = sql`${t.execution}->>'status' = 'in_progress'`
+  const stale = await getDb()
+    .select()
+    .from(t)
+    .where(and(eq(t.status, 'approved'), inProgress, sql`${t.execution}->>'at' < ${cutoff}`))
+  let failed = 0
+  for (const p of stale) {
+    const execution = { ...(p.execution ?? {}), status: 'failed', mode: 'live', error: STALE_EXECUTION_ERROR }
+    const [row] = await getDb()
+      .update(t)
+      .set({ status: 'failed', execution })
+      .where(and(eq(t.id, p.id), eq(t.status, 'approved'), inProgress))
+      .returning({ id: t.id })
+    if (!row) continue
+    failed++
+    logger.error('response execution claim went stale; outcome unknown', { orgId: p.orgId, proposalId: p.id, executor: p.actionType })
+    await event(p.orgId, p.id, 'execute_failed', { type: 'system', id: null }, { reason: 'stale_claim', claimedAt: typeof p.execution?.at === 'string' ? p.execution.at : null })
+    await notify(p.orgId, 'execution', {
+      title: `Response outcome unknown: ${p.title}`,
+      lines: [`${p.actionType} · execution started but no result was recorded. Check the tenant before doing anything else.`],
+      link: `/app/approvals/${p.id}`,
+    })
+  }
+  return failed
 }
 
 /** JSON audit bundle for one proposal (#54). Contains no tokens: payloads are redacted on write. */
