@@ -26,6 +26,7 @@ import { Route as AppHuntsRouteImport } from './routes/app.hunts'
 import { Route as AppSettingsRouteImport } from './routes/app.settings'
 import { Route as AppWatchesRouteImport } from './routes/app.watches'
 import { Route as ApiAuthSplatRouteImport } from './routes/api.auth.$'
+import { Route as AppApprovalsIndexRouteImport } from './routes/app.approvals.index'
 import { Route as AppApprovalsIdRouteImport } from './routes/app.approvals.$id'
 import { Route as AppChatIndexRouteImport } from './routes/app.chat.index'
 import { Route as AppChatThreadIdRouteImport } from './routes/app.chat.$threadId'
@@ -118,6 +119,11 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppApprovalsIndexRoute = AppApprovalsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppApprovalsRoute,
+} as any)
 const AppApprovalsIdRoute = AppApprovalsIdRouteImport.update({
   id: '/$id',
   path: '/$id',
@@ -172,6 +178,7 @@ export interface FileRoutesByFullPath {
   '/app/chat/$threadId': typeof AppChatThreadIdRoute
   '/app/hunts/$huntId': typeof AppHuntsHuntIdRoute
   '/app/intel/$key': typeof AppIntelKeyRoute
+  '/app/approvals/': typeof AppApprovalsIndexRoute
   '/app/chat/': typeof AppChatIndexRoute
   '/app/settings/digest-email/confirm': typeof AppSettingsDigestEmailConfirmRoute
 }
@@ -184,7 +191,6 @@ export interface FileRoutesByTo {
   '/api/chat': typeof ApiChatRoute
   '/api/me': typeof ApiMeRoute
   '/app/agents': typeof AppAgentsRoute
-  '/app/approvals': typeof AppApprovalsRouteWithChildren
   '/app/digests': typeof AppDigestsRoute
   '/app/hunts': typeof AppHuntsRouteWithChildren
   '/app/settings': typeof AppSettingsRoute
@@ -195,6 +201,7 @@ export interface FileRoutesByTo {
   '/app/chat/$threadId': typeof AppChatThreadIdRoute
   '/app/hunts/$huntId': typeof AppHuntsHuntIdRoute
   '/app/intel/$key': typeof AppIntelKeyRoute
+  '/app/approvals': typeof AppApprovalsIndexRoute
   '/app/chat': typeof AppChatIndexRoute
   '/app/settings/digest-email/confirm': typeof AppSettingsDigestEmailConfirmRoute
 }
@@ -221,6 +228,7 @@ export interface FileRoutesById {
   '/app/chat/$threadId': typeof AppChatThreadIdRoute
   '/app/hunts/$huntId': typeof AppHuntsHuntIdRoute
   '/app/intel/$key': typeof AppIntelKeyRoute
+  '/app/approvals/': typeof AppApprovalsIndexRoute
   '/app/chat/': typeof AppChatIndexRoute
   '/app/settings_/digest-email/confirm': typeof AppSettingsDigestEmailConfirmRoute
 }
@@ -248,6 +256,7 @@ export interface FileRouteTypes {
     | '/app/chat/$threadId'
     | '/app/hunts/$huntId'
     | '/app/intel/$key'
+    | '/app/approvals/'
     | '/app/chat/'
     | '/app/settings/digest-email/confirm'
   fileRoutesByTo: FileRoutesByTo
@@ -260,7 +269,6 @@ export interface FileRouteTypes {
     | '/api/chat'
     | '/api/me'
     | '/app/agents'
-    | '/app/approvals'
     | '/app/digests'
     | '/app/hunts'
     | '/app/settings'
@@ -271,6 +279,7 @@ export interface FileRouteTypes {
     | '/app/chat/$threadId'
     | '/app/hunts/$huntId'
     | '/app/intel/$key'
+    | '/app/approvals'
     | '/app/chat'
     | '/app/settings/digest-email/confirm'
   id:
@@ -296,6 +305,7 @@ export interface FileRouteTypes {
     | '/app/chat/$threadId'
     | '/app/hunts/$huntId'
     | '/app/intel/$key'
+    | '/app/approvals/'
     | '/app/chat/'
     | '/app/settings_/digest-email/confirm'
   fileRoutesById: FileRoutesById
@@ -433,6 +443,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/app/approvals/': {
+      id: '/app/approvals/'
+      path: '/'
+      fullPath: '/app/approvals/'
+      preLoaderRoute: typeof AppApprovalsIndexRouteImport
+      parentRoute: typeof AppApprovalsRoute
+    }
     '/app/approvals/$id': {
       id: '/app/approvals/$id'
       path: '/$id'
@@ -480,10 +497,12 @@ declare module '@tanstack/react-router' {
 
 interface AppApprovalsRouteChildren {
   AppApprovalsIdRoute: typeof AppApprovalsIdRoute
+  AppApprovalsIndexRoute: typeof AppApprovalsIndexRoute
 }
 
 const AppApprovalsRouteChildren: AppApprovalsRouteChildren = {
   AppApprovalsIdRoute: AppApprovalsIdRoute,
+  AppApprovalsIndexRoute: AppApprovalsIndexRoute,
 }
 
 const AppApprovalsRouteWithChildren = AppApprovalsRoute._addFileChildren(
