@@ -1,12 +1,14 @@
 import { Link, createFileRoute, useRouter } from '@tanstack/react-router'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { fetchDashboard } from '../fns/dashboard'
-import { fmtAgo, fmtTime, getDisplayTimeZone } from '../components/format'
-import { dismissSetupFn, fetchSetup, loadDemoFn } from '../fns/setup'
+import { fmtAgo, fmtTime, getDisplayTimeZone, humanise, plural } from '../components/format'
+import { dismissSetupFn, fetchSetup, loadDemoFn, SETUP_HIDDEN_COOKIE } from '../fns/setup'
 import { Notice, PageHead, SkeletonPage, Term } from '../components/ui'
 import { plainMessage } from '../shared/messages'
 import { Freshness, SeverityTag } from '../components/signals'
 import { pageTitle } from '../components/errors'
+import { useAction } from '../components/action'
+import { safeHref } from '../shared/links'
 
 export const Route = createFileRoute('/app/')({
   loader: async () => {
@@ -27,14 +29,15 @@ type Data = Awaited<ReturnType<typeof fetchDashboard>> & { setup: Awaited<Return
 
 const HOUR = 3_600_000
 
-function feedState(f: { lastFetchedAt: string | null; ok: boolean }): 'ok' | 'warn' | 'off' {
+/** "Now" comes from the loader, never the render, so server and browser draw the same page. */
+function feedState(f: { lastFetchedAt: string | null; ok: boolean }, now: number): 'ok' | 'warn' | 'off' {
   if (!f.lastFetchedAt) return 'off'
-  if (!f.ok || Date.now() - new Date(f.lastFetchedAt).getTime() > 3 * HOUR) return 'warn'
+  if (!f.ok || now - new Date(f.lastFetchedAt).getTime() > 3 * HOUR) return 'warn'
   return 'ok'
 }
 
-function greeting() {
-  const h = Number(new Intl.DateTimeFormat('en-AU', { hour: 'numeric', hourCycle: 'h23', timeZone: getDisplayTimeZone() }).format(new Date()))
+function greeting(now: number) {
+  const h = Number(new Intl.DateTimeFormat('en-AU', { hour: 'numeric', hourCycle: 'h23', timeZone: getDisplayTimeZone() }).format(new Date(now)))
   return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'
 }
 
@@ -45,7 +48,7 @@ function ControlPanel() {
   return (
     <>
       <PageHead
-        title={`${greeting()}, ${firstName}`}
+        title={`${greeting(d.setup.now)}, ${firstName}`}
         intro="Feed status and safety at the top. Below: decisions waiting for you, emerging threats, your watch hits, newly exploited flaws, hunts and agent activity."
         actions={
           <>
@@ -64,7 +67,7 @@ function ControlPanel() {
         </Notice>
       ))}
       <LineCheck d={d} />
-      <NextSteps setup={d.setup} d={d} />
+      {!d.setup.dismissed && !d.setup.hiddenForMe && <NextSteps setup={d.setup} d={d} />}
       <div className="cw-panels">
         <Waiting d={d} />
         <Emerging d={d} />
@@ -77,14 +80,30 @@ function ControlPanel() {
   )
 }
 
+type Connector = Data['setup']['connector']
+
+/** One value drives the node colour and its words, so they can never disagree. */
+function connectorWire(c: Connector, now: number): { state: 'ok' | 'warn' | 'off'; text: string } {
+  switch (c.state) {
+    case 'none':
+      return { state: 'off', text: 'demo data only' }
+    case 'untested':
+      return { state: 'warn', text: 'saved, not tested' }
+    case 'working':
+      return { state: 'ok', text: `working · last search ${fmtAgo(c.lastOkAt, now)}` }
+    case 'failing':
+      return { state: 'warn', text: `failing since ${fmtTime(c.since)}` }
+  }
+}
+
 /** The graphite board: each feed is a wire into the org; the node shows whether it is live. */
 function LineCheck({ d }: { d: Data }) {
-  const pwn = feedState(d.feeds.pwnwatch)
-  const kev = feedState(d.feeds.kev)
-  const executors = Object.entries(d.setup.executors)
-  const liveExec = executors.some(([, v]) => v === 'on')
-  const hunting = d.setup.items.find((i) => i.key === 'hunting')?.done ?? false
-  const stateLabel = (s: 'ok' | 'warn' | 'off', at: string | null) => (s === 'off' ? 'not fetched yet' : s === 'warn' ? `stale · ${fmtAgo(at)}` : `live · ${fmtAgo(at)}`)
+  const now = d.setup.now
+  const pwn = feedState(d.feeds.pwnwatch, now)
+  const kev = feedState(d.feeds.kev, now)
+  const hunting = connectorWire(d.setup.connector, now)
+  const safety = d.setup.safety
+  const stateLabel = (s: 'ok' | 'warn' | 'off', at: string | null) => (s === 'off' ? 'not fetched yet' : s === 'warn' ? `stale · ${fmtAgo(at, now)}` : `live · ${fmtAgo(at, now)}`)
   return (
     <section className="cw-board" aria-labelledby="linecheck-title">
       <div>
@@ -101,10 +120,10 @@ function LineCheck({ d }: { d: Data }) {
             <span className="cw-wire-line" aria-hidden />
             <span className="cw-wire-state">{stateLabel(kev, d.feeds.kev.lastFetchedAt)}</span>
           </li>
-          <li className="cw-wire" data-state={hunting ? 'ok' : 'off'}>
+          <li className="cw-wire" data-state={hunting.state}>
             <span className="cw-wire-name">Defender / Sentinel</span>
             <span className="cw-wire-line" aria-hidden />
-            <span className="cw-wire-state">{hunting ? 'connected' : 'demo data only'}</span>
+            <span className="cw-wire-state">{hunting.text}</span>
           </li>
         </ul>
       </div>
@@ -115,12 +134,10 @@ function LineCheck({ d }: { d: Data }) {
         <Stat value={d.totals.awaitingDecision} label="waiting for a decision" />
       </div>
       <div className="cw-safety">
-        <span className="cw-lamp" data-state={d.setup.dryRun && !liveExec ? 'ok' : 'warn'}>
-          {d.setup.dryRun ? 'Safe mode on' : 'Safe mode off'}
+        <span className="cw-lamp" data-state={safety.state}>
+          {safety.label}
         </span>
-        <span>
-          Response safety: dry-run {d.setup.dryRun ? 'ON' : 'OFF'} · executors {executors.map(([k, v]) => `${k}=${v}`).join(', ')}
-        </span>
+        <span>{safety.detail}</span>
         <span>
           Nothing changes in Microsoft without a person approving it. <Term k="dryRun">What is a dry run?</Term>
         </span>
@@ -143,22 +160,12 @@ function NextSteps({ setup, d }: { setup: Data['setup']; d: Data }) {
   const router = useRouter()
   const { session } = Route.useRouteContext()
   const [msg, setMsg] = useState<string | null>(null)
-  // Each person can hide the checklist for themselves; the browser remembers it.
-  const storeKey = `cw-onboarding-hidden:${session.user.id}`
   const [hidden, setHidden] = useState(false)
-  useEffect(() => {
-    try {
-      // Sync from storage after hydration, as ThemeToggle does; the server cannot read it.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setHidden(localStorage.getItem(storeKey) === '1')
-    } catch {
-      // Storage blocked: show the checklist.
-    }
-  }, [storeKey])
-  if (setup.dismissed || hidden) return null
+  const { run, busy, error } = useAction()
+  if (hidden) return null
   const o = d.onboarding
   const steps = [
-    { done: o.tenant, title: 'Connect your tenant', body: <>Save the <Term k="defender">Defender</Term> or <Term k="sentinel">Sentinel</Term> hunting connector. Until then, searches use demo data.</>, to: '/app/settings', cta: 'Open settings' },
+    { done: o.tenant, title: 'Connect your tenant', body: <>Save the <Term k="defender">Defender</Term> or <Term k="sentinel">Sentinel</Term> hunting connector, then approve one search. It is done when a live search works. Until then, searches use demo data.</>, to: '/app/settings', cta: 'Open settings' },
     { done: o.watch, title: 'Add a watch', body: <>Name a vendor or product you use. Crosswire checks feeds for it every hour (<Term k="watch">what is a watch?</Term>).</>, to: '/app/watches', cta: 'Add a watch' },
     { done: o.hunt, title: 'Run a hunt', body: <>Open a <Term k="hunt">hunt</Term>, approve a search, and read the sample rows.</>, to: '/app/hunts', cta: 'Start a hunt' },
     { done: o.agent, title: 'Ask an agent', body: 'Ask Hunter or Intel a question. You approve anything it proposes.', to: '/app/chat', cta: 'Open chat' },
@@ -183,17 +190,17 @@ function NextSteps({ setup, d }: { setup: Data['setup']; d: Data }) {
             className="cw-btn"
             data-variant="ghost"
             data-size="sm"
+            disabled={Boolean(busy)}
+            aria-busy={busy === 'demo' || undefined}
             onClick={async () => {
-              try {
-                const r = await loadDemoFn()
-                setMsg(r.loaded ? 'Demo data loaded. Look for [DEMO] items in Watches, Hunts and Approvals.' : 'Demo data is already loaded.')
-                await router.invalidate()
-              } catch (err) {
-                setMsg(plainMessage(err))
-              }
+              setMsg(null)
+              const r = await run('demo', () => loadDemoFn())
+              if (!r) return
+              setMsg(r.loaded ? 'Demo data loaded. Look for [DEMO] items in Watches, Hunts and Approvals.' : 'Demo data is already loaded.')
+              await router.invalidate()
             }}
           >
-            Load demo data
+            {busy === 'demo' ? 'Working…' : 'Load demo data'}
           </button>
         )}
         <button
@@ -202,11 +209,8 @@ function NextSteps({ setup, d }: { setup: Data['setup']; d: Data }) {
           data-variant="quiet"
           data-size="sm"
           onClick={() => {
-            try {
-              localStorage.setItem(storeKey, '1')
-            } catch {
-              // Storage blocked: hide for this visit only.
-            }
+            // A cookie, written at once, so the next page load (read by the loader) is already right.
+            document.cookie = `${SETUP_HIDDEN_COOKIE}=${encodeURIComponent(session.user.id)}; path=/; max-age=31536000; samesite=lax${location.protocol === 'https:' ? '; secure' : ''}`
             setHidden(true)
           }}
         >
@@ -218,16 +222,14 @@ function NextSteps({ setup, d }: { setup: Data['setup']; d: Data }) {
             className="cw-btn"
             data-variant="quiet"
             data-size="sm"
+            disabled={Boolean(busy)}
+            aria-busy={busy === 'dismiss' || undefined}
             onClick={async () => {
-              try {
-                await dismissSetupFn()
-                await router.invalidate()
-              } catch (err) {
-                setMsg(plainMessage(err))
-              }
+              const r = await run('dismiss', () => dismissSetupFn())
+              if (r) await router.invalidate()
             }}
           >
-            Hide for everyone
+            {busy === 'dismiss' ? 'Working…' : 'Hide for everyone'}
           </button>
         )}
       </div>
@@ -240,11 +242,15 @@ function NextSteps({ setup, d }: { setup: Data['setup']; d: Data }) {
           </li>
         ))}
       </ol>
-      {msg && (
-        <p className="cw-muted cw-mt-sm" role="status">
-          {msg}
+      {error && (
+        <p className="cw-field-error cw-mt-sm" role="alert">
+          {error}
         </p>
       )}
+      <p className="cw-muted cw-mt-sm" role="status">
+        {msg ?? ''}
+      </p>
+      <p className="cw-help cw-m0">You can bring these steps back from Settings.</p>
       <details className="cw-mt-sm">
         <summary>
           Admin setup checklist ({setup.items.filter((i) => i.done).length}/{setup.items.length})
@@ -265,6 +271,18 @@ function NextSteps({ setup, d }: { setup: Data['setup']; d: Data }) {
   )
 }
 
+/** A feed item title, linked only when its URL is http or https. Anything else is plain text. */
+function FeedLink({ url, title }: { url: string | null | undefined; title: string }) {
+  const href = safeHref(url)
+  if (!href) return <>{title}</>
+  return (
+    <a href={href} target="_blank" rel="noreferrer noopener">
+      {title}
+      <span className="cw-sr-only"> (opens in a new tab)</span>
+    </a>
+  )
+}
+
 function Panel({ title, sub, link, span, children, label }: { title: string; sub?: ReactNode; link?: { to: string; label: string }; span: string; children: ReactNode; label: string }) {
   return (
     <section className={`cw-card cw-panel ${span}`} aria-labelledby={label}>
@@ -280,7 +298,7 @@ function Panel({ title, sub, link, span, children, label }: { title: string; sub
 
 function Waiting({ d }: { d: Data }) {
   const items = [
-    ...d.pendingResponses.map((r) => ({ key: `r-${r.id}`, kind: 'Action', title: r.title, meta: `${r.blastRadius.devices} devices · ${r.blastRadius.users} users`, at: r.createdAt, link: <Link to="/app/approvals/$id" params={{ id: r.id }}>{r.title}</Link> })),
+    ...d.pendingResponses.map((r) => ({ key: `r-${r.id}`, kind: 'Action', title: r.title, meta: `${plural(r.blastRadius.devices, 'device')} · ${plural(r.blastRadius.users, 'user')}`, at: r.createdAt, link: <Link to="/app/approvals/$id" params={{ id: r.id }}>{r.title}</Link> })),
     ...d.pendingQueries.map((q) => ({ key: `q-${q.id}`, kind: 'Query', title: q.huntTitle, meta: `${q.target === 'defender' ? 'Defender' : 'Sentinel'} search to review`, at: q.createdAt, link: <Link to="/app/hunts/$huntId" params={{ huntId: q.huntId }}>{q.huntTitle}</Link> })),
   ]
   return (
@@ -295,7 +313,7 @@ function Waiting({ d }: { d: Data }) {
                 {i.kind}
               </span>
               <span className="cw-list-title">{i.link}</span>
-              <span className="cw-list-side">{fmtAgo(i.at)}</span>
+              <span className="cw-list-side">{fmtAgo(i.at, d.setup.now)}</span>
               <span className="cw-list-meta">{i.meta}</span>
             </li>
           ))}
@@ -322,9 +340,7 @@ function Emerging({ d }: { d: Data }) {
             <li key={i.slug}>
               <SeverityTag value={i.severity} />
               <span className="cw-list-title">
-                <a href={i.url} target="_blank" rel="noreferrer noopener">
-                  {i.title}
-                </a>
+                <FeedLink url={i.url} title={i.title} />
               </span>
               <span className="cw-list-side">{i.status === 'live' ? 'Live incident' : i.status ? `Status: ${i.status}` : 'Status not reported'}</span>
               <span className="cw-list-meta">
@@ -334,7 +350,7 @@ function Emerging({ d }: { d: Data }) {
                     {c}
                   </Link>
                 ))}
-                <Freshness at={i.updatedAt} label="feed updated" />
+                <Freshness at={i.updatedAt} label="feed updated" now={d.setup.now} />
                 <Link to="/app/hunts" search={{ title: `Hunt: ${i.title.slice(0, 150)}` }}>
                   Start hunt<span className="cw-sr-only"> for {i.title.slice(0, 80)}</span>
                 </Link>
@@ -352,7 +368,9 @@ function Emerging({ d }: { d: Data }) {
           <ul className="cw-list cw-mt-xs">
             {d.changes.map((c) => (
               <li key={c.id} data-plain>
-                <span className="cw-list-title">{c.url ? <a href={c.url} target="_blank" rel="noreferrer noopener">{c.title}</a> : c.title}</span>
+                <span className="cw-list-title">
+                  <FeedLink url={c.url} title={c.title} />
+                </span>
                 <span className="cw-list-side">{c.date ?? ''}</span>
                 {c.incidentTitle && <span className="cw-list-meta">{c.incidentTitle}</span>}
               </li>
@@ -373,11 +391,11 @@ function WatchHits({ d }: { d: Data }) {
       label="p-hits"
       span="cw-span-7"
       title="Your watch hits"
-      sub={<>Feed items that mention something on your <Link to="/app/watches">watch list</Link> ({d.totals.watches} watches).</>}
+      sub={<>Feed items that mention something on your <Link to="/app/watches">watch list</Link> ({plural(d.totals.watches, 'watch', 'watches')}).</>}
       link={{ to: '/app/watches', label: 'All hits' }}
     >
       <p className="cw-panel-sub cw-m0">
-        Watch hits per day (count), last 14 days, by {d.timeZone.replace('_', ' ')} calendar day. A grey bar means zero hits that day.
+        Watch hits per day (count), last 14 days, by {humanise(d.timeZone)} calendar day. A grey bar means zero hits that day.
       </p>
       <div className="cw-spark" role="img" aria-label={`Watch hits per day for the last 14 days, oldest first: ${days.map((day) => byDay.get(day) ?? 0).join(', ')}`}>
         {days.map((day) => {
@@ -404,8 +422,10 @@ function WatchHits({ d }: { d: Data }) {
                 {h.source.replace(/^demo:/, '') === 'cisa-kev' ? 'CISA KEV' : 'pwn.watch'}
                 {h.source.startsWith('demo:') ? ' · demo' : ''}
               </span>
-              <span className="cw-list-title">{h.url ? <a href={h.url} target="_blank" rel="noreferrer noopener">{h.title}</a> : h.title}</span>
-              <span className="cw-list-side">{fmtAgo(h.createdAt)}</span>
+              <span className="cw-list-title">
+                <FeedLink url={h.url} title={h.title} />
+              </span>
+              <span className="cw-list-side">{fmtAgo(h.createdAt, d.setup.now)}</span>
               <span className="cw-list-meta">
                 <span>
                   matched {h.entryType} “{h.entryValue}”
@@ -427,7 +447,7 @@ function WatchHits({ d }: { d: Data }) {
 
 function Kev({ d }: { d: Data }) {
   return (
-    <Panel label="p-kev" span="cw-span-5" title="Newly exploited flaws" sub={<>Latest additions to the <Term k="kev">CISA KEV</Term> list ({d.totals.kevTotal} in total). Patch these first.</>}>
+    <Panel label="p-kev" span="cw-span-5" title="Newly exploited flaws" sub={<>Latest additions to the <Term k="kev">CISA KEV</Term> list ({d.totals.kevTotal.toLocaleString('en-AU')} in total). Patch these first.</>}>
       {d.kev.length === 0 ? (
         <p className="cw-empty">No KEV records yet. The worker fetches the list every hour.</p>
       ) : (
@@ -475,7 +495,7 @@ function Hunts({ d }: { d: Data }) {
                   {h.title}
                 </Link>
               </span>
-              <span className="cw-list-side">{fmtAgo(h.updatedAt)}</span>
+              <span className="cw-list-side">{fmtAgo(h.updatedAt, d.setup.now)}</span>
               {h.hypothesis && <span className="cw-list-meta">{h.hypothesis.slice(0, 140)}</span>}
             </li>
           ))}
@@ -487,7 +507,7 @@ function Hunts({ d }: { d: Data }) {
                   {h.title}
                 </Link>
               </span>
-              <span className="cw-list-side">{fmtAgo(h.updatedAt)}</span>
+              <span className="cw-list-side">{fmtAgo(h.updatedAt, d.setup.now)}</span>
             </li>
           ))}
         </ul>
@@ -508,10 +528,10 @@ function Activity({ d }: { d: Data }) {
           {d.agentActivity.map((a) => (
             <li key={a.id} data-plain>
               <span className="cw-list-title">
-                <strong>{a.actorType === 'agent' ? a.actor.charAt(0).toUpperCase() + a.actor.slice(1) : a.actorType === 'user' ? 'A person' : 'System'}</strong> · {ACTION_WORDS[a.action] ?? a.action.replace(/_/g, ' ')}
+                <strong>{a.actorType === 'agent' ? a.actor.charAt(0).toUpperCase() + a.actor.slice(1) : a.actorType === 'user' ? 'A person' : 'System'}</strong> · {ACTION_WORDS[a.action] ?? humanise(a.action)}
               </span>
-              <span className="cw-list-side" title={fmtTime(a.createdAt)}>
-                {fmtAgo(a.createdAt)}
+              <span className="cw-list-side">
+                <Freshness at={a.createdAt} now={d.setup.now} />
               </span>
             </li>
           ))}
