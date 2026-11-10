@@ -925,3 +925,9 @@ kbd { display: inline-block; min-width: 1.5em; text-align: center; line-height: 
 .cw-meter > span { display: block; height: 100%; background: var(--status-ok); }
 .cw-meter[data-tone='warn'] > span { background: var(--status-attention); }
 .cw-meter[data-tone='danger'] > span { background: var(--status-danger); }
+
+/* ── Stream: chat, agents, runs and the command palette (fix/chat-agents) ── */
+.cw-convo-older { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--space-xs); margin: 0 0 var(--space-md); text-align: center; }
+.cw-convo-older .cw-help { margin: 0; width: 100%; }
+.cw-shortcut-toggle { gap: var(--space-xs); margin-top: var(--space-xs); font-weight: 600; }
+.cw-shortcut-toggle input { width: 1.1rem; height: 1.1rem; }
