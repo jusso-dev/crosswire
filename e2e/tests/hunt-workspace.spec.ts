@@ -1,10 +1,11 @@
 import { expect, test, type Page } from '@playwright/test'
-import { horizontalOverflow } from '../support/helpers'
+import { horizontalOverflow, testId } from '../support/helpers'
 
 /**
  * Hunt workspace interactions (design.md §4): keyboard row navigation, inspector, URL-kept filters
  * and selection across reload and back/forward, theme persistence, and narrow layout.
- * Uses the shared owner with [DEMO] fixtures from global-setup.ts (read-only on that data).
+ * Uses the shared owner with [DEMO] fixtures from global-setup.ts. Existing fixture data stays
+ * read-only; the state-isolation test creates one additional empty hunt.
  */
 async function openDemoHunt(page: Page) {
   await page.goto('/app/hunts')
@@ -120,4 +121,60 @@ test('hunt workspace: at 1000px the inspector overlay keeps focus and the backgr
   await dialog.getByRole('button', { name: 'Close inspector' }).click()
   await expect(page.locator('.cw-ws-main')).not.toHaveAttribute('inert', '')
   await expect(grid.locator('tbody tr[data-index="0"]')).toBeFocused()
+})
+
+test('hunt notes, search drafts and confirmations reset between records (#125)', async ({ page }, info) => {
+  const secondTitle = `State isolation ${testId(info, 'hunt')}`
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/app/hunts')
+  await page.waitForLoadState('networkidle')
+  await page.getByRole('button', { name: /Blank hunt and saved playbooks$/ }).click()
+  await page.getByRole('button', { name: /Start a new hunt$/ }).click()
+  await page.getByLabel(/^Name the hunt/).fill(secondTitle)
+  await page.getByRole('button', { name: 'Start hunt', exact: true }).click()
+  await page.waitForURL(/\/app\/hunts\/[^/?]+/)
+  const secondUrl = page.url()
+
+  await page.keyboard.press('ControlOrMeta+k')
+  const palette = page.getByRole('dialog', { name: 'Command palette' })
+  await palette.getByRole('combobox').fill('Suspicious PowerShell')
+  await palette.getByRole('option', { name: /Suspicious PowerShell/ }).click()
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('[DEMO] Suspicious PowerShell on demo workstations')
+  const firstUrl = page.url()
+  await page.evaluate(() => { (window as Window & { __routeStateProbe?: boolean }).__routeStateProbe = true })
+  const note = page.getByLabel(/^Add a note/)
+  const propose = page.getByRole('button', { name: /Propose a new search$/ })
+  const kql = page.getByLabel('KQL', { exact: true })
+  await note.fill('Keep this note on the first hunt')
+  await propose.click()
+  await kql.fill('DeviceInfo | take 7')
+  await page.getByRole('combobox', { name: 'Search in', exact: true }).selectOption('sentinel')
+
+  await page.keyboard.press('ControlOrMeta+k')
+  await palette.getByRole('combobox').fill(secondTitle)
+  await palette.getByRole('option', { name: new RegExp(secondTitle) }).click()
+  await expect(page).toHaveURL(secondUrl)
+  await expect(note).toHaveValue('')
+  await expect(propose).toHaveAttribute('aria-expanded', 'false')
+  await propose.click()
+  await expect(kql).toHaveValue('')
+  await expect(page.getByRole('combobox', { name: 'Search in', exact: true })).toHaveValue('defender')
+  await note.fill('Keep this note on the second hunt')
+  await kql.fill('DeviceInfo | take 9')
+  await page.getByRole('button', { name: 'Close hunt…', exact: true }).click()
+  await expect(page.getByRole('alertdialog')).toBeVisible()
+
+  await page.goBack()
+  await expect(page).toHaveURL(firstUrl)
+  await expect(note).toHaveValue('')
+  await expect(page.getByRole('alertdialog')).toBeHidden()
+  await expect(propose).toHaveAttribute('aria-expanded', 'false')
+  await propose.click()
+  await expect(kql).toHaveValue('')
+  await page.goForward()
+  await expect(page).toHaveURL(secondUrl)
+  await expect(note).toHaveValue('')
+  await expect(page.getByRole('alertdialog')).toBeHidden()
+  await expect(propose).toHaveAttribute('aria-expanded', 'false')
+  expect(await page.evaluate(() => (window as Window & { __routeStateProbe?: boolean }).__routeStateProbe)).toBe(true)
 })

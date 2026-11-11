@@ -130,9 +130,45 @@ test('a second approver approves through a confirmation that names the target', 
     const [a] = await sql`select id from "user" where email = ${approverEmail}`
     await sql`insert into org_memberships (id, org_id, user_id, role) values (${crypto.randomUUID()}, ${o!.org_id}, ${a!.id}, 'approver')`
     await sql`delete from org_memberships where user_id = ${a!.id} and org_id <> ${o!.org_id}`
-    await page.goto('/app/approvals')
+    // A second valid fixture differs only in identity and creation time. The content hash stays
+    // valid because none of the approved content changes. Both records remain in this test's org.
+    const [original] = await sql`select id from response_proposals where org_id = ${o!.org_id} and status = 'pending'`
+    const secondId = crypto.randomUUID()
+    await sql`insert into response_proposals
+      select (jsonb_populate_record(null::response_proposals,
+        to_jsonb(p) || jsonb_build_object('id', ${secondId}::text, 'created_at', p.created_at + interval '1 second'))).*
+      from response_proposals p where p.id = ${original!.id}`
+    await page.goto(`/app/approvals/${original!.id}`)
     await page.waitForLoadState('networkidle')
-    await page.getByRole('link', { name: /\[DEMO\] Isolate/ }).first().click()
+    const originalUrl = page.url()
+    await page.evaluate(() => { (window as Window & { __routeStateProbe?: boolean }).__routeStateProbe = true })
+    const comment = page.getByPlaceholder('Why you approve or reject')
+    await comment.fill('Comment for the first proposal only')
+    await page.keyboard.press('ControlOrMeta+k')
+    const navigationPalette = page.getByRole('dialog', { name: 'Command palette' })
+    await navigationPalette.getByRole('combobox').fill('[DEMO] Isolate demo-wks-001')
+    const options = navigationPalette.getByRole('option', { name: /Approvals waiting/ })
+    await expect(options).toHaveCount(2)
+    // Palette orders newest first, so this selects the clone without leaving the detail route.
+    await options.first().click()
+    await expect(page).toHaveURL(new RegExp(`/app/approvals/${secondId}$`))
+    await expect(comment).toHaveValue('')
+    await expect(page.getByRole('alertdialog')).toBeHidden()
+    await comment.fill('Comment for the second proposal only')
+    await page.getByRole('button', { name: 'Reject…', exact: true }).click()
+    await expect(page.getByRole('alertdialog')).toBeVisible()
+    // Browser Back can change records while a modal is open, even though shortcuts cannot (#125).
+    await page.goBack()
+    await expect(page).toHaveURL(originalUrl)
+    await expect(comment).toHaveValue('')
+    await expect(page.getByRole('alertdialog')).toBeHidden()
+    await page.goForward()
+    await expect(page).toHaveURL(new RegExp(`/app/approvals/${secondId}$`))
+    await expect(comment).toHaveValue('')
+    await expect(page.getByRole('alertdialog')).toBeHidden()
+    await page.goBack()
+    await expect(page).toHaveURL(originalUrl)
+    expect(await page.evaluate(() => (window as Window & { __routeStateProbe?: boolean }).__routeStateProbe)).toBe(true)
     await page.getByRole('button', { name: 'Approve…' }).click()
     const confirm = page.getByRole('alertdialog')
     await expect(confirm).toContainText('Approve "[DEMO] Isolate demo-wks-001"?')
