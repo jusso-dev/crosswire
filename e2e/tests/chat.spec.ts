@@ -17,6 +17,7 @@ test('chat streams a markdown reply, shows tool steps, persists, and supports st
   await page.waitForLoadState('networkidle')
   await page.getByRole('button', { name: /Chat with Intel/ }).click()
   await page.waitForURL(/\/app\/chat\/.+/)
+  await expect(page).toHaveTitle('New thread · Crosswire')
   const input = page.getByRole('textbox', { name: /Message to Intel/ })
   await expect(input).toBeFocused()
 
@@ -38,9 +39,13 @@ test('chat streams a markdown reply, shows tool steps, persists, and supports st
   await expect(page.getByRole('list', { name: 'Steps taken' }).last()).toContainText('Searched threat intel')
   await expect(reply.getByRole('button', { name: 'Copy' })).toBeVisible()
 
+  // The browser tab follows the first-message title without needing a reload (#173).
+  await expect(page).toHaveTitle(`${first} · Crosswire`)
+
   // Reload: the conversation is persisted and titled from the first message.
   await page.reload()
   await expect(page.getByRole('heading', { level: 1, name: first })).toBeVisible()
+  await expect(page).toHaveTitle(`${first} · Crosswire`)
   await expect(page.locator('.cw-turn[data-role="assistant"]')).toHaveCount(1)
 
   // Stop: start a reply (it pauses at the gate) and stop it mid-stream.
