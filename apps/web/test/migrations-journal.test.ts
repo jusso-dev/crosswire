@@ -22,7 +22,11 @@ function journalProblems(entries: JournalEntry[], now = Date.now()): string[] {
     if (prev && !(e.when > prev.when)) problems.push(`${e.tag}: when ${e.when} is not above ${prev.tag} (${prev.when})`)
   })
   const last = entries.at(-1)
-  if (last && last.when > now + DAY && !KNOWN_FUTURE.has(last.tag)) {
+  const prevOfLast = entries.at(-2)
+  // The runbook rule while the known entries are ahead of the clock: the next one is pinned to one
+  // more than the entry before it, which is then also in the future. That is the only other allowed case.
+  const pinned = Boolean(prevOfLast && prevOfLast.when > now + DAY && last && last.when === prevOfLast.when + 1)
+  if (last && last.when > now + DAY && !KNOWN_FUTURE.has(last.tag) && !pinned) {
     problems.push(`${last.tag}: when ${last.when} is more than a day in the future. See docs/runbooks/migrations.md.`)
   }
   return problems
@@ -50,6 +54,13 @@ describe('migration journal (#120)', () => {
     expect(journalProblems(future, now)).toEqual([expect.stringMatching(/^0008_new: .* future/)])
     expect(journalProblems([entry(0, '0000_a', now - DAY), entry(1, '0008_new', now + DAY / 2)], now)).toEqual([])
     expect(journalProblems([entry(0, '0000_a', now - DAY), entry(1, '0007_hunt_playbooks', now + 30 * DAY)], now)).toEqual([])
+  })
+
+  it('allows a new entry pinned to one more than a future-dated entry, as the runbook says', () => {
+    const now = Date.UTC(2026, 10, 1)
+    const known = entry(1, '0007_hunt_playbooks', now + 30 * DAY)
+    expect(journalProblems([entry(0, '0000_a', now - DAY), known, entry(2, '0008_new', known.when + 1)], now)).toEqual([])
+    expect(journalProblems([entry(0, '0000_a', now - DAY), known, entry(2, '0008_new', known.when + 2 * DAY)], now)).toEqual([expect.stringMatching(/^0008_new: .* future/)])
   })
 })
 
