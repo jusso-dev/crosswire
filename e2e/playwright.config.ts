@@ -7,7 +7,8 @@ import { STORAGE_STATE, TEST_TIME_ZONE } from './support/helpers'
  * - CI (`e2e` job in .github/workflows/ci.yml) and a plain local run start the mock model and the
  *   built app themselves (`webServer`), against PG_E2E_URL (a disposable database: specs write to it).
  * - Set BASE_URL to test an app you already run; then only the mock model is started.
- *   Set APP_TIMEZONE to that app's display zone (default Australia/Sydney).
+ *   For BASE_URL or automatic local reuse on port 3100, set APP_TIMEZONE to the running app's
+ *   display zone (default Australia/Sydney). The test process cannot reconfigure a running app.
  * - global-setup.ts signs up one owner, loads [DEMO] data and saves the session; specs reuse it.
  *   Specs that change shared demo state sign up their own user (the helper waits out the
  *   sign-up rate limit, so order does not matter).
