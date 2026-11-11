@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { horizontalOverflow } from '../support/helpers'
+import { horizontalOverflow, TEST_TIME_ZONE } from '../support/helpers'
 
 test.use({ hasTouch: true })
 
@@ -11,7 +11,7 @@ test('exact freshness times are available by keyboard and touch (#161)', async (
   await expect(toggle).toBeVisible()
   const iso = await freshness.locator('time').first().getAttribute('datetime')
   const expected = new Date(iso!).toLocaleString('en-AU', {
-    day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short', timeZone: 'Australia/Sydney',
+    day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short', timeZone: TEST_TIME_ZONE,
   })
   const exact = freshness.locator('.cw-fresh-exact')
   await expect(exact).toBeHidden()

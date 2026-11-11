@@ -5,6 +5,8 @@ export const PASSWORD = 'correct horse battery staple'
 export const MOCK = process.env.MOCK_MODEL_URL ?? `http://127.0.0.1:${process.env.MOCK_MODEL_PORT ?? 18099}`
 /** Signed-in owner with [DEMO] data loaded, written by global-setup.ts. */
 export const STORAGE_STATE = new URL('../.auth/owner.json', import.meta.url).pathname
+/** Shared by the managed app server and timestamp assertions. Match an external server's zone. */
+export const TEST_TIME_ZONE = process.env.APP_TIMEZONE ?? 'Australia/Sydney'
 
 /** An id unique to this test and attempt, for emails and mock-model holds. */
 export function testId(info: TestInfo, tag: string) {
