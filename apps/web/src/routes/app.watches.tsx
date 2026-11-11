@@ -2,11 +2,14 @@ import { Link, createFileRoute, useNavigate, useRouter } from '@tanstack/react-r
 import { useId, useState } from 'react'
 import { z } from 'zod'
 import { createWatch, fetchWatches, removeWatch } from '../fns/watches'
-import { fmtTime } from '../components/format'
+import { fmtTime, plural } from '../components/format'
 import { Notice, PageHead, TableWrap, Term, SkeletonPage } from '../components/ui'
 import { plainMessage } from '../shared/messages'
 import { Freshness } from '../components/signals'
 import { pageTitle } from '../components/errors'
+import { ConfirmDialog } from '../components/confirm'
+import { useAction } from '../components/action'
+import { safeHref } from '../shared/links'
 
 /**
  * Watches: what to listen for (left) and what matched (right). Hit filters live in the URL so
@@ -96,14 +99,14 @@ function Watches() {
                           {n > 0 ? (
                             <button type="button" className="cw-linkbtn" aria-pressed={sp.entry === key} onClick={() => set({ entry: sp.entry === key ? undefined : key })}>
                               {n}
-                              <span className="cw-sr-only"> hits for {e.value}, {sp.entry === key ? 'showing' : 'show only these'}</span>
+                              <span className="cw-sr-only"> {n === 1 ? 'hit' : 'hits'} for {e.value}, {sp.entry === key ? 'showing' : 'show only these'}</span>
                             </button>
                           ) : (
                             <span className="cw-muted">0</span>
                           )}
                         </td>
                         <td>
-                          <RemoveWatch id={e.id} value={e.value} />
+                          <RemoveWatch id={e.id} value={e.value} hitCount={e.hitCount} />
                         </td>
                       </tr>
                     )
@@ -172,14 +175,7 @@ function Watches() {
                     {shown.map((h) => (
                       <tr key={h.id}>
                         <td className="cw-cell-wide">
-                          {h.url ? (
-                            <a href={h.url} target="_blank" rel="noreferrer noopener">
-                              {h.title}
-                              <span className="cw-sr-only"> (opens in a new tab)</span>
-                            </a>
-                          ) : (
-                            h.title
-                          )}
+                          <ExternalTitle url={h.url} title={h.title} />
                           {h.snippet && <div className="cw-muted cw-clamp">{h.snippet}</div>}
                           {h.cveIds.length > 0 && (
                             <div className="cw-chips cw-mt-2xs">
@@ -225,7 +221,7 @@ function Watches() {
             </div>
           </div>
           <p className="cw-muted">
-            Sources: <a href="https://pwn.watch">pwn.watch</a> and the CISA Known Exploited Vulnerabilities catalog.
+            Sources: <a href="https://pwn.watch">pwn.watch</a> and the CISA Known Exploited Vulnerabilities catalogue.
           </p>
         </section>
       </div>
@@ -233,12 +229,24 @@ function Watches() {
   )
 }
 
+/** A feed title, linked only when its URL is http or https. Anything else is plain text. */
+function ExternalTitle({ url, title }: { url: string | null | undefined; title: string }) {
+  const href = safeHref(url)
+  if (!href) return <>{title}</>
+  return (
+    <a href={href} target="_blank" rel="noreferrer noopener">
+      {title}
+      <span className="cw-sr-only"> (opens in a new tab)</span>
+    </a>
+  )
+}
+
 function AddWatch() {
   const router = useRouter()
   const [type, setType] = useState<(typeof TYPES)[number]['value']>('vendor')
   const [value, setValue] = useState('')
-  const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState<string | null>(null)
+  const { run, busy, error } = useAction()
   const hintId = useId()
   const errId = useId()
   return (
@@ -248,13 +256,11 @@ function AddWatch() {
       aria-labelledby="add-title"
       onSubmit={async (e) => {
         e.preventDefault()
-        const r = await createWatch({ data: { type, value } })
-        if (!r.ok) {
-          setSaved(null)
-          return setError(r.error)
-        }
-        setError(null)
-        setSaved(`Added ${value}. Matches appear within the hour.`)
+        setSaved(null)
+        const added = value
+        const r = await run('add', () => createWatch({ data: { type, value: added } }))
+        if (!r?.ok) return
+        setSaved(`Added ${added}. Matches appear within the hour.`)
         setValue('')
         await router.invalidate()
       }}
@@ -284,8 +290,8 @@ function AddWatch() {
             aria-describedby={`${hintId}${error ? ` ${errId}` : ''}`}
           />
         </label>
-        <button className="cw-btn" type="submit" disabled={!value.trim()}>
-          Add watch
+        <button className="cw-btn" type="submit" disabled={!value.trim() || Boolean(busy)} aria-busy={busy ? true : undefined}>
+          {busy ? 'Adding…' : 'Add watch'}
         </button>
       </div>
       <p id={hintId} className="cw-help cw-m0">
@@ -303,33 +309,41 @@ function AddWatch() {
   )
 }
 
-function RemoveWatch({ id, value }: { id: string; value: string }) {
+/** Remove a watch after a confirmation that names it. Focus starts on Cancel and returns to Remove. */
+function RemoveWatch({ id, value, hitCount }: { id: string; value: string; hitCount: number }) {
   const router = useRouter()
-  const [confirm, setConfirm] = useState(false)
-  if (!confirm)
-    return (
-      <button type="button" className="cw-btn" data-variant="quiet" data-size="sm" onClick={() => setConfirm(true)}>
+  const [open, setOpen] = useState(false)
+  const { run, busy, error, setError } = useAction()
+  return (
+    <>
+      <button type="button" className="cw-btn" data-variant="quiet" data-size="sm" onClick={() => setOpen(true)}>
         Remove<span className="cw-sr-only"> {value}</span>
       </button>
-    )
-  return (
-    <span className="cw-row cw-nowrap-flex" data-center>
-      <button
-        type="button"
-        className="cw-btn"
-        data-variant="danger"
-        data-size="sm"
-        autoFocus
-        onClick={async () => {
-          await removeWatch({ data: { id } })
+      <ConfirmDialog
+        open={open}
+        tone="danger"
+        title={`Remove the watch ${value}?`}
+        body={
+          <p>
+            Crosswire stops checking the feeds for <strong>{value}</strong>.{' '}
+            {hitCount > 0 ? `Its ${plural(hitCount, 'hit')} so far stay in the list of hits.` : 'It has no hits yet.'}
+          </p>
+        }
+        confirmLabel="Remove watch"
+        busy={Boolean(busy)}
+        error={error}
+        onCancel={() => {
+          setError(null)
+          setOpen(false)
+        }}
+        onConfirm={async () => {
+          const r = await run('remove', () => removeWatch({ data: { id } }))
+          if (r === undefined) return
+          if (!r.ok) return setError('This watch was not found. It may already be removed. Refresh the page.')
+          setOpen(false)
           await router.invalidate()
         }}
-      >
-        Confirm remove<span className="cw-sr-only"> {value}</span>
-      </button>
-      <button type="button" className="cw-btn" data-variant="quiet" data-size="sm" onClick={() => setConfirm(false)}>
-        Cancel
-      </button>
-    </span>
+      />
+    </>
   )
 }

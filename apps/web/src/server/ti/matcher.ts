@@ -4,6 +4,7 @@ import { cveRecords, pwnIncidents, watchEntries, watchHits } from '../db/schema'
 import { logger } from '../lib/logger'
 import { truncate } from '../lib/redact'
 import { notify } from '../notify/notify'
+import { safeHref } from '../../shared/links'
 
 export interface TiRecord {
   source: string
@@ -63,7 +64,7 @@ async function loadRecords(): Promise<TiRecord[]> {
       sourceId: i.slug,
       title: i.title,
       text: i.summary,
-      url: i.url,
+      url: safeHref(i.url) ?? null,
       cveIds: i.cveIds,
       tags: i.tags,
       vendors: [i.product ?? ''].filter(Boolean),
@@ -73,7 +74,7 @@ async function loadRecords(): Promise<TiRecord[]> {
       sourceId: c.cveId,
       title: `${c.cveId}: ${c.title ?? ''}`.trim(),
       text: c.description ?? '',
-      url: c.url,
+      url: safeHref(c.url) ?? null,
       cveIds: [c.cveId],
       tags: [],
       vendors: [c.vendor ?? '', c.product ?? ''].filter(Boolean),
