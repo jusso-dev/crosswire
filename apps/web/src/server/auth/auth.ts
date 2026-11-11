@@ -35,11 +35,14 @@ const AUDITED_PATHS: Record<string, string> = {
 export const CLIENT_IP_HEADER = 'x-crosswire-client-ip'
 
 export function withClientIp(request: Request): Request {
-  const headers = new Headers(request.headers)
+  // srvx's NodeRequest cannot be passed to Node's native Request constructor.
+  // Its clone method returns a native request, preserving the method and body.
+  const forwarded = request.clone()
+  const headers = forwarded.headers
   headers.delete(CLIENT_IP_HEADER)
   const ip = clientIp(request.headers)
   if (ip) headers.set(CLIENT_IP_HEADER, ip)
-  return new Request(request, { headers })
+  return forwarded
 }
 
 function requestMeta(headers: Headers | undefined) {

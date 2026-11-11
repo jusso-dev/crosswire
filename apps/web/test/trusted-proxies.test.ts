@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { IncomingMessage } from 'node:http'
+import { Socket } from 'node:net'
+import { NodeRequest } from 'srvx/node'
 import { parseEnv, parseTrustedProxies, resetEnvForTests } from '../src/server/env'
 import { clientKey } from '../src/server/lib/http-security'
 
@@ -50,6 +53,31 @@ describe('TRUSTED_PROXIES (#157)', () => {
 })
 
 describe('sign-in rate limit key (#196)', () => {
+  it('handles srvx requests without losing the sign-in body or trusting a spoofed IP', async () => {
+    const { withClientIp, CLIENT_IP_HEADER } = await import('../src/server/auth/auth')
+    const incoming = new IncomingMessage(new Socket())
+    incoming.method = 'POST'
+    incoming.url = '/api/auth/sign-in/email'
+    incoming.headers = {
+      host: 'localhost:3000',
+      'content-type': 'application/json',
+      'x-forwarded-for': '198.51.100.1, 203.0.113.7',
+      [CLIENT_IP_HEADER]: '192.0.2.1',
+    }
+    incoming.rawHeaders = Object.entries(incoming.headers).flatMap(([name, value]) => [name, String(value)])
+    const body = JSON.stringify({ email: 'nobody@example.test', password: 'test-only-password' })
+    incoming.push(body)
+    incoming.push(null)
+    const original = new NodeRequest({ req: incoming })
+    const forwarded = withClientIp(original)
+    expect(forwarded.method).toBe('POST')
+    expect(forwarded.url).toBe('http://localhost:3000/api/auth/sign-in/email')
+    expect(forwarded.headers.get(CLIENT_IP_HEADER)).toBe('203.0.113.7')
+    expect(forwarded.headers.get('content-type')).toBe('application/json')
+    expect(await forwarded.text()).toBe(body)
+    expect(original.headers.get(CLIENT_IP_HEADER)).toBe('192.0.2.1')
+  })
+
   it('ignores X-Real-IP and a client-sent client-IP header; uses the right-most X-Forwarded-For hop', async () => {
     const { withClientIp, CLIENT_IP_HEADER } = await import('../src/server/auth/auth')
     const spoofed = (n: number) =>
