@@ -1,7 +1,7 @@
 import { useNavigate, useRouter } from '@tanstack/react-router'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { fetchPalette } from '../fns/palette'
-import { isMacPlatform, paletteShortcut, setSingleKeyShortcuts, shouldHandleShortcut, singleKeyShortcutsOn } from './keys'
+import { OPEN_DIALOG_SELECTOR, isMacPlatform, paletteShortcut, setSingleKeyShortcuts, shouldHandleShortcut, singleKeyShortcutsOn } from './keys'
 
 /**
  * Command palette (Cmd/Ctrl+K) and keyboard shortcuts. Built on the native <dialog> element:
@@ -9,7 +9,7 @@ import { isMacPlatform, paletteShortcut, setSingleKeyShortcuts, shouldHandleShor
  *
  * Shortcuts never approve, reject, execute or stop anything. Single keys are ignored while typing,
  * while any dialog or confirmation is open, and when the person turns them off (WCAG 2.1.4).
- * Cmd/Ctrl+K always works.
+ * Cmd/Ctrl+K also works while typing, but never over another confirmation or dialog.
  *   ?        shortcut sheet
  *   g then x go to a page (see GO)
  *   /        focus the page search box
@@ -113,6 +113,8 @@ export function CommandLayer() {
 
   const openPalette = useCallback(() => {
     if (!palette.current || palette.current.open) return
+    // Only our shortcut sheet may be replaced. Another modal owns focus until it closes (#127).
+    if (Array.from(document.querySelectorAll(OPEN_DIALOG_SELECTOR)).some((dialog) => dialog !== sheet.current)) return
     sheet.current?.close()
     setQuery('')
     setActive(0)

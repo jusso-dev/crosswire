@@ -20,7 +20,7 @@ export const OPEN_DIALOG_SELECTOR = 'dialog[open], [role="alertdialog"]:not(dial
  * Whether a single-key shortcut (`?`, `/`, `g` then a letter) may act on this key press.
  * No while typing, with a modifier held, after another handler took the key, or while any dialog
  * or confirmation is open (a native `dialog[open]` or an ARIA `alertdialog`). Cmd/Ctrl+K is
- * handled separately and always works.
+ * handled separately: it works while typing, but cannot open over another confirmation or dialog.
  */
 export function shouldHandleShortcut(event: ShortcutEvent, doc: Pick<Document, 'querySelector'>) {
   if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) return false
