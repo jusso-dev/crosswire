@@ -57,7 +57,8 @@ added), with a deterministic "agree / differ" summary (dates, severity labels, e
 Missing sources show as absent. Non-CVE keys do a text search on pwn.watch.
 
 All TI fetches (pwn.watch, CISA KEV, Radar) refuse responses larger than `TI_MAX_RESPONSE_BYTES`
-(default 25 MB); a refused response is not cached. Fetch rules: [pwn.watch](ti/pwn.watch.md#politeness-issue-42).
+(default 25 MB); a refused response is not cached. They follow redirects only to `https` on the
+same host (#211). Fetch rules: [pwn.watch](ti/pwn.watch.md#politeness-issue-42).
 
 ### Cloudflare Radar (optional, Later #64)
 

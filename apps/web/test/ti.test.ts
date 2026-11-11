@@ -97,6 +97,46 @@ describe('polite fetch (#42)', () => {
   })
 })
 
+describe('TI fetches follow redirects only to the same https host (#211)', () => {
+  const redirect = (location: string, status = 302) => new Response(null, { status, headers: { location } })
+  const asFetch = (f: unknown) => f as typeof fetch
+
+  it('asks fetch not to follow redirects itself', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 }))
+    await politeFetch('https://pwn.watch/redir-manual.json', { fetchImpl: asFetch(fetchImpl) })
+    expect((fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1].redirect).toBe('manual')
+  })
+
+  it('follows an https redirect on the same host and caches under the configured URL', async () => {
+    const url = 'https://pwn.watch/redir-same.json'
+    const fetchImpl = vi.fn(async (u: string) => (u === url ? redirect('/v2/redir-same.json', 301) : new Response('{"moved":true}', { status: 200 })))
+    const r = await politeFetch(url, { fetchImpl: asFetch(fetchImpl) })
+    expect(r.body).toBe('{"moved":true}')
+    expect(fetchImpl.mock.calls.map((c) => (c as unknown as [string])[0])).toEqual([url, 'https://pwn.watch/v2/redir-same.json'])
+    expect((await politeFetch(url, { fetchImpl: asFetch(fetchImpl) })).fromCache).toBe(true)
+  })
+
+  it.each([
+    ['another host', 'https://evil.example/feed.json'],
+    ['an internal address', 'http://169.254.169.254/latest/meta-data/'],
+    ['a subdomain', 'https://internal.pwn.watch/feed.json'],
+    ['plain http on the same host', 'http://pwn.watch/feed.json'],
+  ])('refuses a redirect to %s and never requests it', async (_name, location) => {
+    const url = `https://pwn.watch/redir-${encodeURIComponent(location)}.json`
+    const fetchImpl = vi.fn(async (u: string) => (u === url ? redirect(location) : new Response('{"leaked":true}', { status: 200 })))
+    await expect(politeFetch(url, { fetchImpl: asFetch(fetchImpl), headers: { Authorization: 'Bearer t' } })).rejects.toThrow(/redirected to another host or to plain http/)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses a redirect loop after the hop limit and a redirect without a location', async () => {
+    const loop = vi.fn(async (u: string) => redirect(`${u}x`))
+    await expect(politeFetch('https://pwn.watch/redir-loop', { fetchImpl: asFetch(loop) })).rejects.toThrow(/more than 3 redirects/)
+    expect(loop).toHaveBeenCalledTimes(3)
+    const bare = vi.fn(async () => new Response(null, { status: 302 }))
+    await expect(politeFetch('https://pwn.watch/redir-bare.json', { fetchImpl: asFetch(bare) })).rejects.toThrow(/without a location/)
+  })
+})
+
 describe('watchlists (#38)', () => {
   it('supports all four types, rejects invalid CVEs and short keywords, and isolates orgs', async () => {
     const a = await makeOrg('A')
