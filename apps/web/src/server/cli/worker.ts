@@ -10,22 +10,22 @@ import { reconcileStaleRuns } from '../agents/runs'
 import { logger } from '../lib/logger'
 import { closeDb } from '../db/client'
 import { createWorkerHealth, workerHealthPort } from '../ops/worker-health'
+import { dailyJob, singleFlight } from '../ops/worker-jobs'
 
 /**
  * Background worker (`pnpm worker`, or the `worker` service in Compose). Plain timers, no external
  * queue: hourly ingest + match (TTL cache keeps upstream polite), expiry and due scheduled hunts
  * every minute, digest once per local day after 00:05, retention purge once per local day after 00:30. Ingest, match and digest jobs are idempotent; scheduled-hunt claims are atomic, so extra replicas are safe.
  * `GET /healthz` on WORKER_HEALTH_PORT (default 3001) reports whether a tick finished in the last 3 minutes.
+ * The tick itself only runs the quick database jobs. Scheduled searches, the digest and the purge
+ * start from the tick but run outside it (#197), each never twice at once, so a slow query or SMTP
+ * server cannot hold the tick past the health window.
  */
 const HOUR = 3600_000
-/** After a failed purge, wait at least this long before trying again the same day. */
-const RETENTION_RETRY_MS = 15 * 60_000
+/** After a failed digest or purge, wait at least this long before trying again the same day. */
+const DAILY_RETRY_MS = 15 * 60_000
 /** How long shutdown waits for running jobs. Under the Container Apps 30 s grace period. */
 const SHUTDOWN_WAIT_MS = 25_000
-let lastDigestDay = ''
-let lastRetentionDay = ''
-let lastRetentionAttempt = 0
-let retention: Promise<void> | null = null
 let stopping = false
 const health = createWorkerHealth()
 
@@ -63,6 +63,36 @@ async function ingestCycle() {
   await safe('digest:today', () => refreshTodayDigests())
 }
 
+/** Approved scheduled hunts (#92). Claims are atomic, so extra replicas are safe. */
+const scheduledHunts = singleFlight(() => safe('hunts:scheduled', () => runDueSchedules()))
+
+/**
+ * Five minutes after local midnight (APP_TIMEZONE), digest the previous full local day. The day is
+ * marked done only when every org's digest was sent or had nothing to send; otherwise it is retried
+ * no sooner than 15 minutes later. Sends already made are not repeated (`emailed_at`).
+ */
+const dailyDigest = dailyJob({
+  offsetMs: 5 * 60_000,
+  retryMs: DAILY_RETRY_MS,
+  run: async (day) => {
+    const prev = appDay(new Date(dayBounds(day).start.getTime() - 1))
+    let failed = 0
+    const ok = await safe('digest:daily', async () => {
+      const r = await runDailyDigest(prev)
+      failed = r.failed
+      return r
+    })
+    return ok && failed === 0
+  },
+})
+
+/**
+ * Retention purge once per local day, at or after 00:30 (APP_TIMEZONE). Batched and idempotent, so
+ * a second replica running it the same day only finds nothing left to remove. The day is marked
+ * done only on success; a failure is retried no sooner than 15 minutes later.
+ */
+const retention = dailyJob({ offsetMs: 30 * 60_000, retryMs: DAILY_RETRY_MS, run: (_day, now) => safe('retention', () => runRetention(now)) })
+
 let ticking = false
 async function tick() {
   // setInterval does not wait: skip a tick while the previous one is still running.
@@ -81,35 +111,17 @@ async function tickBody() {
   await safe('expire', async () => ({ response: await expireProposals(), kql: await expireKqlProposals() }))
   // A live execution that never recorded its result becomes failed with "outcome unknown" (#121). Never retried.
   await safe('response:stale-executions', () => failStaleExecutions())
-  // Approved scheduled hunts (#92); claims are atomic, so extra replicas are safe.
-  await safe('hunts:scheduled', () => runDueSchedules())
+  if (stopping) return
+  // Slow jobs run outside the tick (#197): not awaited here, tracked for shutdown, never two at once.
+  const scheduled = scheduledHunts.start()
+  if (scheduled) track(scheduled)
   const now = new Date()
   const day = appDay(now)
-  // Five minutes after local midnight (APP_TIMEZONE), digest the previous full local day.
-  if (day !== lastDigestDay && now.getTime() - dayBounds(day).start.getTime() >= 5 * 60_000) {
-    const prev = appDay(new Date(dayBounds(day).start.getTime() - 1))
-    await safe('digest:daily', () => runDailyDigest(prev))
-    lastDigestDay = day
-  }
-  // Retention purge once per local day, at or after 00:30 (APP_TIMEZONE). It runs outside the tick
-  // (not awaited) so a long first purge never delays expiry or scheduled hunts. Batched and
-  // idempotent, so a second replica running it the same day only finds nothing left to remove.
-  // The day is marked done only on success; a failure is retried no sooner than 15 minutes later.
-  if (
-    !stopping &&
-    !retention &&
-    day !== lastRetentionDay &&
-    now.getTime() - dayBounds(day).start.getTime() >= 30 * 60_000 &&
-    now.getTime() - lastRetentionAttempt >= RETENTION_RETRY_MS
-  ) {
-    lastRetentionAttempt = now.getTime()
-    retention = track(
-      safe('retention', () => runRetention(now)).then((ok) => {
-        if (ok) lastRetentionDay = day
-        retention = null
-      }),
-    )
-  }
+  const dayStart = dayBounds(day).start
+  const digest = dailyDigest.maybeStart(now, day, dayStart)
+  if (digest) track(digest)
+  const purge = retention.maybeStart(now, day, dayStart)
+  if (purge) track(purge)
 }
 
 let ingestTimer: ReturnType<typeof setInterval> | undefined
