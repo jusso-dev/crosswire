@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { z } from 'zod'
 import { confirmDigestEmailFn, previewDigestEmailFn } from '../fns/settings'
 import { Notice, PageHead } from '../components/ui'
+import { RouteError } from '../components/errors'
+import { useAction } from '../components/action'
 
 /**
  * Confirm a digest email address (#102). The /app layout guard sends signed-out visitors to sign
@@ -16,11 +18,7 @@ export const Route = createFileRoute('/app/settings_/digest-email/confirm')({
   // The token is in the URL: never send it on as a Referer.
   head: () => ({ meta: [{ title: 'Confirm digest email · Crosswire' }, { name: 'referrer', content: 'no-referrer' }] }),
   pendingComponent: () => <p className="cw-muted">Checking your link…</p>,
-  errorComponent: ({ error }) => (
-    <Notice tone="error" title="Could not check this link">
-      {error instanceof Error ? error.message : String(error)}
-    </Notice>
-  ),
+  errorComponent: ({ error }) => <RouteError error={error} title="Could not check this link" />,
   component: ConfirmDigestEmail,
 })
 
@@ -31,8 +29,7 @@ function ConfirmDigestEmail() {
   const { token } = Route.useSearch()
   const { session } = Route.useRouteContext()
   const router = useRouter()
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { run, busy, error } = useAction()
   const [confirmed, setConfirmed] = useState<{ orgId: string; orgName: string; email: string } | null>(null)
   const doneRef = useRef<HTMLDivElement>(null)
 
@@ -83,20 +80,11 @@ function ConfirmDigestEmail() {
     )
 
   const confirm = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      const r = await confirmDigestEmailFn({ data: { token: token ?? '' } })
-      if (r.ok) {
-        setConfirmed(r.result)
-        // The token is now spent; refresh cached loaders (Settings shows the new address).
-        void router.invalidate()
-      } else setError(r.error)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
+    const r = await run('confirm', () => confirmDigestEmailFn({ data: { token: token ?? '' } }))
+    if (!r?.ok) return
+    setConfirmed(r.result)
+    // The token is now spent; refresh cached loaders (Settings shows the new address).
+    void router.invalidate()
   }
 
   return (
@@ -112,7 +100,7 @@ function ConfirmDigestEmail() {
         </Notice>
       )}
       <div className="cw-row">
-        <button type="button" className="cw-btn" disabled={busy} onClick={confirm}>
+        <button type="button" className="cw-btn" disabled={Boolean(busy)} aria-busy={Boolean(busy) || undefined} onClick={confirm}>
           {busy ? 'Confirming…' : 'Confirm address'}
         </button>
         <Link className="cw-btn" data-variant="ghost" to="/app/settings" hash="digest-email">

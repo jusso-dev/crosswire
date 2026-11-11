@@ -12,11 +12,6 @@ export function isTyping(target: EventTarget | null) {
  * j/k (and arrows) move focus between rows of a list or table body; Enter opens the row's first link.
  * Rows are elements marked data-row. Nothing here approves, rejects or runs anything.
  */
-export function useListKeys<T extends HTMLElement>() {
-  return listKeys<T>
-}
-
-/** Keydown handler for a container whose rows are marked data-row. Works from any element inside it. */
 export function listKeys<T extends HTMLElement>(e: KeyboardEvent<T>) {
   if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
   const rows = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[data-row]'))

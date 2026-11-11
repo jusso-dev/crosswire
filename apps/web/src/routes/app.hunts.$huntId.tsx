@@ -9,6 +9,7 @@ import { canApproveEveryProposal, kqlApprovalBlock } from '../shared/kql-approva
 import { HIT_ANSWER, OUTCOME_LABEL, answerText, coverageOf } from '../shared/indicator-playbooks'
 import { Freshness, ModeTag, StatusTag, TARGET_LABEL } from '../components/signals'
 import { FilterChips, Inspector, ResultGrid, applyFilters, decodeFilters, decodeSort, encodeFilters, encodeSort, kqlIdentifier, kqlLiteral, sortRows, summariseEntities, type Filter, type Row, type Sort } from '../components/results'
+import { pageTitle } from '../components/errors'
 
 /**
  * Hunt workspace (reference slice for the analyst design system, see design.md).
@@ -49,6 +50,7 @@ export const Route = createFileRoute('/app/hunts/$huntId')({
       <Link to="/app/hunts">Back to all hunts</Link>
     </div>
   ),
+  head: ({ loaderData }) => ({ meta: [{ title: pageTitle(loaderData?.hunt.title, 'Hunt') }] }),
   component: HuntWorkspace,
 })
 

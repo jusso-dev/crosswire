@@ -4,6 +4,7 @@ import { fetchThreads, newThread, removeThread } from '../fns/chat'
 import { Notice, SkeletonPage } from '../components/ui'
 import { plainMessage } from '../shared/messages'
 import { getDisplayTimeZone } from '../components/format'
+import { pageTitle } from '../components/errors'
 
 /**
  * Chat layout (ChatGPT-style): conversation list on the left grouped by recency, the conversation
@@ -17,6 +18,7 @@ export const Route = createFileRoute('/app/chat')({
       {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
+  head: () => ({ meta: [{ title: pageTitle('Conversations') }] }),
   component: ChatLayout,
 })
 

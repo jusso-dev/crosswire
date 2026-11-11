@@ -7,6 +7,7 @@ import { Notice, Term, SkeletonPage } from '../components/ui'
 import { plainMessage } from '../shared/messages'
 import { Freshness, StatusTag } from '../components/signals'
 import { INDICATOR_LABEL, builtinForKind, detectIndicator, normaliseIndicator, type IndicatorKind, type PlaybookCheck } from '../shared/indicator-playbooks'
+import { pageTitle } from '../components/errors'
 
 /** Hunt list: one dense table with a URL-backed text filter and status filter (kept on back/forward). */
 export const Route = createFileRoute('/app/hunts')({
@@ -27,6 +28,7 @@ export const Route = createFileRoute('/app/hunts')({
       {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
+  head: () => ({ meta: [{ title: pageTitle('Hunts') }] }),
   component: Hunts,
 })
 

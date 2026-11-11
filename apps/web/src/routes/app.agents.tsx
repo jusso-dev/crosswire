@@ -8,6 +8,7 @@ import { fmtTime } from '../components/format'
 import { EmptyState, Notice, PageHead, SkeletonPage, TableWrap } from '../components/ui'
 import { EVENT_WORD, RunStatusTag, RunTree, StopRunButton, agentLabel, fmtCost, fmtDuration, fmtTokens, outputLabel } from '../components/runs'
 import { listKeys } from '../components/keys'
+import { pageTitle } from '../components/errors'
 
 /**
  * Agents page. Memory is the default view: one agent, its notes, usage and directives.
@@ -69,6 +70,7 @@ export const Route = createFileRoute('/app/agents')({
       {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
+  head: () => ({ meta: [{ title: pageTitle('Agents') }] }),
   component: Agents,
 })
 

@@ -1,8 +1,10 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { fetchDigests } from '../fns/watches'
-import { fmtTime, getDisplayTimeZone } from '../components/format'
+import { fmtTime, getDisplayTimeZone, humanise, plural } from '../components/format'
 import { Notice, PageHead, SkeletonPage } from '../components/ui'
 import { plainMessage } from '../shared/messages'
+import { pageTitle } from '../components/errors'
+import { safeHref } from '../shared/links'
 
 /** Daily digests: one per local day. Each day is a section with its hits as a compact list. */
 export const Route = createFileRoute('/app/digests')({
@@ -13,6 +15,7 @@ export const Route = createFileRoute('/app/digests')({
       {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
+  head: () => ({ meta: [{ title: pageTitle('Daily digests') }] }),
   component: Digests,
 })
 
@@ -29,7 +32,7 @@ function Digests() {
     <>
       <PageHead
         title="Daily digests"
-        intro={`Each day's watch hits on one page, by ${getDisplayTimeZone().replace('_', ' ')} calendar day. Owners also get it by email when email is set up.`}
+        intro={`Each day's watch hits on one page, by ${humanise(getDisplayTimeZone())} calendar day. Owners also get it by email when email is set up.`}
         actions={
           <Link className="cw-btn" data-variant="ghost" to="/app/watches">
             Manage watches
@@ -48,7 +51,7 @@ function Digests() {
                     <time dateTime={d.day}>{dayLabel(d.day)}</time>
                   </h2>
                   <span className="cw-badge" data-tone={d.hitCount > 0 ? 'info' : undefined}>
-                    {d.hitCount} hit{d.hitCount === 1 ? '' : 's'}
+                    {plural(d.hitCount, 'hit')}
                   </span>
                   <span className="cw-muted cw-ml-auto">
                     {d.emailedAt ? `Emailed ${fmtTime(d.emailedAt)}` : 'Not emailed'}
@@ -63,8 +66,8 @@ function Digests() {
                     {d.items.map((i) => (
                       <li key={i.hitId} data-plain>
                         <span className="cw-list-title">
-                          {i.url ? (
-                            <a href={i.url} target="_blank" rel="noreferrer noopener">
+                          {safeHref(i.url) ? (
+                            <a href={safeHref(i.url)} target="_blank" rel="noreferrer noopener">
                               {i.title}
                               <span className="cw-sr-only"> (opens in a new tab)</span>
                             </a>
@@ -88,7 +91,7 @@ function Digests() {
                         <span className="cw-muted">
                           {d.hitCount - d.items.length} more not listed.{' '}
                           <Link to="/app/watches" search={{ day: d.day }}>
-                            See all {d.hitCount} hits for this day
+                            See all {plural(d.hitCount, 'hit')} for this day
                           </Link>
                         </span>
                       </li>

@@ -58,24 +58,15 @@ export function PageHead({ title, intro, actions, crumbs }: { title: ReactNode; 
   )
 }
 
-export function SectionHead({ title, intro, action, id }: { title: ReactNode; intro?: ReactNode; action?: ReactNode; id?: string }) {
-  return (
-    <div className="cw-sechead">
-      <h2 id={id}>{title}</h2>
-      {action}
-      {intro && <p>{intro}</p>}
-    </div>
-  )
-}
-
 /**
  * Feedback block. Tone is carried by a text label as well as colour ("Error:", "Warning:" …) so it
- * reads the same in a screen reader and in greyscale. Errors are announced (role=alert).
+ * reads the same in a screen reader and in greyscale. Errors are announced at once (role=alert); every
+ * other tone is a polite live region (role=status), so a notice that appears after an action is read out.
  */
 export function Notice({ tone, title, children }: { tone: 'error' | 'warn' | 'info' | 'demo' | 'ok'; title?: string; children: ReactNode }) {
   const word = { error: 'Error', warn: 'Warning', info: 'Note', demo: 'Demo data', ok: 'Done' }[tone]
   return (
-    <div className="cw-notice" data-tone={tone} role={tone === 'error' ? 'alert' : undefined}>
+    <div className="cw-notice" data-tone={tone} role={tone === 'error' ? 'alert' : 'status'}>
       <span className="cw-notice-icon" aria-hidden="true" />
       <div>
         <p className="cw-notice-title">
@@ -198,17 +189,6 @@ export function EmptyState({ title, body, action, compact }: { title: string; bo
   )
 }
 
-/** Placeholder bars shaped like the content that is loading. Hidden from screen readers; the live label says it. */
-export function Skeleton({ lines = 3, label = 'Loading' }: { lines?: number; label?: string }) {
-  return (
-    <div className="cw-skel" role="status" aria-label={label}>
-      {Array.from({ length: lines }, (_, i) => (
-        <span key={i} className="cw-skel-line" aria-hidden="true" data-w={i % 3} />
-      ))}
-    </div>
-  )
-}
-
 /** Route-level loading: a header block, a toolbar strip and table rows, matching the page layout. */
 export function SkeletonPage({ rows = 6, label = 'Loading this page' }: { rows?: number; label?: string }) {
   return (
@@ -225,18 +205,3 @@ export function SkeletonPage({ rows = 6, label = 'Loading this page' }: { rows?:
   )
 }
 
-/** Small "Saved" / "Copied" acknowledgement that fades after a moment. Announced politely. */
-export function useFlash(ms = 1600) {
-  const [text, setText] = useState<string | null>(null)
-  useEffect(() => {
-    if (!text) return
-    const t = setTimeout(() => setText(null), ms)
-    return () => clearTimeout(t)
-  }, [text, ms])
-  const node = (
-    <span className="cw-flash" role="status" data-on={text ? '' : undefined}>
-      {text ?? ''}
-    </span>
-  )
-  return [node, setText] as const
-}

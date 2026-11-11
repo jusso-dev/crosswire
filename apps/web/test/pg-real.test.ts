@@ -8,23 +8,59 @@ import { setDb, getDb, type Db } from '../src/server/db/client'
 import * as schema from '../src/server/db/schema'
 import { approveAndRunKql, createHunt, proposeKql } from '../src/server/hunting/hunts'
 import { createSchedule, runDueSchedules } from '../src/server/hunting/schedules'
-import { createProposal, decideProposal, expireProposals } from '../src/server/response/proposals'
 import { acquireRunSlot, acquireSlot, checkBudget, claimDailyBudget, recordObservedUsage, recordUnmeasuredUsage, releaseOnce } from '../src/server/agents/budgets'
 import { reconcileStaleRuns, startRun } from '../src/server/agents/runs'
 import { resetEnvForTests } from '../src/server/env'
 import { makeOrg, team } from './helpers'
+import { responseRaceSuite } from './response-races'
 
 /**
  * Real Postgres (postgres-js driver) checks for queries PGlite accepts but production rejects, e.g.
- * bare Date params inside raw `sql` templates. Runs only when PG_TEST_URL is set (CI service container);
- * the database is dropped and recreated in a dedicated schema-free test DB.
+ * bare Date params inside raw `sql` templates, plus approval races on parallel connections. Runs only
+ * when PG_TEST_URL is set (CI service container). The suite DROPS the public schema, so it refuses any
+ * URL that is not a local `*_test` database (#138). In CI a missing PG_TEST_URL fails instead of skipping.
  */
+const LOCAL_HOSTS = ['localhost', '127.0.0.1', '::1', '[::1]', 'postgres']
+
+/** Why this URL is not a disposable local test database, or null when it is. */
+function unsafeTestDbReason(raw: string): string | null {
+  let u: URL
+  try {
+    u = new URL(raw)
+  } catch {
+    return 'PG_TEST_URL is not a valid URL.'
+  }
+  const db = decodeURIComponent(u.pathname.replace(/^\//, ''))
+  if (!LOCAL_HOSTS.includes(u.hostname)) return `PG_TEST_URL host "${u.hostname}" is not local. Use localhost, 127.0.0.1, ::1 or the CI service "postgres".`
+  if (!db.endsWith('_test')) return `PG_TEST_URL database "${db || '(none)'}" does not end in "_test".`
+  return null
+}
+
 const url = process.env.PG_TEST_URL
+const refusal = url ? unsafeTestDbReason(url) : null
 const d = url ? describe : describe.skip
+
+describe('real Postgres test set-up', () => {
+  it('is not skipped in CI', () => {
+    if (process.env.CI && !url) throw new Error('PG_TEST_URL is not set. CI must run the real Postgres tests, not skip them.')
+  })
+
+  it('only accepts a local database whose name ends in _test', () => {
+    expect(unsafeTestDbReason('postgres://crosswire:x@localhost:5432/crosswire_test')).toBeNull()
+    expect(unsafeTestDbReason('postgres://u:x@postgres:5432/crosswire_test')).toBeNull()
+    expect(unsafeTestDbReason('postgres://u:x@[::1]:5432/a_test')).toBeNull()
+    expect(unsafeTestDbReason('postgres://u:x@localhost:5432/crosswire')).toMatch(/_test/)
+    expect(unsafeTestDbReason('postgres://u:x@db.example.com:5432/crosswire_test')).toMatch(/not local/)
+    expect(unsafeTestDbReason('postgres://u:x@crosswire.postgres.database.azure.com/crosswire_test')).toMatch(/not local/)
+    expect(unsafeTestDbReason('not a url')).toMatch(/not a valid URL/)
+  })
+})
 
 d('real Postgres (postgres-js)', () => {
   let client: ReturnType<typeof postgres>
   beforeAll(async () => {
+    // Refuse before any SQL runs: this suite drops the public schema.
+    if (refusal) throw new Error(`Refusing to run the real Postgres tests: ${refusal} This suite drops the public schema.`)
     client = postgres(url!, { max: 4, onnotice: () => {} })
     await client.unsafe('drop schema if exists public cascade; drop schema if exists drizzle cascade; create schema public;')
     const db = drizzle(client, { schema })
@@ -48,11 +84,8 @@ d('real Postgres (postgres-js)', () => {
     expect(row!.lastStatus).toBe('run')
   })
 
-  it('expires lapsed pending and approved-unexecuted proposals', async () => {
-    const t = await team()
-    const p = await createProposal(t.orgId, { type: 'user', userId: t.analyst }, { title: 'x x x', actionType: 'other', targets: { users: ['u'] }, blastRadius: { summary: 'manual test action' } })
-    await decideProposal(t.orgId, { userId: t.approver, role: 'approver' }, p.id, 'approve')
-    expect(await expireProposals(new Date(Date.now() + 48 * 3600_000))).toBeGreaterThanOrEqual(1)
+  describe('approval races on parallel connections', () => {
+    responseRaceSuite()
   })
 
   it('keeps an unset rate unpriced and releases one capacity slot', async () => {
