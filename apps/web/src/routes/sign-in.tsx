@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { authClient } from '../lib/auth-client'
 import { fetchAuthConfig, fetchSession } from '../fns/session'
 import { Wordmark } from '../components/ui'
+import { pageTitle } from '../components/errors'
 
 function safeReturnTo(value: unknown) {
   return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/\\') ? value : '/app'
@@ -15,6 +16,7 @@ export const Route = createFileRoute('/sign-in')({
     if (await fetchSession()) throw redirect({ href: safeReturnTo(search.returnTo) })
   },
   loader: () => fetchAuthConfig(),
+  head: () => ({ meta: [{ title: pageTitle('Sign in') }] }),
   component: SignIn,
 })
 

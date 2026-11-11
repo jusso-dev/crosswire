@@ -5,6 +5,7 @@ import { fmtTime } from '../components/format'
 import { ModeTag, StatusTag } from '../components/signals'
 import { Breadcrumbs, Notice, SkeletonPage, Term } from '../components/ui'
 import { plainMessage } from '../shared/messages'
+import { pageTitle } from '../components/errors'
 
 /**
  * Approval detail: what the action does, how far it reaches, the exact calls a dry run would make,
@@ -29,6 +30,7 @@ export const Route = createFileRoute('/app/approvals/$id')({
       <Link to="/app/approvals">Back to approvals</Link>
     </>
   ),
+  head: ({ loaderData }) => ({ meta: [{ title: pageTitle(loaderData?.proposal.title, 'Approval') }] }),
   component: ProposalDetail,
 })
 

@@ -1,6 +1,7 @@
 /**
  * Plain-English wording for errors the analyst sees. The server keeps its precise reasons for logs,
- * run rows and tests. This only changes what the screen says. Unknown messages pass through.
+ * run rows and tests. This only changes what the screen says. Unknown plain sentences pass through;
+ * internal text (SQL, stack frames, JSON, ids) is replaced with a plain fallback.
  */
 const RULES: Array<[RegExp, string | ((m: RegExpMatchArray) => string)]> = [
   [/Daily input token budget is exhausted/i, "Today's token budget is used up. It resets at midnight UTC. An owner can raise the daily limit in the deployment settings (BUDGET_DAILY_INPUT_TOKENS)."],
@@ -22,13 +23,36 @@ const RULES: Array<[RegExp, string | ((m: RegExpMatchArray) => string)]> = [
   [/Injection text cannot be promoted/i, 'This note reads like an instruction to the agent, so it cannot be promoted. Replace it with a plain fact.'],
 ]
 
+/**
+ * Text that must never reach the screen as is: SQL and driver errors, stack frames, JSON bodies
+ * (validation output, Graph error bodies), internal ids and very long messages. Their full text is
+ * in the server log; the screen gets a plain sentence.
+ */
+const INTERNAL = [
+  /\b(select|insert into|update|delete from)\b.+\b(from|set|values|where)\b/i,
+  /violates|duplicate key|relation "|column "|syntax error at|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|getaddrinfo|socket hang up/i,
+  /^\s*[[{]/,
+  /\bat [\w.<>]+ \(.*:\d+:\d+\)/,
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i,
+]
+
+export const FALLBACK_MESSAGE = 'Something went wrong on the server. Try again. If it keeps happening, ask an owner to check the Crosswire logs.'
+
+/** Validation output from a server function (a zod issue list). */
+function isValidationDump(message: string) {
+  return /"code":\s*"(too_big|too_small|invalid_type|invalid_string|invalid_format|custom)"/.test(message)
+}
+
 export function plainMessage(raw: unknown): string {
-  const message = raw instanceof Error ? raw.message : typeof raw === 'string' ? raw : String(raw ?? '')
+  const message = (raw instanceof Error ? raw.message : typeof raw === 'string' ? raw : String(raw ?? '')).replace(/^Error:\s*/, '').trim()
   for (const [re, out] of RULES) {
     const m = message.match(re)
     if (m) return typeof out === 'string' ? out : out(m)
   }
-  return message || 'Something unexpected happened. Try again.'
+  if (!message) return 'Something unexpected happened. Try again.'
+  if (isValidationDump(message)) return 'Some of what was entered is not valid, for example a field is too long. Check the form and try again.'
+  if (message.length > 300 || INTERNAL.some((re) => re.test(message))) return FALLBACK_MESSAGE
+  return message
 }
 
 /** True when the message is a budget or capacity refusal (a limit, not a fault). */

@@ -5,7 +5,8 @@ import { authClient } from '../lib/auth-client'
 import { Mark } from '../components/ui'
 import { ThemeToggle } from '../components/ThemeToggle'
 import { CommandLayer, PaletteButton, ShortcutsButton } from '../components/CommandPalette'
-import { getDisplayTimeZone } from '../components/format'
+import { getDisplayTimeZone, humanise } from '../components/format'
+import { RouteError } from '../components/errors'
 
 /** Authenticated layout (#20, #23). Server-side redirect when signed out; server fns re-check every call. */
 export const Route = createFileRoute('/app')({
@@ -15,6 +16,7 @@ export const Route = createFileRoute('/app')({
     return { session }
   },
   component: AppShell,
+  errorComponent: ({ error }) => <RouteError error={error} title="This page did not load" />,
 })
 
 const NAV_GROUPS = [
@@ -80,6 +82,17 @@ function AppShell() {
   const router = useRouter()
   const search = useRouterState({ select: (s) => s.location.searchStr })
   const main = useRef<HTMLElement>(null)
+  const header = useRef<HTMLElement>(null)
+  // Sticky rails and the chat layout subtract the real header height, which changes when it wraps.
+  useEffect(() => {
+    const el = header.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const set = () => document.documentElement.style.setProperty('--header-h', `${Math.ceil(el.getBoundingClientRect().height)}px`)
+    set()
+    const ro = new ResizeObserver(set)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   // Lists remember their filters: the nav link returns to the last search used on that page.
   const [remembered, setRemembered] = useState<Record<string, string>>({})
   useEffect(() => {
@@ -174,18 +187,18 @@ function AppShell() {
           ))}
         </nav>
         <div className="cw-rail-foot">
-          <span>Times shown in {timeZone.replace('_', ' ')}</span>
+          <span>Times shown in {humanise(timeZone)}</span>
           <a href="https://github.com/jusso-dev/crosswire/blob/main/docs/day-1-operator-playbook.md" target="_blank" rel="noreferrer noopener">
             First-day guide<span className="cw-sr-only"> (opens in a new tab)</span>
           </a>
         </div>
       </aside>
       <div className="cw-main">
-        <header className="cw-header">
+        <header className="cw-header" ref={header}>
           <span className="cw-header-org">
             <strong>{session.org.name}</strong>
             <span className="cw-badge" data-tone={session.org.role === 'analyst' ? undefined : 'info'}>
-              {session.org.role}
+              {humanise(session.org.role)}
             </span>
             <span className="cw-sr-only">: {ROLE_HINT[session.org.role] ?? ''}</span>
           </span>

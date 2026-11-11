@@ -3,6 +3,7 @@ import { fetchCompare } from '../fns/watches'
 import { SeverityTag } from '../components/signals'
 import { Breadcrumbs, Notice, Term, SkeletonPage } from '../components/ui'
 import { plainMessage } from '../shared/messages'
+import { pageTitle } from '../components/errors'
 
 /**
  * Cross-source compare as a per-source grid (rows = fields, columns = sources), so agreement and
@@ -16,6 +17,7 @@ export const Route = createFileRoute('/app/intel/$key')({
       {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
+  head: ({ params }) => ({ meta: [{ title: pageTitle(params.key, 'Intel') }] }),
   component: Compare,
 })
 

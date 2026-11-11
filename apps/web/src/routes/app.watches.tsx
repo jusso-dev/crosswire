@@ -6,6 +6,7 @@ import { fmtTime } from '../components/format'
 import { Notice, PageHead, TableWrap, Term, SkeletonPage } from '../components/ui'
 import { plainMessage } from '../shared/messages'
 import { Freshness } from '../components/signals'
+import { pageTitle } from '../components/errors'
 
 /**
  * Watches: what to listen for (left) and what matched (right). Hit filters live in the URL so
@@ -21,6 +22,7 @@ export const Route = createFileRoute('/app/watches')({
       {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
+  head: () => ({ meta: [{ title: pageTitle('Watches') }] }),
   component: Watches,
 })
 

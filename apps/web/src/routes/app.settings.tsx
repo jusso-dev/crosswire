@@ -7,6 +7,7 @@ import { fmtTime } from '../components/format'
 import { Notice, PageHead, TableWrap, SkeletonPage } from '../components/ui'
 import { plainMessage } from '../shared/messages'
 import { Freshness } from '../components/signals'
+import { pageTitle } from '../components/errors'
 
 /**
  * Settings: one page, sectioned, with in-page navigation. Every save is enforced server-side
@@ -23,6 +24,7 @@ export const Route = createFileRoute('/app/settings')({
       {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
+  head: () => ({ meta: [{ title: pageTitle('Settings') }] }),
   component: Settings,
 })
 

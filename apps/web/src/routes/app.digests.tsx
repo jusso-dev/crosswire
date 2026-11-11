@@ -3,6 +3,7 @@ import { fetchDigests } from '../fns/watches'
 import { fmtTime, getDisplayTimeZone } from '../components/format'
 import { Notice, PageHead, SkeletonPage } from '../components/ui'
 import { plainMessage } from '../shared/messages'
+import { pageTitle } from '../components/errors'
 
 /** Daily digests: one per local day. Each day is a section with its hits as a compact list. */
 export const Route = createFileRoute('/app/digests')({
@@ -13,6 +14,7 @@ export const Route = createFileRoute('/app/digests')({
       {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
+  head: () => ({ meta: [{ title: pageTitle('Daily digests') }] }),
   component: Digests,
 })
 

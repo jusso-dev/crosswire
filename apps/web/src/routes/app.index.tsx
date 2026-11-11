@@ -6,6 +6,7 @@ import { dismissSetupFn, fetchSetup, loadDemoFn } from '../fns/setup'
 import { Notice, PageHead, SkeletonPage, Term } from '../components/ui'
 import { plainMessage } from '../shared/messages'
 import { Freshness, SeverityTag } from '../components/signals'
+import { pageTitle } from '../components/errors'
 
 export const Route = createFileRoute('/app/')({
   loader: async () => {
@@ -18,6 +19,7 @@ export const Route = createFileRoute('/app/')({
       {plainMessage(error)} Refresh the page to try again.
     </Notice>
   ),
+  head: () => ({ meta: [{ title: pageTitle('Control panel') }] }),
   component: ControlPanel,
 })
 
