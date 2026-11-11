@@ -13,7 +13,7 @@ import { team } from './helpers'
  * makes "two concurrent executions run the executor once" fail on both drivers.
  */
 
-const ENV = ['RESPONSE_EXECUTOR_LOGICAPP', 'RESPONSE_LOGICAPP_URL', 'RESPONSE_DRY_RUN'] as const
+const ENV = ['RESPONSE_EXECUTOR_LOGICAPP', 'RESPONSE_LOGICAPP_URL', 'RESPONSE_LOGICAPP_ORG_ID', 'RESPONSE_DRY_RUN'] as const
 const base = {
   title: 'Run the containment Logic App',
   actionType: 'logic_app' as const,
@@ -40,6 +40,9 @@ function countingFetch() {
 
 async function approved() {
   const t = await team()
+  // The Logic App acts for one organisation (#190): bind it to this test's org.
+  process.env.RESPONSE_LOGICAPP_ORG_ID = t.orgId
+  resetEnvForTests()
   const p = await createProposal(t.orgId, { type: 'user', userId: t.analyst }, base)
   await decideProposal(t.orgId, { userId: t.approver, role: 'approver' }, p.id, 'approve')
   return { t, p }

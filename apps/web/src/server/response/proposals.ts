@@ -11,7 +11,7 @@ import { RESPONSE_ACTION_TYPES, type ResponseProposalView } from '../../shared/r
 import type { OrgRole } from '../orgs'
 import { asJson } from '../../shared/json'
 import { assertCanDecide, canApprove, ForbiddenError } from './rbac'
-import { assertExecutable, dryRun, executeLive, executorMode, loadExecContext, type ExecutionOutcome } from './executors'
+import { assertExecutable, dryRun, executeLive, executorMode, liveClaimDeadline, loadExecContext, type ExecutionOutcome } from './executors'
 import { logger } from '../lib/logger'
 import { notify } from '../notify/notify'
 
@@ -34,8 +34,18 @@ export function approvalContentHash(content: { title: string; actionType: string
   )
 }
 
+/** True unless APPROVAL_BINDING=legacy turned the content hash check off (#205). */
+function bindingEnforced() {
+  return env().APPROVAL_BINDING !== 'legacy'
+}
+
+/** True when the person who approved is the person who asked (only possible with RESPONSE_ALLOW_SELF_APPROVAL=true). */
+function wasSelfApproved(p: Pick<Row, 'decidedBy' | 'requestedByUserId'>) {
+  return p.decidedBy !== null && p.decidedBy === p.requestedByUserId
+}
+
 function assertApprovalBound(p: Row) {
-  if (env().APPROVAL_BINDING === 'legacy') return
+  if (!bindingEnforced()) return
   if (!p.payloadSha256 || p.payloadSchemaVersion !== APPROVAL_SCHEMA_VERSION) {
     throw new ProposalStateError('Approval is not bound to the current content hash. Create a new proposal.')
   }
@@ -257,7 +267,9 @@ export async function decideProposal(orgId: string, actor: { userId: string; rol
     .where(and(eq(responseProposals.id, id), eq(responseProposals.status, 'pending')))
     .returning()
   if (!row) throw new ProposalStateError('Proposal was already decided.')
-  await event(orgId, id, status, { type: 'user', id: actor.userId }, { comment: comment ?? '' })
+  // Record which approval controls applied (#205), so the trail shows a self-approval or a run without the hash check.
+  const controls = decision === 'approve' ? { selfApproved: wasSelfApproved(row), bindingEnforced: bindingEnforced() } : {}
+  await event(orgId, id, status, { type: 'user', id: actor.userId }, { comment: comment ?? '', ...controls })
   await recordDecision({ orgId, actorType: 'user', actorKey: actor.userId, action: `${decision}_response`, input: { proposalId: id }, huntId: p.huntId })
   return row
 }
@@ -303,29 +315,34 @@ export async function executeProposal(orgId: string, actor: { userId: string; ro
     throw new ProposalStateError(err instanceof Error ? err.message : String(err))
   }
 
-  // Claim before any side effect: only one caller can set `execution` on an approved proposal.
+  // Claim before any side effect: only one caller can set `execution` on an approved proposal. The
+  // deadline (#204) covers every call's timeout, so the stale-claim sweep never fails a run still going.
+  const startedAt = new Date()
   const [claimed] = await getDb()
     .update(responseProposals)
-    .set({ execution: { status: 'in_progress', mode: 'live', by: actor.userId, at: new Date().toISOString() } })
-    .where(and(eq(responseProposals.id, id), eq(responseProposals.status, 'approved'), isNull(responseProposals.execution)))
+    .set({ execution: { status: 'in_progress', mode: 'live', by: actor.userId, at: startedAt.toISOString(), deadline: liveClaimDeadline(p, ctx, startedAt).toISOString() } })
+    .where(and(eq(responseProposals.id, id), eq(responseProposals.orgId, orgId), eq(responseProposals.status, 'approved'), isNull(responseProposals.execution)))
     .returning({ id: responseProposals.id })
   if (!claimed) throw new ProposalStateError('Execution already started for this proposal.')
-  await event(orgId, id, 'execute_attempt', { type: 'user', id: actor.userId }, { executor: p.actionType })
+  const controls = { selfApproved: wasSelfApproved(p), bindingEnforced: bindingEnforced() }
+  await event(orgId, id, 'execute_attempt', { type: 'user', id: actor.userId }, { executor: p.actionType, ...controls })
   const outcome = await executeLive(p, ctx, fetchImpl)
   // Partial success is recorded as failed (visible), but stays rollback-able for the calls that worked.
   const status = outcome.status === 'succeeded' ? 'executed' : 'failed'
   if (status === 'failed') logger.error('response execute failed', { orgId, proposalId: id, executor: p.actionType, status: outcome.status, error: outcome.error ?? null })
+  const results = (outcome.results ?? []).map((r) => ({ target: r.target?.id ?? null, ok: r.ok, status: r.status, error: r.error ?? null }))
+  // Only our own live claim may be replaced (#204). If the sweep already failed it, keep that record.
   const [updated] = await getDb()
     .update(responseProposals)
     .set({ status, execution: outcome as unknown as Record<string, unknown>, rollbackNotes: outcome.rollbackNotes })
-    .where(eq(responseProposals.id, id))
+    .where(and(eq(responseProposals.id, id), eq(responseProposals.orgId, orgId), eq(responseProposals.status, 'approved'), sql`${responseProposals.execution}->>'status' = 'in_progress'`))
     .returning({ id: responseProposals.id })
-  if (!updated) throw new ProposalNotFoundError('Proposal not found.')
-  const results = (outcome.results ?? []).map((r) => ({ target: r.target?.id ?? null, ok: r.ok, status: r.status, error: r.error ?? null }))
-  await event(orgId, id, status === 'executed' ? 'executed' : 'execute_failed', { type: 'user', id: actor.userId }, { status: outcome.status, error: outcome.error ?? null, results })
-  await recordDecision({ orgId, actorType: 'user', actorKey: actor.userId, action: 'execute_response', input: { proposalId: id }, output: { status: outcome.status }, huntId: p.huntId })
+  const lateResult = !updated
+  if (lateResult) logger.error('response result recorded after its claim closed', { orgId, proposalId: id, executor: p.actionType, status: outcome.status })
+  await event(orgId, id, status === 'executed' ? 'executed' : 'execute_failed', { type: 'user', id: actor.userId }, { status: outcome.status, error: outcome.error ?? null, results, ...controls, ...(lateResult ? { lateResult } : {}) })
+  await recordDecision({ orgId, actorType: 'user', actorKey: actor.userId, action: 'execute_response', input: { proposalId: id }, output: { status: outcome.status, ...(lateResult ? { lateResult } : {}) }, huntId: p.huntId })
   await notify(orgId, 'execution', {
-    title: `Response ${outcome.status}: ${p.title}`,
+    title: `Response ${outcome.status}${lateResult ? ' (recorded late)' : ''}: ${p.title}`,
     lines: [`${p.actionType} · ${results.filter((r) => r.ok).length}/${results.length} calls succeeded`],
     link: `/app/approvals/${id}`,
   })
@@ -339,6 +356,10 @@ export const STALE_EXECUTION_ERROR = 'Outcome unknown. The process stopped befor
  * between the claim and the final write) becomes `failed` with "outcome unknown", gets an event and
  * notifies like any failed execution. It is never retried: calls may already have reached the tenant.
  * Only claims still `in_progress` are touched, so a result that is recorded meanwhile is kept.
+ *
+ * A claim is stale once its `deadline` has passed (#204): the longest the run can take, from the
+ * number of calls and their timeouts. Claims written before deadlines existed fall back to
+ * `olderThanMs` after `at`.
  */
 export async function failStaleExecutions(olderThanMs = 10 * 60_000, now = new Date()) {
   const t = responseProposals
@@ -346,10 +367,11 @@ export async function failStaleExecutions(olderThanMs = 10 * 60_000, now = new D
   // malformed value can never make the sweep throw.
   const cutoff = new Date(now.getTime() - olderThanMs).toISOString()
   const inProgress = sql`${t.execution}->>'status' = 'in_progress'`
+  const overdue = sql`coalesce(${t.execution}->>'deadline' < ${now.toISOString()}, ${t.execution}->>'at' < ${cutoff})`
   const stale = await getDb()
     .select()
     .from(t)
-    .where(and(eq(t.status, 'approved'), inProgress, sql`${t.execution}->>'at' < ${cutoff}`))
+    .where(and(eq(t.status, 'approved'), inProgress, overdue))
   let failed = 0
   for (const p of stale) {
     const execution = { ...(p.execution ?? {}), status: 'failed', mode: 'live', error: STALE_EXECUTION_ERROR }
@@ -376,9 +398,20 @@ export async function auditBundle(orgId: string, id: string) {
   const p = await getProposal(orgId, id)
   if (!p) throw new ProposalNotFoundError('Proposal not found.')
   const events = await listEvents(orgId, id)
+  const attempt = events.find((e) => e.event === 'execute_attempt')
   return {
     exportedAt: new Date().toISOString(),
     proposal: toView(p),
+    /**
+     * Approval controls in force (#205). `bindingEnforced` comes from the execution attempt; it is
+     * null when the proposal never ran, or ran before this was recorded.
+     */
+    approvalControls: {
+      requestedByUserId: p.requestedByUserId,
+      decidedBy: p.decidedBy,
+      selfApproved: p.status !== 'rejected' && wasSelfApproved(p),
+      bindingEnforced: typeof attempt?.data.bindingEnforced === 'boolean' ? attempt.data.bindingEnforced : null,
+    },
     events: events.map((e) => ({ id: e.id, event: e.event, actorType: e.actorType, actorId: e.actorId, data: asJson(e.data), createdAt: e.createdAt.toISOString() })),
   }
 }

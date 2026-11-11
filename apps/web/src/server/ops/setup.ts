@@ -1,7 +1,7 @@
 import { and, count, desc, eq, gte, inArray, isNull, sql } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { huntEvidence, orgConnectors, orgs, ssoOrgBindings, watchEntries } from '../db/schema'
-import { env, responseSafety, type ResponseSafety } from '../env'
+import { approvalSafetyWarnings, env, responseSafety, type ResponseSafety } from '../env'
 
 export interface SetupItem {
   key: 'sso' | 'hunting' | 'secrets' | 'watchlist' | 'dryrun'
@@ -110,7 +110,9 @@ export async function setupChecklist(orgId: string) {
     { key: 'watchlist', label: 'First watchlist entry created', done: w.n > 0, detail: `${w.n} active watch entr${w.n === 1 ? 'y' : 'ies'}.`, href: '/app/watches' },
     { key: 'dryrun', label: 'Dry run on, no live actions', done: status.state === 'ok', detail: status.detail, href: 'https://github.com/jusso-dev/crosswire/blob/main/docs/response.md' },
   ]
-  return { items, complete: items.every((i) => i.done), dismissed: Boolean(org?.setupDismissedAt), safety, safetyStatus: status, connector }
+  // Switches that weaken the approval model (#205), shown in Settings and on the control panel.
+  const approvalWarnings = approvalSafetyWarnings(e)
+  return { items, complete: items.every((i) => i.done), dismissed: Boolean(org?.setupDismissedAt), safety, safetyStatus: status, connector, approvalWarnings }
 }
 
 export async function dismissSetup(orgId: string) {

@@ -139,18 +139,30 @@ function liveTargetCap(kind: string, n: number, blocked: string[]) {
 }
 
 // ---------- Executors ----------
+/** `payload.action` values the Logic App executor sends (#190). Missing means `contain`. */
+export const LOGIC_APP_ACTIONS = ['contain', 'isolate', 'unisolate', 'disable_user', 'enable_user', 'revoke_sessions'] as const
+
 /**
  * Logic App HTTP trigger. The URL comes only from server config (RESPONSE_LOGICAPP_URL), never from
- * the proposal, so an agent cannot redirect the call.
+ * the proposal, so an agent cannot redirect the call. The Logic App acts on one tenant, so it is
+ * bound to one organisation (RESPONSE_LOGICAPP_ORG_ID, #190): proposals from any other organisation,
+ * or with no binding set, are refused before any call.
  */
 export const logicAppExecutor: Executor = {
   type: 'logic_app',
   live: true,
   plan(p) {
-    const url = env().RESPONSE_LOGICAPP_URL
-    const blocked = url ? [] : ['RESPONSE_LOGICAPP_URL is not configured.']
+    const { RESPONSE_LOGICAPP_URL: url, RESPONSE_LOGICAPP_ORG_ID: boundOrg } = env()
+    const blocked: string[] = []
+    if (!url) blocked.push('RESPONSE_LOGICAPP_URL is not configured.')
+    if (!boundOrg) blocked.push('RESPONSE_LOGICAPP_ORG_ID is not configured, so the Logic App is not bound to an organisation.')
+    else if (boundOrg !== p.orgId) blocked.push('The Logic App is bound to another organisation (RESPONSE_LOGICAPP_ORG_ID).')
+    const action = p.payload.action ?? 'contain'
+    if (typeof action !== 'string' || !(LOGIC_APP_ACTIONS as readonly string[]).includes(action)) blocked.push(`payload.action must be one of: ${LOGIC_APP_ACTIONS.join(', ')}.`)
+    const t = p.targets
+    liveTargetCap('targets', (t.devices?.length ?? 0) + (t.users?.length ?? 0) + (t.incidents?.length ?? 0), blocked)
     return {
-      calls: [{ method: 'POST', url: url ? redactUrl(url) : '(RESPONSE_LOGICAPP_URL not set)', body: { proposalId: p.id, orgId: p.orgId, action: String(p.payload.action ?? 'contain'), targets: p.targets as Json } }],
+      calls: [{ method: 'POST', url: url ? redactUrl(url) : '(RESPONSE_LOGICAPP_URL not set)', body: { proposalId: p.id, orgId: p.orgId, action: String(action), targets: t as Json } }],
       blocked,
     }
   },
@@ -262,10 +274,17 @@ function redactUrl(url: string) {
   return url.replace(/([?&](sig|code|sv|sp)=)[^&]+/gi, '$1[REDACTED]')
 }
 
+/** The executor's plan plus checks that hold for every executor. Demo fixtures never run live (#190). */
+function planFor(p: ProposalForExecution, ctx: ExecContext): Plan {
+  const plan = EXECUTORS[p.actionType].plan(p, ctx)
+  if (p.payload.demo === true) plan.blocked.push('Demo fixture: demo proposals never run live.')
+  return plan
+}
+
 /** Dry run (#53): compute the intended calls and any blockers; never performs a request. */
 export function dryRun(p: ProposalForExecution, ctx: ExecContext): ExecutionOutcome {
   const ex = EXECUTORS[p.actionType]
-  const plan = ex.plan(p, ctx)
+  const plan = planFor(p, ctx)
   return {
     mode: 'dry-run',
     executor: p.actionType,
@@ -281,8 +300,25 @@ export function dryRun(p: ProposalForExecution, ctx: ExecContext): ExecutionOutc
 export function assertExecutable(p: ProposalForExecution, ctx: ExecContext) {
   const ex = EXECUTORS[p.actionType]
   if (!ex.live) throw new Error(`${p.actionType} has no executor; perform it by hand.`)
-  const { blocked } = ex.plan(p, ctx)
+  const { blocked } = planFor(p, ctx)
   if (blocked.length) throw new Error(`Refused before any call: ${blocked.join(' ')}`)
+}
+
+/** Time limit on one live call, including reading its body. */
+export const LIVE_CALL_TIMEOUT_MS = 30_000
+/** Time limit on minting a response token (the Entra token request times out at 15 seconds). */
+const TOKEN_TIMEOUT_MS = 15_000
+/** Slack for database writes and scheduling around the calls. Never less than the old 10-minute sweep. */
+const CLAIM_MARGIN_MS = 10 * 60_000
+
+/**
+ * Latest time a live run of this proposal can still be going (#204). Calls run one after another,
+ * each bounded by its token and call timeouts, so the claim stays live until this deadline and the
+ * stale-claim sweep leaves it alone until then.
+ */
+export function liveClaimDeadline(p: ProposalForExecution, ctx: ExecContext, start = new Date()): Date {
+  const calls = Math.max(1, planFor(p, ctx).calls.length)
+  return new Date(start.getTime() + calls * (LIVE_CALL_TIMEOUT_MS + TOKEN_TIMEOUT_MS) + CLAIM_MARGIN_MS)
 }
 
 async function readBody(res: Response): Promise<Json> {
@@ -304,7 +340,7 @@ export async function executeLive(p: ProposalForExecution, ctx: ExecContext, fet
   const ex = EXECUTORS[p.actionType]
   const mode = executorMode(p.actionType)
   if (mode !== 'on') throw new Error(`Executor ${p.actionType} is ${mode}; set RESPONSE_EXECUTOR_* to "on" to execute.`)
-  const plan = ex.plan(p, ctx)
+  const plan = planFor(p, ctx)
   const base = {
     mode: 'live' as const,
     executor: p.actionType,
@@ -327,7 +363,7 @@ export async function executeLive(p: ProposalForExecution, ctx: ExecContext, fet
         assertAllowedResponseRequest(call.method, call.url)
         headers.Authorization = `Bearer ${await responseTokenBroker().acquire({ orgId: p.orgId, scope: call.scope! })}`
       }
-      const res = await fetchImpl(realUrl, { method: call.method, headers, body: JSON.stringify(call.body), redirect: 'error', signal: AbortSignal.timeout(30_000) })
+      const res = await fetchImpl(realUrl, { method: call.method, headers, body: JSON.stringify(call.body), redirect: 'error', signal: AbortSignal.timeout(LIVE_CALL_TIMEOUT_MS) })
       const body = await readBody(res)
       results.push({ url: shownUrl, target: call.target, ok: res.ok, status: res.status, body, error: res.ok ? undefined : `HTTP ${res.status}` })
     } catch (err) {

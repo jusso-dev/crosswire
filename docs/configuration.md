@@ -19,10 +19,11 @@ are Key Vault references (`infra/azure/modules/apps.bicep`):
 | `DATABASE_URL` (web, worker) | `database-url-app` | Least-privilege app role, written by Bicep; `sslmode=verify-full` |
 | `DATABASE_URL` (migration job) | `database-url` | Postgres owner, written by Bicep; the job also gets `APP_DATABASE_URL` to manage the app role |
 | `BETTER_AUTH_SECRET` | `better-auth-secret` | `openssl rand -hex 32` |
-| `APP_ENCRYPTION_KEY` | `app-encryption-key` | 64 hex chars; encrypts connector secrets in Postgres |
+| `APP_ENCRYPTION_KEY` | `app-encryption-key` | 64 hex chars; encrypts connector secrets in Postgres (AES-256-GCM, each value bound to its organisation and column) |
 | `ENTRA_CLIENT_SECRET` | `entra-client-secret` | SSO app registration secret |
 | `ENTRA_CLIENT_ID`, `ENTRA_TENANT_ID`, `APP_URL`, flags | (plain env) | Not secret |
 | `RESPONSE_LOGICAPP_URL` | add `response-logicapp-url` if used | Contains a SAS signature |
+| `RESPONSE_LOGICAPP_ORG_ID` | (plain env, Bicep parameter `responseLogicAppOrgId`, default empty) | The one organisation the Logic App acts for. Empty refuses every Logic App proposal (#190) |
 | `RESPONSE_DRY_RUN`, `RESPONSE_EXECUTOR_*` | (plain env, Bicep sets `true` / `off`) | Fail closed, see docs/response.md |
 | `APP_ENCRYPTION_KEY_PREVIOUS` | add `app-encryption-key-previous` during a rotation only | Old key(s) for decryption; see [key rotation](runbooks/key-rotation.md) |
 | `CORS_ALLOWED_ORIGINS`, `RATE_LIMIT_CHAT_PER_MIN`, `RATE_LIMIT_STORAGE`, `TRUSTED_PROXIES` | (plain env from Bicep parameters) | HTTP hardening (#74). `TRUSTED_PROXIES` takes IP addresses or CIDR ranges |
@@ -52,6 +53,8 @@ All optional. Defaults are shown; invalid values stop the server at boot.
 | Env var | Default | What it does |
 | --- | --- | --- |
 | `KQL_APPROVAL_POLICY` | `member` | Who may approve and run a KQL search: `member`, `approver` or `second-person`. See [hunting](hunting.md#approval-policy-kql_approval_policy). |
+| `RESPONSE_ALLOW_SELF_APPROVAL` | `false` | `true` lets a person approve a response action they asked for. Logs a production start-up warning, shows a warning in Settings, and marks `selfApproved` on the events (#205). Labs only. |
+| `APPROVAL_BINDING` | `enforced` | `legacy` runs approved actions without checking the content hash. Logs a production start-up warning, shows a warning in Settings, and marks `bindingEnforced: false` on the events (#205). Rollback only. |
 | `SESSION_MAX_AGE_HOURS` | `12` | Absolute session cap since sign-in (1 to 720). See [auth](auth.md#session-lifetime). |
 | `SESSION_IDLE_MINUTES` | `60` | Idle timeout; each request slides it forward (5 to 1440). |
 | `RATE_LIMIT_STORAGE` | `database` | `database`: chat and sign-in limits are shared by every replica. `memory`: per process, so N replicas allow N times the limit. |

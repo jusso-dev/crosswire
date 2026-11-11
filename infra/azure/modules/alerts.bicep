@@ -26,7 +26,7 @@ var actions = empty(alertEmail) ? [] : [actionGroup.id]
 // Error-level log lines whose `msg` is a known failure event (#153), not a free-text word match.
 // Keep this list in step with logger.error calls in apps/web/src (test/alert-coverage.test.ts checks it).
 // `job <name> failed` (worker) and `hunt <step> failed` (hunting refusals) match by pattern below.
-var failureEvents = '"hunt run_kql failed", "scheduled hunt failed", "response execute failed", "response execution claim went stale; outcome unknown", "approval step failed", "notify failed", "digest email failed", "digest confirmation email failed", "retention purge stopped part way", "retention purge audit write failed", "auth audit write failed", "session expiry audit write failed", "agent run task failed", "failed to finish agent run", "failed to persist assistant message", "failed to release agent run slot", "worker health server did not start", "migration failed", "request failed"'
+var failureEvents = '"hunt run_kql failed", "scheduled hunt failed", "response execute failed", "response execution claim went stale; outcome unknown", "response result recorded after its claim closed", "approval step failed", "notify failed", "digest email failed", "digest confirmation email failed", "retention purge stopped part way", "retention purge audit write failed", "auth audit write failed", "session expiry audit write failed", "agent run task failed", "failed to finish agent run", "failed to persist assistant message", "failed to release agent run slot", "worker health server did not start", "migration failed", "request failed"'
 
 var rules = [
   {

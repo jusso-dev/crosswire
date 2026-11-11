@@ -31,7 +31,7 @@ function withEnv(vars: Record<string, string>) {
   resetEnvForTests()
 }
 afterEach(() => {
-  for (const k of ['RESPONSE_EXECUTOR_LOGICAPP', 'RESPONSE_LOGICAPP_URL', 'RESPONSE_ALLOW_SELF_APPROVAL', 'RESPONSE_DRY_RUN']) delete process.env[k]
+  for (const k of ['RESPONSE_EXECUTOR_LOGICAPP', 'RESPONSE_LOGICAPP_URL', 'RESPONSE_LOGICAPP_ORG_ID', 'RESPONSE_ALLOW_SELF_APPROVAL', 'RESPONSE_DRY_RUN', 'RESPONSE_MAX_LIVE_TARGETS', 'APPROVAL_BINDING']) delete process.env[k]
   resetEnvForTests()
 })
 
@@ -129,6 +129,7 @@ describe('executors + dry run + audit (#52, #53, #54)', () => {
   it('live Logic App executor runs against a mock HTTP server only after approval; full lifecycle audited', async () => {
     withEnv({ RESPONSE_DRY_RUN: 'false', RESPONSE_EXECUTOR_LOGICAPP: 'on', RESPONSE_LOGICAPP_URL: 'https://mock.logic.example/invoke?sig=abc123secret' })
     const t = await team()
+    withEnv({ RESPONSE_LOGICAPP_ORG_ID: t.orgId })
     const p = await createProposal(t.orgId, { type: 'agent', agentKey: 'responder', onBehalfOfUserId: t.analyst }, base)
     await dryRunProposal(t.orgId, { userId: t.approver, role: 'approver' }, p.id)
     await decideProposal(t.orgId, { userId: t.approver, role: 'approver' }, p.id, 'approve')
