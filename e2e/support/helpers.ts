@@ -2,7 +2,7 @@ import { expect, type APIRequestContext, type Page, type TestInfo } from '@playw
 
 /** Shared e2e helpers (#147). */
 export const PASSWORD = 'correct horse battery staple'
-export const MOCK = process.env.MOCK_MODEL_URL ?? 'http://127.0.0.1:18099'
+export const MOCK = process.env.MOCK_MODEL_URL ?? `http://127.0.0.1:${process.env.MOCK_MODEL_PORT ?? 18099}`
 /** Signed-in owner with [DEMO] data loaded, written by global-setup.ts. */
 export const STORAGE_STATE = new URL('../.auth/owner.json', import.meta.url).pathname
 

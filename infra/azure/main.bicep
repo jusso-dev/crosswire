@@ -67,6 +67,9 @@ param alertEmail string = ''
 @description('Lab only: allow a deployment whose alerts notify nobody.')
 param allowAlertsWithoutEmail bool = false
 
+@description('Leave true for the first deployment (the log tables may not exist yet). Set false afterwards so a broken alert query fails the deployment.')
+param skipAlertQueryValidation bool = true
+
 @description('Optional custom domain (#70), e.g. crosswire.contoso.com. Bind after DNS is in place; see docs/runbooks/custom-domain.md.')
 param customDomain string = ''
 
@@ -123,7 +126,9 @@ var pgPublic = privateNetworking && postgresPublicAccess
 // Fail closed (#153): alerts that notify nobody look like monitoring but are not.
 var alertTarget = empty(alertEmail) && !allowAlertsWithoutEmail
   ? fail('alertEmail is empty, so no alert would notify anyone. Set alertEmail, or allowAlertsWithoutEmail=true for a lab.')
-  : alertEmail
+  : !empty(alertEmail) && (!contains(alertEmail, '@') || startsWith(alertEmail, 'REPLACE_WITH'))
+      ? fail('alertEmail is not an email address. Set a real address, or leave it empty with allowAlertsWithoutEmail=true for a lab.')
+      : alertEmail
 
 module network 'modules/network.bicep' = if (privateNetworking) {
   name: 'network'
@@ -243,6 +248,7 @@ module alerts 'modules/alerts.bicep' = {
     workerAppName: names.worker
     migrateJobName: '${names.web}-migrate'
     postgresId: data.outputs.postgresId
+    skipQueryValidation: skipAlertQueryValidation
   }
 }
 

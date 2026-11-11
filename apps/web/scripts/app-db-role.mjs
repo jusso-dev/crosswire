@@ -10,6 +10,7 @@
 // Idempotent: safe on every deploy. Skips (exit 0) when APP_DATABASE_URL is unset, for setups that
 // keep one login (local dev, Compose). Usage: node scripts/app-db-role.mjs
 import postgres from 'postgres'
+import { pathToFileURL } from 'node:url'
 
 const APPEND_ONLY_NO_UPDATE = ['audit_events']
 const APPEND_ONLY_NO_UPDATE_DELETE = ['response_events', 'agent_run_events']
@@ -78,7 +79,7 @@ export async function ensureAppRole(ownerUrl, appUrl) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const appUrl = process.env.APP_DATABASE_URL
   if (!appUrl) {
     log('info', 'app database role skipped: APP_DATABASE_URL is not set')

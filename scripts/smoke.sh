@@ -39,7 +39,7 @@ if [ -n "$EXPECTED" ] && [ "$mig" != "$EXPECTED" ]; then echo "FAIL migration: e
 check "sign-in page" 200 "$BASE/sign-in"
 check "unauth /api/me" 401 "$BASE/api/me"
 check "unauth POST /api/chat" 401 -X POST -H 'content-type: application/json' -d '{}' "$BASE/api/chat"
-hdrs=$(curl -sS -D - -o /dev/null --max-time 20 --retry 3 --retry-delay 3 "$BASE/sign-in" | tr -d '\r' || true)
+hdrs=$(curl -sS -D - -o /dev/null --max-time 20 --retry 3 --retry-delay 3 --retry-connrefused "$BASE/sign-in" | tr -d '\r' || true)
 for h in content-security-policy x-content-type-options x-request-id; do
   if echo "$hdrs" | grep -qi "^$h:"; then echo "PASS header $h"; else echo "FAIL header $h missing"; fail=1; fi
 done

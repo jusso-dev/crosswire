@@ -274,7 +274,7 @@ Setup:
   errors, failed hunts/KQL runs/executions/notifications/worker jobs (error-level logs with a known
   `msg`), and Postgres storage over 80% or connections over 40. On a new workspace the log queries
   are not validated at deploy time (their tables appear with the first logs); once logs are flowing,
-  redeploy with the `alerts` module's `skipQueryValidation` set to `false` to catch a broken query.
+  redeploy with `skipAlertQueryValidation=false` to catch a broken query.
   Silence an
   alert: Azure portal → Monitor → Alerts → the rule → *Disable*, or add an alert processing rule for
   a maintenance window. Useful queries:

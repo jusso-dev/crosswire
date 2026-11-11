@@ -112,7 +112,13 @@ jobs:
           PREV_WEB: ${{ steps.prev.outputs.web_image }}
           PREV_WORKER: ${{ steps.prev.outputs.worker_image }}
         run: |
-          az containerapp update -g "$RG" -n "${PREFIX}-web" --image "$PREV_WEB" >/dev/null
-          az containerapp update -g "$RG" -n "${PREFIX}-worker" --image "$PREV_WORKER" >/dev/null
+          # Try both apps even if one update fails, then fail the step if either did.
+          rc=0
+          az containerapp update -g "$RG" -n "${PREFIX}-web" --image "$PREV_WEB" >/dev/null || rc=1
+          az containerapp update -g "$RG" -n "${PREFIX}-worker" --image "$PREV_WORKER" >/dev/null || rc=1
+          if [ "$rc" != 0 ]; then
+            echo "::error::Deploy failed after rollout, and rolling back at least one app also failed. Fix it by hand: docs/runbooks/rollback.md"
+            exit 1
+          fi
           echo "::error::Deploy failed after rollout. Rolled web back to $PREV_WEB and worker to $PREV_WORKER. Check the revisions: docs/runbooks/rollback.md"
           echo "Rolled back: web $PREV_WEB, worker $PREV_WORKER" >> "$GITHUB_STEP_SUMMARY"
