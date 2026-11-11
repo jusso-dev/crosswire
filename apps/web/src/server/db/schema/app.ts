@@ -41,6 +41,8 @@ export const orgs = pgTable('orgs', {
   isPersonal: boolean('is_personal').notNull().default(false),
   /** Set by `pnpm bootstrap` (#78): the first Entra/SAML sign-in with this email becomes owner. */
   bootstrapOwnerEmail: text('bootstrap_owner_email'),
+  /** Owner setting (#195): when true, an Entra sign-in that matches no group or app-role mapping is refused. */
+  entraRequireMappedGroup: boolean('entra_require_mapped_group').notNull().default(false),
   /** First-run checklist dismissed (#79). */
   setupDismissedAt: timestamp('setup_dismissed_at', { withTimezone: true }),
   createdAt: createdAt(),
@@ -56,6 +58,8 @@ export const orgMemberships = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
     role: orgRole('role').notNull().default('analyst'),
+    /** 'entra' when the role was set from an Entra group or app-role mapping at sign-in (#195), else 'manual'. */
+    roleSource: text('role_source').$type<'manual' | 'entra'>().notNull().default('manual'),
     /** #102: confirmed address for digest email (used instead of the sign-in email when set). */
     digestEmail: text('digest_email'),
     /** Address awaiting confirmation, with a SHA-256 hash of the emailed token and its expiry. */
@@ -67,6 +71,43 @@ export const orgMemberships = pgTable(
     createdAt: createdAt(),
   },
   (t) => [uniqueIndex('org_memberships_org_user_uq').on(t.orgId, t.userId), index('org_memberships_user_idx').on(t.userId)],
+)
+
+/**
+ * People an owner removed from an org (#195). SSO places people into their org on every sign-in, so
+ * this row keeps a removed person out. Delete the row to let them back in (docs/auth.md).
+ */
+export const orgMemberRemovals = pgTable(
+  'org_member_removals',
+  {
+    id: id(),
+    orgId: orgRef(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    removedBy: text('removed_by').references(() => user.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('org_member_removals_org_user_uq').on(t.orgId, t.userId)],
+)
+
+/**
+ * Entra group or app-role mappings (#195). `kind` 'group' matches a group object id in the ID token's
+ * `groups` claim; 'app_role' matches a value in its `roles` claim. Each maps to one Crosswire role.
+ * Mappings belong to one org; the org itself is still chosen by the token's tenant id.
+ */
+export const entraRoleMappings = pgTable(
+  'entra_role_mappings',
+  {
+    id: id(),
+    orgId: orgRef(),
+    kind: text('kind').$type<'group' | 'app_role'>().notNull(),
+    value: text('value').notNull(),
+    role: orgRole('role').notNull(),
+    createdBy: text('created_by').references(() => user.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex('entra_role_mappings_org_kind_value_uq').on(t.orgId, t.kind, t.value)],
 )
 
 // ---------- Audit (#22, shared shape) ----------

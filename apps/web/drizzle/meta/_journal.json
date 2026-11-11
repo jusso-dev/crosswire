@@ -57,6 +57,13 @@
       "when": 1794500000000,
       "tag": "0007_hunt_playbooks",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794500000001,
+      "tag": "0008_auth_orgs",
+      "breakpoints": true
     }
   ]
 }
