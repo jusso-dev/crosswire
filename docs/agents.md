@@ -43,6 +43,8 @@ No GitHub token or Copilot entitlement is required.
 
 ### Tool limits
 
+- Only Responder has `propose_response` (#198). Lead reads threat-feed text, so it hands
+  containment to Responder instead of proposing it.
 - `propose_response` creates at most 3 proposals per turn (`MAX_PROPOSALS_PER_RUN`), counting Lead
   and the specialists it delegates to together (#214). Further calls get an error. Subscribed
   channels get one `approval_pending` message when the turn ends, listing each proposal's title and
