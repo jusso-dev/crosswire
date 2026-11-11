@@ -5,7 +5,7 @@ import { resetEnvForTests } from '../src/server/env'
 import { getDb } from '../src/server/db/client'
 import { agentDecisions, chatMessages } from '../src/server/db/schema'
 import { handleChat } from '../src/server/chat/handler'
-import { createThread, listMessages, listThreads, submitFeedback } from '../src/server/chat/threads'
+import { appendMessage, createThread, listMessages, listMessagesPage, listThreads, submitFeedback } from '../src/server/chat/threads'
 import { appendMemory, compactMemory, exportHistoryMarkdown, getMemory, importHistoryMarkdown, listMemoryEntries } from '../src/server/agents/memory'
 import { listDecisions, recordDecision } from '../src/server/agents/decisions'
 import { charter, loadCharters } from '../src/server/agents/charters'
@@ -160,6 +160,65 @@ describe('/api/chat (#25, #26, #27, #32)', () => {
     expect(events.some((e) => e.type === 'RUN_ERROR')).toBe(true)
     const msgs = await listMessages(org.id, session!.user.id, thread.id)
     expect(msgs.at(-1)!.content).toMatch(/⚠️/)
+  })
+
+  it('a retry after a failed reply replaces the failed attempt and never stores the question twice (#169)', async () => {
+    const cookie = await signUp('chat-retry@example.test')
+    const session = await auth().api.getSession({ headers: new Headers({ cookie }) })
+    const { getCurrentOrg } = await import('../src/server/orgs')
+    const org = (await getCurrentOrg(session!.user.id))!
+    const thread = await createThread(org.id, session!.user.id)
+    // A failed turn as the server stores it: the question, then a reply that carries the error.
+    // (A real model failure also leaves an unmeasured usage row, which the budget then refuses.)
+    const q = await appendMessage(org.id, thread.id, { role: 'user', content: 'FLAKY_ONCE what happened?', agentKey: 'lead' })
+    const a = await appendMessage(org.id, thread.id, { role: 'assistant', content: '⚠️ mock model refused for now', agentKey: 'lead', metadata: { error: 'mock model refused for now' } })
+    await getDb().update(chatMessages).set({ createdAt: new Date(Date.now() - 2000) }).where(eq(chatMessages.id, q.id))
+    await getDb().update(chatMessages).set({ createdAt: new Date(Date.now() - 1000) }).where(eq(chatMessages.id, a.id))
+    // "Try again" resends the same question.
+    const events = await readSse(await handleChat(chatRequest(cookie, thread.id, 'FLAKY_ONCE what happened?', 'lead')))
+    expect(events.some((e) => e.type === 'RUN_ERROR')).toBe(false)
+    const after = await listMessages(org.id, session!.user.id, thread.id)
+    expect(after.map((m) => [m.role, m.content.startsWith('⚠️')])).toEqual([
+      ['user', false],
+      ['assistant', false],
+    ])
+    expect(after[0]!.content).toBe('FLAKY_ONCE what happened?')
+    // The model saw the question once, not twice.
+    expect(model.calls.at(-1)!.userMessages).toEqual(['FLAKY_ONCE what happened?'])
+  })
+
+  it('sends the stored message id before the stream ends, so the page can rate the reply without reloading (#169)', async () => {
+    const cookie = await signUp('chat-saved@example.test')
+    const session = await auth().api.getSession({ headers: new Headers({ cookie }) })
+    const { getCurrentOrg } = await import('../src/server/orgs')
+    const org = (await getCurrentOrg(session!.user.id))!
+    const thread = await createThread(org.id, session!.user.id)
+    const events = (await readSse(await handleChat(chatRequest(cookie, thread.id, 'hello there', 'lead')))) as Array<{ type: string; name?: string; value?: { messageId?: string; runId?: string } }>
+    const run = events.find((e) => e.name === 'crosswire:run')
+    const saved = events.find((e) => e.name === 'crosswire:saved')
+    expect(events[0]?.name).toBe('crosswire:run')
+    expect(events.at(-1)?.type).toBe('RUN_FINISHED')
+    const stored = await listMessages(org.id, session!.user.id, thread.id)
+    expect(saved?.value?.messageId).toBe(stored.at(-1)!.id)
+    expect(saved?.value?.runId).toBe(run?.value?.runId)
+  })
+
+  it('pages thread messages with hasMore and a before cursor (#171)', async () => {
+    const orgId = await makeOrg('Paging')
+    const u = await makeUser()
+    await member(orgId, u)
+    const thread = await createThread(orgId, u)
+    const base = Date.now() - 60_000
+    for (let i = 0; i < 5; i++) {
+      const row = await appendMessage(orgId, thread.id, { role: i % 2 ? 'assistant' : 'user', content: `m${i}` })
+      await getDb().update(chatMessages).set({ createdAt: new Date(base + i * 1000) }).where(eq(chatMessages.id, row.id))
+    }
+    const first = await listMessagesPage(orgId, u, thread.id, { limit: 3 })
+    expect(first.messages.map((m) => m.content)).toEqual(['m2', 'm3', 'm4'])
+    expect(first.hasMore).toBe(true)
+    const older = await listMessagesPage(orgId, u, thread.id, { limit: 3, before: first.messages[0]!.createdAt })
+    expect(older.messages.map((m) => m.content)).toEqual(['m0', 'm1'])
+    expect(older.hasMore).toBe(false)
   })
 
   it("user B cannot read or post to user A's thread", async () => {

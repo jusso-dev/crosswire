@@ -1,10 +1,12 @@
-import { Link, Outlet, createFileRoute, useNavigate, useRouter } from '@tanstack/react-router'
+import { Link, Outlet, createFileRoute, useMatchRoute, useNavigate, useRouter } from '@tanstack/react-router'
 import { useState } from 'react'
 import { fetchThreads, newThread, removeThread } from '../fns/chat'
 import { Notice, SkeletonPage } from '../components/ui'
 import { plainMessage } from '../shared/messages'
 import { getDisplayTimeZone } from '../components/format'
 import { pageTitle } from '../components/errors'
+import { useAction } from '../components/action'
+import { ConfirmDialog } from '../components/confirm'
 
 /**
  * Chat layout (ChatGPT-style): conversation list on the left grouped by recency, the conversation
@@ -49,27 +51,35 @@ function ChatLayout() {
   const { threads, runtime } = Route.useLoaderData()
   const navigate = useNavigate()
   const router = useRouter()
-  const [busy, setBusy] = useState(false)
-  const [confirm, setConfirm] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const start = async () => {
-    setBusy(true)
-    setError(null)
-    try {
+  const matchRoute = useMatchRoute()
+  const start = useAction()
+  const remove = useAction()
+  const [confirm, setConfirm] = useState<Thread | null>(null)
+  const startThread = () =>
+    void start.run('start', async () => {
       const t = await newThread({ data: {} })
       await router.invalidate()
       await navigate({ to: '/app/chat/$threadId', params: { threadId: t.id } })
-    } catch (err) {
-      setError(`Could not start a conversation: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setBusy(false)
-    }
+    })
+  const deleteThread = async () => {
+    const t = confirm
+    if (!t) return
+    const done = await remove.run('delete', async () => {
+      await removeThread({ data: { threadId: t.id } })
+      return true
+    })
+    if (!done) return
+    setConfirm(null)
+    // Leave the thread only if it was the one open.
+    const open = matchRoute({ to: '/app/chat/$threadId', params: { threadId: t.id } })
+    if (open) await navigate({ to: '/app/chat' })
+    await router.invalidate().catch(() => {})
   }
   return (
     <div className="cw-chat">
       <nav className="cw-threads" aria-label="Conversations">
-        <button className="cw-btn" type="button" data-block disabled={busy || !runtime.configured} onClick={start}>
-          {busy ? 'Starting…' : 'New conversation'}
+        <button className="cw-btn" type="button" data-block disabled={start.busy !== null || !runtime.configured} aria-busy={start.busy !== null || undefined} onClick={startThread}>
+          {start.busy ? 'Starting…' : 'New conversation'}
         </button>
         {runtime.configured && (
           <p className="cw-help cw-m0">
@@ -77,9 +87,9 @@ function ChatLayout() {
             {runtime.model ? ` · ${runtime.model}` : ''}
           </p>
         )}
-        {error && (
+        {start.error && (
           <p className="cw-field-error" role="alert">
-            {error}
+            Could not start a conversation. {start.error}
           </p>
         )}
         {threads.length === 0 ? (
@@ -94,38 +104,17 @@ function ChatLayout() {
                     <Link to="/app/chat/$threadId" params={{ threadId: t.id }} title={t.title}>
                       {t.title}
                     </Link>
-                    {confirm === t.id ? (
-                      <span className="cw-thread-confirm">
-                        <button
-                          type="button"
-                          className="cw-btn"
-                          data-variant="danger"
-                          data-size="sm"
-                          autoFocus
-                          onClick={async () => {
-                            setError(null)
-                            try {
-                              await removeThread({ data: { threadId: t.id } })
-                              setConfirm(null)
-                              await router.invalidate()
-                              await navigate({ to: '/app/chat' })
-                            } catch (err) {
-                              setError(`Could not delete “${t.title}”: ${err instanceof Error ? err.message : String(err)}. Try again.`)
-                            }
-                          }}
-                        >
-                          Delete<span className="cw-sr-only"> {t.title}</span>
-                        </button>
-                        <button type="button" className="cw-btn" data-variant="quiet" data-size="sm" onClick={() => setConfirm(null)}>
-                          Cancel
-                        </button>
-                      </span>
-                    ) : (
-                      <button type="button" className="cw-iconbtn cw-thread-del" onClick={() => setConfirm(t.id)}>
-                        <span aria-hidden>✕</span>
-                        <span className="cw-sr-only">Delete conversation {t.title}</span>
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      className="cw-iconbtn cw-thread-del"
+                      onClick={() => {
+                        remove.setError(null)
+                        setConfirm(t)
+                      }}
+                    >
+                      <span aria-hidden>✕</span>
+                      <span className="cw-sr-only">Delete conversation {t.title}</span>
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -133,6 +122,17 @@ function ChatLayout() {
           ))
         )}
       </nav>
+      <ConfirmDialog
+        open={confirm !== null}
+        tone="danger"
+        title={`Delete the conversation “${confirm?.title ?? ''}”?`}
+        body={<p>Its messages and your ratings go with it. This cannot be undone. Agent runs and the decision log keep their own record.</p>}
+        confirmLabel="Delete conversation"
+        busy={remove.busy !== null}
+        error={remove.error}
+        onCancel={() => setConfirm(null)}
+        onConfirm={() => void deleteThread()}
+      />
       <div className="cw-chat-main">
         {!runtime.configured && (
           <Notice tone="warn" title="Chat is not set up">

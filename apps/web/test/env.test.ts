@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseEnv } from '../src/server/env'
+import { databaseSslMode, parseEnv, startupWarnings } from '../src/server/env'
 
 describe('env config (#13)', () => {
   it('loads development defaults from an empty env', () => {
@@ -25,6 +25,32 @@ describe('env config (#13)', () => {
       APP_ENCRYPTION_KEY: 'a'.repeat(64),
     })
     expect(e.APP_URL).toBe('https://crosswire.example.com')
+  })
+
+  describe('database TLS warning (#134)', () => {
+    const prod = { NODE_ENV: 'production', APP_URL: 'https://cw.example.com', BETTER_AUTH_SECRET: 'x'.repeat(40), APP_ENCRYPTION_KEY: 'a'.repeat(64) }
+
+    it('warns in production when DATABASE_URL does not verify the server certificate', () => {
+      for (const url of ['postgres://u:p@db:5432/cw', 'postgres://u:p@db:5432/cw?sslmode=require', 'postgres://u:p@db/cw?sslmode=prefer']) {
+        expect(startupWarnings(parseEnv({ ...prod, DATABASE_URL: url }))).toEqual([expect.stringMatching(/sslmode=verify-full/)])
+      }
+    })
+
+    it('does not warn for verify-full, sslrootcert=system, the override, or outside production', () => {
+      expect(startupWarnings(parseEnv({ ...prod, DATABASE_URL: 'postgres://u:p@db/cw?sslmode=verify-full' }))).toEqual([])
+      expect(startupWarnings(parseEnv({ ...prod, DATABASE_URL: 'postgres://u:p@db/cw?sslrootcert=system' }))).toEqual([])
+      expect(startupWarnings(parseEnv({ ...prod, DATABASE_URL: 'postgres://u:p@db/cw', DATABASE_TLS_INSECURE_OK: 'true' }))).toEqual([])
+      expect(startupWarnings(parseEnv({ NODE_ENV: 'development', DATABASE_URL: 'postgres://u:p@db/cw' }))).toEqual([])
+    })
+
+    it('only warns: the server still starts with sslmode=require', () => {
+      expect(() => parseEnv({ ...prod, DATABASE_URL: 'postgres://u:p@db/cw?sslmode=require' })).not.toThrow()
+    })
+
+    it('reads sslmode from URLs with encoded passwords', () => {
+      expect(databaseSslMode(`postgres://u:${encodeURIComponent('p@ss:w/rd#1')}@db/cw?sslmode=verify-full`)).toBe('verify-full')
+      expect(databaseSslMode('not a url')).toBeNull()
+    })
   })
 
   it('rejects invalid values with a readable message', () => {

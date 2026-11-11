@@ -1,5 +1,6 @@
 # Dependabot: weekly version updates for Actions (SHA pins), the pnpm workspace and the Dockerfile.
 # No custom labels: Dependabot applies its default "dependencies" label (and creates it if missing).
+# Security updates (Dependabot alerts) are separate and are not limited by the ignore rules below.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -7,6 +8,9 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      actions-minor-and-patch:
+        update-types: [minor, patch]
 
   # pnpm is handled by the npm ecosystem (reads pnpm-lock.yaml / pnpm-workspace.yaml at the root).
   - package-ecosystem: npm
@@ -14,12 +18,26 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # One pull request a week for minor and patch updates (#155).
     groups:
       minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # Node types follow the runtime major in the Dockerfile and .nvmrc (Node 24). Raise them
+      # together with the runtime, by hand.
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
+      # TypeScript majors wait until typescript-eslint and the build toolchain support them.
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
 
+  # Dockerfile base image digest pins (#156). Majors are ignored: the Node major moves with
+  # engines.node, .nvmrc and @types/node together.
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 2
+    ignore:
+      - dependency-name: node
+        update-types: [version-update:semver-major]

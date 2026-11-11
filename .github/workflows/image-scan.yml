@@ -1,0 +1,74 @@
+# Weekly rescan of the published image (#146). A CVE published after an image was built is never
+# seen by the build-time gate, so this scans the newest image on main again every week and uploads
+# the results to code scanning (Security, Code scanning, category "image").
+# Image: ghcr.io/<owner>/crosswire:sha-<sha of the newest main commit with a published image>.
+# image.yml pushes only sha-<sha> and vX.Y.Z tags (no :latest), so the newest sha- tag is found
+# by walking main's history. HIGH and CRITICAL, fixed or not, so unfixable findings are visible.
+name: Image scan
+
+on:
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image to scan (default the newest sha- tag on main), e.g. ghcr.io/jusso-dev/crosswire:sha-<40 hex>
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 100
+          persist-credentials: false
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Find the image
+        id: img
+        env:
+          INPUT_IMAGE: ${{ inputs.image }}
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if [ -n "$INPUT_IMAGE" ]; then
+            echo "$INPUT_IMAGE" | grep -Eq "^${repo}(:sha-[0-9a-f]{40}|:v[0-9]+\.[0-9]+\.[0-9]+|@sha256:[0-9a-f]{64})$" || { echo "::error::image must be $repo:sha-<40 hex>, :vX.Y.Z or @sha256:<digest>"; exit 1; }
+            echo "image=$INPUT_IMAGE" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          for sha in $(git rev-list --first-parent HEAD); do
+            if docker buildx imagetools inspect "$repo:sha-$sha" >/dev/null 2>&1; then
+              echo "image=$repo:sha-$sha" >> "$GITHUB_OUTPUT"
+              echo "Scanning $repo:sha-$sha" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          done
+          echo "::error::no published sha- image found in the last 100 commits on main"; exit 1
+      - name: Trivy (HIGH, CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ steps.img.outputs.image }}
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-image.sarif
+          trivyignores: .trivyignore
+          exit-code: '0'
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: trivy-image.sarif
+          category: image
