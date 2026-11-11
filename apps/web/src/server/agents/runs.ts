@@ -1,8 +1,9 @@
-import { and, desc, eq, inArray, lt, or, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, lt, ne, or, sql } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { agentRunEvents, agentRunOutputs, agentRuns, agentUsage, chatThreads } from '../db/schema'
 import { env } from '../env'
 import { redactValue } from '../lib/redact'
+import { logger } from '../lib/logger'
 import { canonicalJson, sha256 } from './canonical'
 import { releaseRunSlot } from './budgets'
 import { SQUAD_SDK_PIN } from './squad-sdk'
@@ -53,6 +54,8 @@ export async function appendRunEvent(runId: string, orgId: string, kind: string,
   if (!ledgerEnforced()) return
   const db = getDb()
   await db.transaction(async (tx) => {
+    // Lock the run row first, so two writers for one run take turns and never compute the same seq (#191).
+    await tx.execute(sql`select id from agent_runs where id = ${runId} for update`)
     const [max] = await tx
       .select({ n: sql<number>`coalesce(max(${agentRunEvents.seq}), 0)` })
       .from(agentRunEvents)
@@ -278,13 +281,25 @@ export async function requestRunCancel(orgId: string, runId: string) {
 }
 
 /**
- * Mark timed-out or cancelled running rows interrupted, then return the slot each of those
- * rows actually held. This does not rewrite any org's inflight count from the rows still running.
- * A run that never acquired a slot does not decrement. A second reconcile finds the claim already taken.
+ * How long a finished row may still hold its slot before the cleanup returns it (#191). The owning
+ * process finishes the row and then releases straight away, so a row past this point has leaked.
+ * It also covers tool calls that keep going after a Stop (hunting queries stop at 120 seconds).
+ */
+export const SLOT_RELEASE_GRACE_MS = 150_000
+
+/**
+ * Mark timed-out or cancelled running rows interrupted, and return slots that are no longer used.
+ * A timed-out row's slot is returned at once. A cancelled row's slot is left to the owning process,
+ * which notices the cancel within a poll; the cleanup returns it only after SLOT_RELEASE_GRACE_MS.
+ * The same rule returns the slot of any finished row whose own release failed (#191).
+ * This does not rewrite any org's inflight count from the rows still running. A run that never
+ * acquired a slot does not decrement. Each row is handled on its own, so one failure does not stop
+ * the rest; a later cleanup retries it.
  */
 export async function reconcileStaleRuns(now = new Date()) {
   if (!ledgerEnforced()) return { interrupted: 0 }
   const cutoff = new Date(now.getTime() - env().AGENT_TIMEOUT_MS)
+  const graceCutoff = new Date(now.getTime() - SLOT_RELEASE_GRACE_MS)
   const stale = await getDb()
     .update(agentRuns)
     .set({ status: 'interrupted', finishedAt: now, error: 'reconciled after timeout or cancellation' })
@@ -296,8 +311,22 @@ export async function reconcileStaleRuns(now = new Date()) {
     .where(and(eq(agentRuns.status, 'running'), sql`${agentRuns.cancelRequestedAt} is not null`))
     .returning({ id: agentRuns.id, orgId: agentRuns.orgId })
   for (const row of [...stale, ...cancelled]) {
-    await appendRunEvent(row.id, row.orgId, 'interrupted', { reason: 'reconcile' })
-    await releaseRunSlot(row.orgId, row.id)
+    await reconcileStep('reconcile event', row, () => appendRunEvent(row.id, row.orgId, 'interrupted', { reason: 'reconcile' }))
   }
+  for (const row of stale) await reconcileStep('reconcile slot release', row, () => releaseRunSlot(row.orgId, row.id))
+  const leaked = await getDb()
+    .select({ id: agentRuns.id, orgId: agentRuns.orgId })
+    .from(agentRuns)
+    .where(and(ne(agentRuns.status, 'running'), eq(agentRuns.slotHeld, true), eq(agentRuns.slotReleased, false), lt(agentRuns.finishedAt, graceCutoff)))
+    .limit(500)
+  for (const row of leaked) await reconcileStep('reconcile leaked slot release', row, () => releaseRunSlot(row.orgId, row.id))
   return { interrupted: stale.length + cancelled.length }
+}
+
+async function reconcileStep(what: string, row: { id: string; orgId: string }, fn: () => Promise<unknown>) {
+  try {
+    await fn()
+  } catch (err) {
+    logger.error(`${what} failed`, { runId: row.id, orgId: row.orgId, error: err instanceof Error ? err.message : String(err) })
+  }
 }
