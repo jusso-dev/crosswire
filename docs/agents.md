@@ -60,6 +60,11 @@ executes KQL or a response proposal; `EXECUTION_TOOL_NAMES` must stay empty (tes
 - Untrusted sources (`thread`, `message`, `import`, `remember`, `tool`, `feedback`, `scribe`) are
   quarantined. A different person may promote a normal note. The author cannot. Injection text cannot
   be promoted. Tombstoned rows stay stored and stay out of the prompt.
+- Two-person rule (#192): every note a person writes, including operator notes, safety notes and
+  replacements, is held in the review queue until an owner or approver who is not the author promotes
+  it. This is the same rule as org directives. Replacing your own held note with the same text keeps
+  it held. Retiring a note removes it from the compacted memory body at once, and compaction rebuilds
+  safety lines from live notes only, so a retired note never comes back.
 - Markdown mapping: `exportHistoryMarkdown` writes Squad-style `history.md`; `importHistoryMarkdown`
   reads bullets back as `sourceType=import`, so they are quarantined. Agents page shows the export.
 - Versioned org export (`exportOrgBundle`, schema version 1) round-trips content and hashes. Import
@@ -105,4 +110,12 @@ shortened. Concurrent `appendRunEvent` calls can still lose a sequence number. T
 **When to run:** weekly, or when an agent's live entries pass a few hundred. It is cheap and safe to
 run often.
 
-The Agents page opens on the team. Pick an agent, then **Find a memory** filters that agent's notes, including notes held out of the prompt. A row shows the note, whether it is in the prompt, and one action. Trust, Squad class, and source sit under **Details**. An operator note is saved with source `operator`. Owners and approvers promote a quarantined note (not their own, and not injection text) or replace a note, which tombstones the old row. **Log** holds the decision log and run replay. The usage strip reads `agent_usage` for this organisation. It does not read the in-process cost tracker. Context is the last observed call against `BUDGET_CONTEXT_WINDOW_TOKENS`, and the refusal line stays at 0.8. Directives stay collapsed until opened.
+The Agents page opens on the team. Pick an agent, then **Find a memory** filters that agent's notes, including notes held out of the prompt. A row shows the note, whether it is in the prompt, and one action. Trust, Squad class, and source sit under **Details**. An operator note is saved with source `operator` and waits in the review queue. Owners and approvers promote a quarantined note (not their own, and not injection text) or replace a note, which tombstones the old row and puts the replacement in the queue. **Log** holds the decision log and run replay. The usage strip reads `agent_usage` for this organisation. It does not read the in-process cost tracker. Context is the last observed call against `BUDGET_CONTEXT_WINDOW_TOKENS`, and the refusal line stays at 0.8. Directives stay collapsed until opened.
+
+## Who can see a conversation
+
+Only the person who started a conversation can open it in **Ask an agent**. It is not secret from the
+organisation: each question is written to the decision log and each reply to the run replay, and any
+member can read both on the Agents page. This is a deliberate choice for now (#213). Do not paste
+anything into chat that your organisation should not see.
+

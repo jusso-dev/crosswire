@@ -147,19 +147,42 @@ function summarise(row: RunRow, usage: Awaited<ReturnType<typeof usageFor>>) {
 export type RunSummary = ReturnType<typeof summarise>
 
 /** Runs for the run view, newest first. Filters are optional. Only this organisation's rows. */
-export async function listRuns(orgId: string, filter: { status?: RunStatus; agentKey?: string; threadId?: string; limit?: number } = {}) {
+export async function listRuns(orgId: string, filter: { status?: RunStatus; agentKey?: string; threadId?: string; limit?: number; before?: Date } = {}) {
+  return (await listRunsPage(orgId, filter)).runs
+}
+
+/**
+ * One page of runs, newest first, with `hasMore` when older runs match (#171).
+ * `before` is the startedAt of the oldest run already shown.
+ */
+export async function listRunsPage(orgId: string, filter: { status?: RunStatus; agentKey?: string; threadId?: string; limit?: number; before?: Date } = {}) {
+  const limit = Math.min(Math.max(filter.limit ?? 50, 1), 200)
   const conds = [eq(agentRuns.orgId, orgId)]
   if (filter.status) conds.push(eq(agentRuns.status, filter.status))
   if (filter.agentKey) conds.push(eq(agentRuns.agentKey, filter.agentKey))
   if (filter.threadId) conds.push(eq(agentRuns.threadId, filter.threadId))
+  if (filter.before) conds.push(lt(agentRuns.startedAt, filter.before))
   const rows = await getDb()
     .select()
     .from(agentRuns)
     .where(and(...conds))
     .orderBy(desc(agentRuns.startedAt))
-    .limit(Math.min(Math.max(filter.limit ?? 50, 1), 200))
-  const usage = await usageFor(orgId, rows.map((row) => row.id))
-  return rows.map((row) => summarise(row, usage))
+    .limit(limit + 1)
+  const page = rows.slice(0, limit)
+  const usage = await usageFor(orgId, page.map((row) => row.id))
+  return { runs: page.map((row) => summarise(row, usage)), hasMore: rows.length > limit }
+}
+
+/**
+ * Status of a few runs, for polling while a run is live (#170). Small on purpose: id, status and
+ * whether a stop was asked for. Ids from another organisation are left out.
+ */
+export async function runStatuses(orgId: string, runIds: string[]) {
+  if (runIds.length === 0) return []
+  return getDb()
+    .select({ id: agentRuns.id, status: agentRuns.status, cancelRequested: sql<boolean>`${agentRuns.cancelRequestedAt} is not null` })
+    .from(agentRuns)
+    .where(and(eq(agentRuns.orgId, orgId), inArray(agentRuns.id, runIds.slice(0, 50))))
 }
 
 export async function countRunning(orgId: string) {

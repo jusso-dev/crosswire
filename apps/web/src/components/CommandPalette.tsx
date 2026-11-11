@@ -1,13 +1,15 @@
 import { useNavigate, useRouter } from '@tanstack/react-router'
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { fetchPalette } from '../fns/palette'
-import { isTyping } from './keys'
+import { isMacPlatform, paletteShortcut, setSingleKeyShortcuts, shouldHandleShortcut, singleKeyShortcutsOn } from './keys'
 
 /**
  * Command palette (Cmd/Ctrl+K) and keyboard shortcuts. Built on the native <dialog> element:
  * focus moves in and returns on close, Esc closes, the page behind is inert.
  *
- * Shortcuts never approve, reject, execute or stop anything. Single keys are ignored while typing.
+ * Shortcuts never approve, reject, execute or stop anything. Single keys are ignored while typing,
+ * while any dialog or confirmation is open, and when the person turns them off (WCAG 2.1.4).
+ * Cmd/Ctrl+K always works.
  *   ?        shortcut sheet
  *   g then x go to a page (see GO)
  *   /        focus the page search box
@@ -41,6 +43,39 @@ const ACTIONS: Item[] = [
   { id: 'act:watch', group: 'Actions', label: 'Add a watch', to: '/app/watches' },
 ]
 
+/**
+ * Whether this is an Apple platform. False during server render and the first client render, so
+ * the markup matches; the real value arrives right after hydration.
+ */
+function useIsMac() {
+  return useSyncExternalStore(
+    () => () => {},
+    () => isMacPlatform(navigator as Navigator & { userAgentData?: { platform?: string } }),
+    () => false,
+  )
+}
+
+/** The single-key shortcut setting, kept in localStorage and shared by every tab (#168). */
+function useSingleKeyShortcuts(): [boolean, (on: boolean) => void] {
+  const on = useSyncExternalStore(
+    (notify) => {
+      window.addEventListener('storage', notify)
+      window.addEventListener('cw:shortcuts', notify)
+      return () => {
+        window.removeEventListener('storage', notify)
+        window.removeEventListener('cw:shortcuts', notify)
+      }
+    },
+    () => singleKeyShortcutsOn(),
+    () => true,
+  )
+  const set = useCallback((next: boolean) => {
+    setSingleKeyShortcuts(next)
+    window.dispatchEvent(new Event('cw:shortcuts'))
+  }, [])
+  return [on, set]
+}
+
 /** Simple ranked match: every word must appear; earlier matches rank higher. */
 export function matchItems<T extends { label: string; group: string }>(items: T[], query: string): T[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean)
@@ -73,6 +108,8 @@ export function CommandLayer() {
   const [data, setData] = useState<Awaited<ReturnType<typeof fetchPalette>> | null>(null)
   const [loadError, setLoadError] = useState(false)
   const pendingG = useRef<number | null>(null)
+  const isMac = useIsMac()
+  const [singleKeys, setSingleKeys] = useSingleKeyShortcuts()
 
   const openPalette = useCallback(() => {
     if (!palette.current || palette.current.open) return
@@ -108,9 +145,12 @@ export function CommandLayer() {
         else openPalette()
         return
       }
-      if (e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return
-      if (isTyping(e.target) || palette.current?.open || sheet.current?.open) return
-      if (document.querySelector('dialog[open]')) return
+      // Our own palette and sheet are dialogs too, so this also covers them.
+      if (!singleKeyShortcutsOn() || !shouldHandleShortcut(e, document)) {
+        if (pendingG.current !== null) window.clearTimeout(pendingG.current)
+        pendingG.current = null
+        return
+      }
       if (pendingG.current !== null) {
         const target = GO.find((g) => g.key === e.key.toLowerCase())
         window.clearTimeout(pendingG.current)
@@ -159,6 +199,15 @@ export function CommandLayer() {
     const extra: Item[] = cve && !all.some((i) => i.label.toLowerCase() === q.toLowerCase()) ? [{ id: `intel:${q}`, group: 'Compare intel', label: q.toUpperCase(), to: '/app/intel/$key', params: { key: q.toUpperCase() } }] : []
     return [...extra, ...matchItems(all, q)].slice(0, 60)
   }, [data, query])
+
+  // Keep the active option in view, and preload its page while the person decides (#168).
+  // Focus stays in the input (aria-activedescendant), so the option itself never gets focus.
+  const activeItem = items[active]
+  useEffect(() => {
+    if (!activeItem || !palette.current?.open) return
+    document.getElementById(`${listId}-${active}`)?.scrollIntoView({ block: 'nearest' })
+    void router.preloadRoute({ to: activeItem.to, params: activeItem.params, search: activeItem.search } as never).catch(() => {})
+  }, [activeItem, active, listId, router])
 
   const go = (item: Item) => {
     palette.current?.close()
@@ -226,7 +275,6 @@ export function CommandLayer() {
                     className="cw-palette-item"
                     onMouseMove={() => setActive(i)}
                     onClick={() => go(item)}
-                    onFocus={() => void router.preloadRoute({ to: item.to, params: item.params } as never).catch(() => {})}
                   >
                     <span>{item.label}</span>
                     <span className="cw-sr-only">, {item.group}</span>
@@ -266,11 +314,18 @@ export function CommandLayer() {
             </button>
           </div>
           <p className="cw-muted">Single keys do nothing while you are typing in a box. No shortcut approves, rejects, executes or stops anything.</p>
+          <label className="cw-inline cw-shortcut-toggle">
+            <input type="checkbox" checked={singleKeys} onChange={(e) => setSingleKeys(e.target.checked)} />
+            <span>Single-key shortcuts</span>
+          </label>
+          <p className="cw-help">
+            {singleKeys
+              ? 'On. Turn them off if you use speech input or press keys by accident. This browser remembers the choice.'
+              : `Off. Only ${isMac ? '⌘ K' : 'Ctrl K'} and Esc work. This browser remembers the choice.`}
+          </p>
           <h3>Anywhere</h3>
           <dl>
-            <dt>
-              <kbd>⌘</kbd> <kbd>K</kbd> or <kbd>Ctrl</kbd> <kbd>K</kbd>
-            </dt>
+            <dt>{isMac ? <><kbd>⌘</kbd> <kbd>K</kbd></> : <><kbd>Ctrl</kbd> <kbd>K</kbd></>}</dt>
             <dd>Open the command palette</dd>
             <dt>
               <kbd>?</kbd>
@@ -315,16 +370,18 @@ export function CommandLayer() {
 
 /** Header button that opens the palette, for people who do not use shortcuts. */
 export function PaletteButton() {
+  const shortcut = paletteShortcut(useIsMac())
   return (
-    <button type="button" className="cw-kbdhint" onClick={() => window.dispatchEvent(new CustomEvent('cw:command', { detail: 'palette' }))} aria-keyshortcuts="Meta+K Control+K">
-      <span>Search or jump</span> <kbd aria-hidden="true">⌘K</kbd>
+    <button type="button" className="cw-kbdhint" onClick={() => window.dispatchEvent(new CustomEvent('cw:command', { detail: 'palette' }))} aria-keyshortcuts={shortcut.aria}>
+      <span>Search or jump</span> <kbd aria-hidden="true">{shortcut.hint}</kbd>
     </button>
   )
 }
 
 export function ShortcutsButton() {
+  const [singleKeys] = useSingleKeyShortcuts()
   return (
-    <button type="button" className="cw-kbdhint" onClick={() => window.dispatchEvent(new CustomEvent('cw:command', { detail: 'shortcuts' }))} aria-keyshortcuts="Shift+Slash">
+    <button type="button" className="cw-kbdhint" onClick={() => window.dispatchEvent(new CustomEvent('cw:command', { detail: 'shortcuts' }))} aria-keyshortcuts={singleKeys ? 'Shift+?' : undefined}>
       <span className="cw-sr-only">Keyboard shortcuts</span>
       <kbd aria-hidden="true">?</kbd>
     </button>

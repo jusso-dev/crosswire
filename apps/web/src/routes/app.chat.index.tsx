@@ -1,17 +1,17 @@
 import { createFileRoute, getRouteApi, useNavigate, useRouter } from '@tanstack/react-router'
 import { Notice } from '../components/ui'
-import { useState } from 'react'
 import { z } from 'zod'
-import { plainMessage } from '../shared/messages'
 import { newThread } from '../fns/chat'
+import { useAction } from '../components/action'
 import { AGENT_KEYS, AGENT_LABELS, type AgentKey } from '../shared/agents'
-import { pageTitle } from '../components/errors'
+import { RouteError, pageTitle } from '../components/errors'
 
 /** Empty state: pick who to talk to, which starts a conversation with that agent selected. */
 export const Route = createFileRoute('/app/chat/')({
   // Triage hand-off: ?agent=intel&q=... opens a conversation with that question ready to send.
   validateSearch: z.object({ agent: z.string().optional(), q: z.string().max(2000).optional() }),
   head: () => ({ meta: [{ title: pageTitle('Ask an agent') }] }),
+  errorComponent: ({ error }) => <RouteError error={error} title="This page did not load" />,
   component: ChatHome,
 })
 
@@ -26,23 +26,15 @@ const AGENT_HELP: Record<AgentKey, string> = {
 function ChatHome() {
   const navigate = useNavigate()
   const router = useRouter()
-  const [busy, setBusy] = useState<AgentKey | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const { run, busy, error } = useAction()
   const { runtime } = getRouteApi('/app/chat').useLoaderData()
   const search = Route.useSearch()
-  const start = async (k: AgentKey, question?: string) => {
-    setBusy(k)
-    setError(null)
-    try {
+  const start = (k: AgentKey, question?: string) =>
+    void run(k, async () => {
       const t = await newThread({ data: { agentKey: k } })
       await router.invalidate()
       await navigate({ to: '/app/chat/$threadId', params: { threadId: t.id }, search: question ? { q: question } : undefined })
-    } catch (err) {
-      setError(plainMessage(err))
-    } finally {
-      setBusy(null)
-    }
-  }
+    })
   const handoff = search.q ? (AGENT_KEYS.find((k) => k === search.agent) ?? 'intel') : null
   return (
     <section className="cw-chat-home" aria-labelledby="chat-home-title">

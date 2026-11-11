@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from 'drizzle-orm'
+import { and, asc, desc, eq, lt } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { chatMessages, chatThreads, messageFeedback } from '../db/schema'
 import { appendMemory } from '../agents/memory'
@@ -8,7 +8,11 @@ import { isAgentKey, type AgentSelection } from '../../shared/agents'
 
 export class ThreadNotFoundError extends Error {}
 
-/** Every thread query filters by org AND user (#26): threads are private to their owner. */
+/**
+ * Every thread query filters by org AND user (#26): only the person who started a thread can open
+ * it here. The organisation can still see each question in the decision log and each reply in the
+ * run replay (#213, kept visible by the owner's decision).
+ */
 export async function listThreads(orgId: string, userId: string) {
   return getDb()
     .select({ id: chatThreads.id, title: chatThreads.title, agentKey: chatThreads.agentKey, updatedAt: chatThreads.updatedAt })
@@ -48,6 +52,32 @@ export async function listMessages(orgId: string, userId: string, threadId: stri
     .orderBy(desc(chatMessages.createdAt))
     .limit(Math.min(limit, 500))
   return rows.reverse()
+}
+
+/**
+ * One page of a thread, oldest first, with `hasMore` when older messages exist (#171).
+ * `before` is the createdAt of the oldest message already shown.
+ */
+export async function listMessagesPage(orgId: string, userId: string, threadId: string, opts: { limit?: number; before?: Date } = {}) {
+  await requireThread(orgId, userId, threadId)
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500)
+  const conds = [eq(chatMessages.threadId, threadId), eq(chatMessages.orgId, orgId)]
+  if (opts.before) conds.push(lt(chatMessages.createdAt, opts.before))
+  const rows = await getDb()
+    .select()
+    .from(chatMessages)
+    .where(and(...conds))
+    .orderBy(desc(chatMessages.createdAt))
+    .limit(limit + 1)
+  const hasMore = rows.length > limit
+  return { messages: rows.slice(0, limit).reverse(), hasMore }
+}
+
+/** Remove one message from a thread (a failed reply that a retry replaces). Scoped to the org and thread. */
+export async function deleteMessage(orgId: string, threadId: string, messageId: string) {
+  await getDb()
+    .delete(chatMessages)
+    .where(and(eq(chatMessages.id, messageId), eq(chatMessages.threadId, threadId), eq(chatMessages.orgId, orgId)))
 }
 
 export async function appendMessage(
