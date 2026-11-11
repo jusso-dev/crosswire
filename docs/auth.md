@@ -173,7 +173,11 @@ to do it without patching the package. `pnpm rotate-secrets` does not cover them
   and do not register OIDC providers through this plugin. Entra OIDC above uses
   `ENTRA_CLIENT_SECRET` from Key Vault, not this table.
 - Treat database backups and read access to `sso_provider` as access to those secrets.
-- If a key or secret may have leaked, rotate it at the IdP and register the provider again.
+- If an OIDC client secret may have leaked, rotate it at the IdP and register the provider again
+  with the new secret.
+- If the SP signing key (`samlConfig.privateKey`) may have leaked, generate a new SP key pair,
+  register the provider again with the new private key, and give the IdP the new SP certificate.
+  Rotating keys at the IdP alone does not replace the SP key.
 
 **Org mapping rule:** each SAML provider is bound to exactly one org (`sso_org_bindings`). Users who
 sign in through a bound provider join that org as `analyst`. An unbound provider grants no org

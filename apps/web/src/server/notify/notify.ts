@@ -108,7 +108,15 @@ export function setNotifyFetch(f: typeof fetch) {
   fetchImpl = f
 }
 
-async function post(kind: ChannelKind, url: string, msg: NotifyMessage): Promise<{ ok: boolean; status: string }> {
+/** Send to one stored channel. A URL that cannot be decrypted fails this channel only, never the others. */
+async function post(c: { kind: ChannelKind; orgId: string; urlEnc: string }, msg: NotifyMessage): Promise<{ ok: boolean; status: string }> {
+  const kind = c.kind
+  let url: string
+  try {
+    url = decryptSecret(c.urlEnc, { orgId: c.orgId, column: SECRET_COLUMNS.notificationUrl })
+  } catch {
+    return { ok: false, status: 'stored URL could not be decrypted' }
+  }
   try {
     assertWebhookUrl(kind, url)
     const res = await fetchImpl(url, {
@@ -136,7 +144,7 @@ export async function notify(orgId: string, event: NotifyEvent, msg: NotifyMessa
       .from(orgNotificationChannels)
       .where(and(eq(orgNotificationChannels.orgId, orgId), eq(orgNotificationChannels.enabled, true)))
     for (const c of channels.filter((ch) => ch.events.includes(event))) {
-      const r = await post(c.kind, decryptSecret(c.urlEnc, { orgId: c.orgId, column: SECRET_COLUMNS.notificationUrl }), msg)
+      const r = await post(c, msg)
       if (r.ok) sent++
       else failed++
       await getDb().update(orgNotificationChannels).set({ lastStatus: r.status, lastSentAt: new Date() }).where(eq(orgNotificationChannels.id, c.id))
@@ -209,7 +217,7 @@ export async function deleteChannel(orgId: string, userId: string, id: string) {
 export async function testChannel(orgId: string, id: string) {
   const [c] = await getDb().select().from(orgNotificationChannels).where(and(eq(orgNotificationChannels.orgId, orgId), eq(orgNotificationChannels.id, id))).limit(1)
   if (!c) throw new Error('Channel not found.')
-  const r = await post(c.kind, decryptSecret(c.urlEnc, { orgId: c.orgId, column: SECRET_COLUMNS.notificationUrl }), { title: 'Crosswire test notification', lines: ['If you can read this, the channel works.'], link: '/app/settings' })
+  const r = await post(c, { title: 'Crosswire test notification', lines: ['If you can read this, the channel works.'], link: '/app/settings' })
   await getDb().update(orgNotificationChannels).set({ lastStatus: r.status, lastSentAt: new Date() }).where(eq(orgNotificationChannels.id, c.id))
   return r
 }

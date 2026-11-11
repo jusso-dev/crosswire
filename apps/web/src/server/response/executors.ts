@@ -157,7 +157,8 @@ export const logicAppExecutor: Executor = {
     if (!url) blocked.push('RESPONSE_LOGICAPP_URL is not configured.')
     if (!boundOrg) blocked.push('RESPONSE_LOGICAPP_ORG_ID is not configured, so the Logic App is not bound to an organisation.')
     else if (boundOrg !== p.orgId) blocked.push('The Logic App is bound to another organisation (RESPONSE_LOGICAPP_ORG_ID).')
-    const action = p.payload.action ?? 'contain'
+    // Only a missing action means `contain`; an explicit null or other value is refused.
+    const action = p.payload.action === undefined ? 'contain' : p.payload.action
     if (typeof action !== 'string' || !(LOGIC_APP_ACTIONS as readonly string[]).includes(action)) blocked.push(`payload.action must be one of: ${LOGIC_APP_ACTIONS.join(', ')}.`)
     const t = p.targets
     liveTargetCap('targets', (t.devices?.length ?? 0) + (t.users?.length ?? 0) + (t.incidents?.length ?? 0), blocked)

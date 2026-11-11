@@ -94,6 +94,8 @@ describe('Logic App executor is bound to one organisation (#190)', () => {
     await expectRefusedUnclaimed(t, free.id, /payload.action must be one of/)
     const notText = await approvedBy(t, { ...base, payload: { action: { nested: true } } })
     await expectRefusedUnclaimed(t, notText.id, /payload.action must be one of/)
+    const nullAction = await approvedBy(t, { ...base, payload: { action: null } })
+    await expectRefusedUnclaimed(t, nullAction.id, /payload.action must be one of/)
     // No action means the documented default, `contain`.
     const plain = await approvedBy(t, { ...base, payload: {} })
     const f = ok()

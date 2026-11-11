@@ -16,7 +16,9 @@ How it works (`apps/web/src/server/lib/crypto.ts`): new values are always encryp
 every stored value with the current key, after which the old key can go.
 
 Format (#212): values are written as `v2`, which binds each one to its organisation id and its
-table and column, so a value copied into another row does not decrypt. Values written before
+table and column, so a value copied into another organisation's row, or into a different secret
+column, does not decrypt. A copy between two rows of the same organisation and column (for example
+two notification channels) still decrypts. Values written before
 #212 are `v1` (no binding). They still decrypt, and `pnpm rotate-secrets` rewrites them as `v2`
 even when no key change is due. Run it once after upgrading (no key change is needed for that);
 step 2 below covers it during a rotation. Every value must carry a full 16-byte GCM tag.
