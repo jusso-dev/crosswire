@@ -1,4 +1,4 @@
-import { createMiddleware, createStart } from '@tanstack/react-start'
+import { createCsrfMiddleware, createMiddleware, createStart } from '@tanstack/react-start'
 
 /**
  * Request logging + correlation ids (#63). Every request gets an `x-request-id` (reused from the
@@ -60,4 +60,21 @@ function isHtml(res: Response) {
   return (res.headers.get('content-type') ?? '').toLowerCase().includes('text/html')
 }
 
-export const startInstance = createStart(() => ({ requestMiddleware: [requestLogger] }))
+/**
+ * CSRF for server functions (#199). Setting our own request middleware turns off TanStack Start's
+ * default CSRF check, so it is added back here. A POST to /_serverFn passes only when the browser
+ * says it is same-origin (Sec-Fetch-Site), or, for clients that do not send that header, when Origin
+ * (then Referer) is this request's origin, APP_URL or a CORS_ALLOWED_ORIGINS entry. A request with
+ * none of the three is refused. Everything else is refused with 403, before any handler runs.
+ * Better Auth's /api/auth/* endpoints keep their own origin check.
+ */
+export const csrfMiddleware = createCsrfMiddleware({
+  filter: (ctx) => ctx.handlerType === 'serverFn',
+  origin: async (value, ctx) => {
+    if (value === new URL(ctx.request.url).origin) return true
+    const { allowedOrigins } = await import('./server/lib/http-security')
+    return allowedOrigins().has(value)
+  },
+})
+
+export const startInstance = createStart(() => ({ requestMiddleware: [requestLogger, csrfMiddleware] }))
