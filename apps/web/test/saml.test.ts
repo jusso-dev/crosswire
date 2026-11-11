@@ -86,3 +86,43 @@ describe('SAML and local sign-up limits (#203)', () => {
     expect(await getDb().select().from(orgMemberships).where(eq(orgMemberships.userId, u))).toHaveLength(0)
   })
 })
+
+describe('SAML provider registration rules (#203)', () => {
+  it('refuses several domains in one provider and a domain an Entra org owns', async () => {
+    process.env.SAML_ENABLED = 'true'
+    const { resetEnvForTests } = await import('../src/server/env')
+    resetEnvForTests()
+    const { auth, resetAuthForTests } = await import('../src/server/auth/auth')
+    const { orgs } = await import('../src/server/db/schema')
+    resetAuthForTests()
+    try {
+      const owner = await makeUser()
+      const org = await makeOrg('SamlReg')
+      await member(org, owner, 'owner')
+      await getDb().insert(orgs).values({ name: 'Fabrikam', slug: `f-${crypto.randomUUID().slice(0, 8)}`, entraTenantId: crypto.randomUUID(), emailDomain: 'fabrikam.example' })
+      const ctx = await auth().$context
+      const s = await ctx.internalAdapter.createSession(owner)
+      const cookieName = ctx.authCookies.sessionToken.name
+      const { makeSignature } = await import('better-auth/crypto')
+      const signed = `${s!.token}.${await makeSignature(s!.token, ctx.secret)}`
+      const register = (domain: string) =>
+        auth().handler(
+          new Request('http://localhost:3000/api/auth/sso/register', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', origin: 'http://localhost:3000', cookie: `${cookieName}=${encodeURIComponent(signed)}` },
+            body: JSON.stringify({ providerId: `p-${crypto.randomUUID().slice(0, 6)}`, issuer: 'https://idp.example', domain, samlConfig: { entryPoint: 'https://idp.example/sso', cert: 'x', callbackUrl: 'http://localhost:3000/app', spMetadata: {} } }),
+          }),
+        )
+      const multi = await register('a.example,b.example')
+      expect(multi.status).toBe(400)
+      expect(((await multi.json()) as { code?: string }).code).toBe('ONE_DOMAIN_PER_PROVIDER')
+      const entra = await register('Fabrikam.example')
+      expect(entra.status).toBe(403)
+      expect(((await entra.json()) as { code?: string }).code).toBe('DOMAIN_USES_ENTRA')
+    } finally {
+      delete process.env.SAML_ENABLED
+      resetEnvForTests()
+      resetAuthForTests()
+    }
+  })
+})

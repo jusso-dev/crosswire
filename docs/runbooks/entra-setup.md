@@ -31,11 +31,15 @@ dry runs or the Logic App executor (whose identity holds the permissions instead
 ## Checklist
 
 1. SSO app registered, secret in Key Vault/env, single-tenant, `email` optional claim added.
-2. Crosswire org linked to the tenant (`orgs.entra_tenant_id`), or `ENTRA_AUTO_PROVISION_ORGS=true`.
-3. First Entra user promoted to owner/approver as needed (Settings → Members).
-4. Hunting app registered, admin consent granted, Azure roles assigned on the Sentinel workspace.
-5. Connector saved in Settings; `HUNTING_DEMO_MODE=false` in production.
-6. Test: propose `DeviceInfo | take 5` on a hunt case, approve, confirm `mode: live` on the evidence.
-7. Response flags remain `off` until a dry run has been reviewed.
-8. (v2) If live response is planned: response app consented, connector saved, playbook allowlist
+2. Enterprise app **Assignment required? = Yes**, with the SOC's users or groups assigned
+   ([auth](../auth.md#app-registration)).
+3. Crosswire org linked to the tenant (`orgs.entra_tenant_id`), or `ENTRA_AUTO_PROVISION_ORGS=true`.
+4. Roles: either map Entra groups or app roles in Settings → Entra groups
+   ([auth](../auth.md#roles-from-entra-groups-and-app-roles)), or promote people by hand in
+   Settings → People and roles.
+5. Hunting app registered, admin consent granted, Azure roles assigned on the Sentinel workspace.
+6. Connector saved in Settings; `HUNTING_DEMO_MODE=false` in production.
+7. Test: propose `DeviceInfo | take 5` on a hunt case, approve, confirm `mode: live` on the evidence.
+8. Response flags remain `off` until a dry run has been reviewed.
+9. (v2) If live response is planned: response app consented, connector saved, playbook allowlist
    reviewed, and an isolate → rollback walked on a lab device.

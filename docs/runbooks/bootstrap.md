@@ -19,12 +19,21 @@ docker compose -f docker-compose.prod.yml --env-file .env.prod run --rm \
 What it does:
 
 - Creates the first org (optionally linked to your Entra tenant id) and records the admin email.
-- If that user already exists (local sign-up) they become **owner** immediately. Otherwise the first
-  Entra (or SAML) sign-in, or a local sign-up, with that email becomes owner of the bootstrapped org
-  (and lands in it, not in a personal workspace). Everyone else from the tenant joins as analyst.
+- If that user already exists they become **owner** immediately (you ran the command, so this is
+  your choice; check the address first).
+- Otherwise the first sign-in with that email becomes owner of the bootstrapped org, but only when
+  the email is proven (#188):
+  - **Entra:** the sign-in must come from the tenant in `BOOTSTRAP_ENTRA_TENANT_ID`. The same
+    address from another tenant does not claim it.
+  - **SAML:** the account's email must be verified.
+  - **Local sign-up never claims it**, because it does not verify the address. The new account
+    gets its own personal workspace instead.
+  Each refused attempt writes a `bootstrap_owner_claim_refused` audit row. Everyone else from the
+  tenant joins as analyst (or by group mapping, see [auth](../auth.md#roles-from-entra-groups-and-app-roles)).
+- With `BOOTSTRAP_ENTRA_TENANT_ID`, the admin's email domain is stored as the org's domain, so local
+  and SAML sign-ups for that domain are refused (#203).
 - Personal workspaces from earlier local sign-ups do not block bootstrap; only a team org does.
-- **Production:** keep `AUTH_EMAIL_PASSWORD=false` (Azure default) so nobody can claim the admin
-  email with a local account before the admin signs in with Entra.
+- **Production:** keep `AUTH_EMAIL_PASSWORD=false` (Azure default).
 - Writes a `bootstrap` audit row (no full email stored).
 - **Refuses** if any org exists (safe to re-run; it fails with a message).
 - **Refuses** if live response execution is enabled. Defaults are dry-run ON and executors OFF

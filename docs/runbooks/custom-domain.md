@@ -4,6 +4,11 @@ Default host: `<prefix>-web.<env-id>.<region>.azurecontainerapps.io` (HTTPS only
 false` in Bicep, so HTTP is redirected to HTTPS). For first use, give it a real hostname with an
 **Azure-managed certificate**. No Cloudflare or other edge is required.
 
+Why a custom domain matters for security (#199): `azurecontainerapps.io` is not on the public
+suffix list, so browsers treat every other customer's app on it as the **same site**. `SameSite=Lax`
+cookies then go with requests from those apps. Crosswire's CSRF check still refuses them (it needs
+the same origin, see [auth](../auth.md)), but your own domain removes that whole class of risk.
+
 ## Steps
 
 ```sh

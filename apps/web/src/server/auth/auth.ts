@@ -169,6 +169,15 @@ function createAuth() {
       },
     },
     hooks: {
+      // SAML provider domains (#203): one domain per provider (the unique index then means one
+      // provider per domain), and never a domain an Entra org owns.
+      before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== '/sso/register' && ctx.path !== '/sso/update-provider') return
+        const domain = (ctx.body as { domain?: unknown } | undefined)?.domain
+        if (domain === undefined) return
+        if (typeof domain !== 'string' || domain.includes(',')) throw new APIError('BAD_REQUEST', { message: 'Register one domain per provider.', code: 'ONE_DOMAIN_PER_PROVIDER' })
+        if (await entraClaimedDomain(`x@${domain.trim()}`)) throw new APIError('FORBIDDEN', { message: 'This domain belongs to an Entra-connected organisation.', code: 'DOMAIN_USES_ENTRA' })
+      }),
       after: createAuthMiddleware(async (ctx) => {
         const action = AUDITED_PATHS[ctx.path]
         if (!action) return
