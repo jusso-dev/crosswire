@@ -4,7 +4,7 @@ import { env } from '../env'
 /**
  * AES-256-GCM with APP_ENCRYPTION_KEY (base64url parts).
  *
- * - `v2.<iv>.<tag>.<ciphertext>` (current, #212): the owning org id and the table and column are
+ * - `v2.<iv>.<tag>.<ciphertext>` (current, #212): the owning org or SSO provider row id and the table and column are
  *   bound as additional authenticated data, so a value copied into another org's row, or into
  *   another secret column, fails to decrypt.
  * - `v1.<iv>.<tag>.<ciphertext>` (read only): no additional data. Still decrypted so existing
@@ -27,23 +27,28 @@ export const SECRET_COLUMNS = {
   huntingClientSecret: 'org_connectors.client_secret_enc',
   responseClientSecret: 'org_response_connectors.client_secret_enc',
   notificationUrl: 'org_notification_channels.url_enc',
+  ssoOidcConfig: 'sso_provider.oidc_config',
+  ssoSamlConfig: 'sso_provider.saml_config',
 } as const
 export type SecretColumn = (typeof SECRET_COLUMNS)[keyof typeof SECRET_COLUMNS]
 
-/** Where a secret lives. Binds a v2 ciphertext to its row's org and its column. */
-export interface SecretContext {
-  orgId: string
+/** SSO providers exist before org binding, so their immutable row id owns the ciphertext. */
+export type SecretContext = {
   column: SecretColumn
-}
+} & ({ orgId: string; providerId?: never } | { providerId: string; orgId?: never })
 
 function aad(ctx: SecretContext): Buffer {
+  if (ctx.providerId !== undefined) {
+    if (!ctx.providerId) throw new Error('A secret must be bound to a provider row id.')
+    return Buffer.from(`crosswire:v2\n${ctx.column}\nprovider:${ctx.providerId}`, 'utf8')
+  }
   if (!ctx.orgId) throw new Error('A secret must be bound to an org id.')
   return Buffer.from(`crosswire:v2\n${ctx.column}\n${ctx.orgId}`, 'utf8')
 }
 
 function currentKey(): Buffer {
   const hex = env().APP_ENCRYPTION_KEY
-  if (!hex) throw new Error('APP_ENCRYPTION_KEY is not set; cannot encrypt or decrypt connector secrets.')
+  if (!hex) throw new Error('APP_ENCRYPTION_KEY is not set; cannot encrypt or decrypt stored secrets.')
   return Buffer.from(hex, 'hex')
 }
 

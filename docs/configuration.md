@@ -19,7 +19,7 @@ are Key Vault references (`infra/azure/modules/apps.bicep`):
 | `DATABASE_URL` (web, worker) | `database-url-app` | Least-privilege app role, written by Bicep; `sslmode=verify-full` |
 | `DATABASE_URL` (migration job) | `database-url` | Postgres owner, written by Bicep; the job also gets `APP_DATABASE_URL` to manage the app role |
 | `BETTER_AUTH_SECRET` | `better-auth-secret` | `openssl rand -hex 32` |
-| `APP_ENCRYPTION_KEY` | `app-encryption-key` | 64 hex chars; encrypts connector secrets in Postgres (AES-256-GCM, each value bound to its organisation and column) |
+| `APP_ENCRYPTION_KEY` | `app-encryption-key` | 64 hex chars; encrypts connector, webhook and SSO config secrets in Postgres (AES-256-GCM, bound to organisation or provider row id and column) |
 | `ENTRA_CLIENT_SECRET` | `entra-client-secret` | SSO app registration secret |
 | `ENTRA_CLIENT_ID`, `ENTRA_TENANT_ID`, `APP_URL`, flags | (plain env) | Not secret |
 | `RESPONSE_LOGICAPP_URL` | add `response-logicapp-url` if used | Contains a SAS signature |
@@ -41,8 +41,8 @@ infrastructure deploy (the Deploy workflow only changes the image and keeps it).
 app logs the KQL approval policy in force at start-up.
 
 Rotation: update the Key Vault secret, then restart the revision
-(`az containerapp revision restart`). `APP_ENCRYPTION_KEY` is different: it encrypts connector and
-webhook secrets in Postgres, so changing it alone makes them unreadable. Follow
+(`az containerapp revision restart`). `APP_ENCRYPTION_KEY` is different: it encrypts connector, webhook and
+SSO config secrets in Postgres, so changing it alone makes them unreadable. Follow
 [key rotation](runbooks/key-rotation.md) (new key, old key in `APP_ENCRYPTION_KEY_PREVIOUS`,
 `pnpm rotate-secrets`, then remove the old key). Nothing needs to be re-saved.
 

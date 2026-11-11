@@ -1,14 +1,15 @@
 import { eq, isNotNull } from 'drizzle-orm'
 import type { PgColumn, PgTable } from 'drizzle-orm/pg-core'
 import { getDb } from '../db/client'
-import { orgConnectors, orgNotificationChannels, orgResponseConnectors } from '../db/schema'
+import { orgConnectors, orgNotificationChannels, orgResponseConnectors, ssoProvider } from '../db/schema'
 import { decryptSecretDetailed, encryptSecret, SECRET_COLUMNS, type SecretColumn } from '../lib/crypto'
 import { writeAudit } from '../audit'
+import { encryptSsoConfig, readSsoConfig, SSO_CONFIG_FIELDS } from '../auth/sso-secrets'
 
 /**
  * Re-encrypt (run via `pnpm rotate-secrets`, src/server/cli/rotate-secrets-cli.ts) stored secrets with the current APP_ENCRYPTION_KEY.
  *
- * Not covered: SAML and OIDC provider secrets stored by `@better-auth/sso` in `sso_provider` (see docs/auth.md).
+ * Includes SAML and OIDC provider configs, including legacy plaintext JSON (see docs/auth.md).
  *
  * Rotation procedure:
  *   1. Set APP_ENCRYPTION_KEY to the new key and APP_ENCRYPTION_KEY_PREVIOUS to the old one, deploy.
@@ -26,7 +27,7 @@ export interface RotationCounts {
   rotated: number
   current: number
 }
-export type RotationReport = Record<'orgConnectors' | 'orgResponseConnectors' | 'orgNotificationChannels', RotationCounts>
+export type RotationReport = Record<'orgConnectors' | 'orgResponseConnectors' | 'orgNotificationChannels' | 'ssoOidcConfigs' | 'ssoSamlConfigs', RotationCounts>
 
 type Tx = Parameters<Parameters<ReturnType<typeof getDb>['transaction']>[0]>[0]
 
@@ -47,6 +48,26 @@ async function rotateColumn(tx: Tx, table: PgTable, cols: { id: PgColumn; orgId:
   return out
 }
 
+async function rotateSsoConfigs(tx: Tx) {
+  const counts = { oidcConfig: { rotated: 0, current: 0 }, samlConfig: { rotated: 0, current: 0 } }
+  const rows = await tx.select().from(ssoProvider).for('update')
+  for (const row of rows) {
+    const update: Partial<typeof ssoProvider.$inferInsert> = {}
+    for (const field of SSO_CONFIG_FIELDS) {
+      const value = row[field]
+      if (value === null) continue
+      const { plaintext, keyIndex } = readSsoConfig(value, row.id, field)
+      if (keyIndex === 0) counts[field].current++
+      else {
+        update[field] = encryptSsoConfig(plaintext, row.id, field)
+        counts[field].rotated++
+      }
+    }
+    if (Object.keys(update).length) await tx.update(ssoProvider).set(update).where(eq(ssoProvider.id, row.id))
+  }
+  return { ssoOidcConfigs: counts.oidcConfig, ssoSamlConfigs: counts.samlConfig }
+}
+
 export async function rotateSecrets(): Promise<RotationReport> {
   const report = await getDb().transaction(async (tx) => ({
     orgConnectors: await rotateColumn(tx, orgConnectors, { id: orgConnectors.id, orgId: orgConnectors.orgId, enc: orgConnectors.clientSecretEnc }, SECRET_COLUMNS.huntingClientSecret),
@@ -62,6 +83,7 @@ export async function rotateSecrets(): Promise<RotationReport> {
       { id: orgNotificationChannels.id, orgId: orgNotificationChannels.orgId, enc: orgNotificationChannels.urlEnc },
       SECRET_COLUMNS.notificationUrl,
     ),
+    ...await rotateSsoConfigs(tx),
   }))
   await writeAudit({ category: 'system', action: 'secrets_rotated', actorType: 'system', data: { ...report } })
   return report
