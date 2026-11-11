@@ -103,7 +103,8 @@ export async function createProposal(
   orgId: string,
   requester: { type: 'user'; userId: string } | { type: 'agent'; agentKey: string; onBehalfOfUserId: string },
   raw: ProposalInput,
-  opts: { rollbackOfId?: string } = {},
+  /** `notify: false` skips the approval_pending message. The agent tool sends one combined message per run instead (#214). */
+  opts: { rollbackOfId?: string; notify?: boolean } = {},
 ) {
   const input = proposalInput.parse(raw)
   if (input.huntId) {
@@ -136,11 +137,13 @@ export async function createProposal(
     })
     .returning()
   await event(orgId, row!.id, 'created', { type: requester.type, id: requesterId }, { actionType: input.actionType, blastRadius, rollbackOf: opts.rollbackOfId ?? null })
-  await notify(orgId, 'approval_pending', {
-    title: `${opts.rollbackOfId ? 'Rollback awaiting approval' : 'Response awaiting approval'}: ${row!.title}`,
-    lines: [`${input.actionType} · ${blastRadius.devices} devices, ${blastRadius.users} users, ${blastRadius.incidents} incidents`, `Blast radius: ${blastRadius.summary}`],
-    link: `/app/approvals/${row!.id}`,
-  })
+  if (opts.notify !== false) {
+    await notify(orgId, 'approval_pending', {
+      title: `${opts.rollbackOfId ? 'Rollback awaiting approval' : 'Response awaiting approval'}: ${row!.title}`,
+      lines: [`${input.actionType} · ${blastRadius.devices} devices, ${blastRadius.users} users, ${blastRadius.incidents} incidents`, `Blast radius: ${blastRadius.summary}`],
+      link: `/app/approvals/${row!.id}`,
+    })
+  }
   return row!
 }
 

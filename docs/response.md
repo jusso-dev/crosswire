@@ -139,9 +139,10 @@ Owners can download a JSON audit bundle per proposal.
 
 ## Responder agent (issue #56)
 
-Responder (and Lead, when orchestrating) has the `propose_response` tool. It requires explicit
+Only Responder has the `propose_response` tool. Lead routes containment to Responder (#198). It requires explicit
 targets and a blast radius; the tool rejects proposals without them. On success the agent links to
-`/app/approvals/<id>`. No agent has an execute, approve, dry-run, rollback or schedule tool (enforced by the tool
+`/app/approvals/<id>`. One turn can create at most 3 proposals, and channels get one combined notice
+when the turn ends (#214). No agent has an execute, approve, dry-run, rollback or schedule tool (enforced by the tool
 registry, a lint rule, and tests).
 
 Example transcript:

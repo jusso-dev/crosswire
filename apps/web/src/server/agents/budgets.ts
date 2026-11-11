@@ -198,17 +198,33 @@ async function observedToday(orgId: string, exec: { execute: ReturnType<typeof g
   }
 }
 
-/** Atomic shared slot. A database error refuses the call. */
-export async function acquireSlot(orgId: string) {
-  const max = env().BUDGET_MAX_INFLIGHT
-  try {
-    const res = (await getDb().execute(sql`
+type Exec = Pick<ReturnType<typeof getDb>, 'execute'>
+
+function firstRow<T>(res: unknown): T | undefined {
+  const r = res as T[] | { rows: T[] }
+  return Array.isArray(r) ? r[0] : r.rows[0]
+}
+
+async function incrementSlot(exec: Exec, orgId: string, max: number) {
+  return firstRow<{ inflight: number }>(
+    await exec.execute(sql`
       insert into agent_capacity as c (org_id, inflight) values (${orgId}, 1)
       on conflict (org_id) do update set inflight = c.inflight + 1
       where c.inflight < ${max}
       returning inflight
-    `)) as unknown as Array<{ inflight: number }> | { rows: Array<{ inflight: number }> }
-    const row = Array.isArray(res) ? res[0] : res.rows[0]
+    `),
+  )
+}
+
+async function decrementSlot(exec: Exec, orgId: string) {
+  await exec.execute(sql`update agent_capacity set inflight = greatest(inflight - 1, 0) where org_id = ${orgId}`)
+}
+
+/** Atomic shared slot. A database error refuses the call. */
+export async function acquireSlot(orgId: string) {
+  const max = env().BUDGET_MAX_INFLIGHT
+  try {
+    const row = await incrementSlot(getDb(), orgId, max)
     if (!row) throw new BudgetError(`Org is at the shared inflight limit (${max}).`)
     return { orgId, inflight: Number(row.inflight) }
   } catch (err) {
@@ -218,63 +234,70 @@ export async function acquireSlot(orgId: string) {
 }
 
 export async function releaseSlot(orgId: string) {
-  await getDb().execute(sql`update agent_capacity set inflight = greatest(inflight - 1, 0) where org_id = ${orgId}`)
-}
-
-/** Mark the run as the owner of a slot. Returns false when the row is missing or already claimed. */
-async function markSlotHeld(orgId: string, runId: string) {
-  const [row] = await getDb()
-    .update(agentRuns)
-    .set({ slotHeld: true })
-    .where(and(eq(agentRuns.orgId, orgId), eq(agentRuns.id, runId), eq(agentRuns.slotHeld, false), eq(agentRuns.slotReleased, false)))
-    .returning({ id: agentRuns.id })
-  return Boolean(row)
+  await decrementSlot(getDb(), orgId)
 }
 
 /**
  * Return this run's slot at most once, including when another process already returned it.
- * A run that never held a slot does not decrement.
+ * A run that never held a slot does not decrement. The row claim and the decrement are one
+ * transaction (#191), so a failure leaves both as they were and a retry can return the slot.
+ * Locks go capacity row first, then run row, the same order as acquireRunSlot.
  */
 export async function releaseRunSlot(orgId: string, runId: string) {
-  const [row] = await getDb()
-    .update(agentRuns)
-    .set({ slotReleased: true })
-    .where(and(eq(agentRuns.orgId, orgId), eq(agentRuns.id, runId), eq(agentRuns.slotHeld, true), eq(agentRuns.slotReleased, false)))
-    .returning({ id: agentRuns.id })
-  if (row) await releaseSlot(orgId)
-  return Boolean(row)
+  return getDb().transaction(async (tx) => {
+    await tx.execute(sql`select inflight from agent_capacity where org_id = ${orgId} for update`)
+    const [row] = await tx
+      .update(agentRuns)
+      .set({ slotReleased: true })
+      .where(and(eq(agentRuns.orgId, orgId), eq(agentRuns.id, runId), eq(agentRuns.slotHeld, true), eq(agentRuns.slotReleased, false)))
+      .returning({ id: agentRuns.id })
+    if (row) await decrementSlot(tx, orgId)
+    return Boolean(row)
+  })
 }
 
-/** Take a capacity slot. When a run id is known, the row records that it holds the slot. */
+/**
+ * Take a capacity slot. When a run id is known, the increment and the row's `slot_held` claim are
+ * one transaction (#191): if either fails, neither is kept.
+ */
 export async function acquireRunSlot(orgId: string, runId?: string | null) {
-  const slot = await acquireSlot(orgId)
-  if (!runId) return slot
+  if (!runId) return acquireSlot(orgId)
+  const max = env().BUDGET_MAX_INFLIGHT
   try {
-    const marked = await markSlotHeld(orgId, runId)
-    if (!marked) {
-      await releaseSlot(orgId)
-      throw new BudgetError('Run slot could not be claimed.')
-    }
+    return await getDb().transaction(async (tx) => {
+      const row = await incrementSlot(tx, orgId, max)
+      if (!row) throw new BudgetError(`Org is at the shared inflight limit (${max}).`)
+      const [marked] = await tx
+        .update(agentRuns)
+        .set({ slotHeld: true })
+        .where(and(eq(agentRuns.orgId, orgId), eq(agentRuns.id, runId), eq(agentRuns.slotHeld, false), eq(agentRuns.slotReleased, false)))
+        .returning({ id: agentRuns.id })
+      if (!marked) throw new BudgetError('Run slot could not be claimed.')
+      return { orgId, inflight: Number(row.inflight) }
+    })
   } catch (err) {
     if (err instanceof BudgetError) throw err
-    await releaseSlot(orgId)
     throw new BudgetError(`Run slot could not be claimed: ${err instanceof Error ? err.message : String(err)}`)
   }
-  return slot
 }
 
 /**
  * One acquisition, one decrement. A second call, including one already in flight, waits on the same release.
  * With a run id, the decrement is the row claim, so another process cannot decrement it again.
+ * A failed release is not cached: the next call tries again (#191).
  * Without a run id (legacy ledger, no row), only this closure decrements. A crash can leave that slot taken.
  */
 export function releaseOnce(orgId: string, runId?: string | null) {
-  let started = false
   let pending: Promise<void> | undefined
   return () => {
-    if (started) return pending ?? Promise.resolve()
-    started = true
-    pending = (runId ? releaseRunSlot(orgId, runId) : releaseSlot(orgId)).then(() => undefined)
+    if (pending) return pending
+    pending = (runId ? releaseRunSlot(orgId, runId) : releaseSlot(orgId)).then(
+      () => undefined,
+      (err: unknown) => {
+        pending = undefined
+        throw err
+      },
+    )
     return pending
   }
 }
@@ -380,6 +403,36 @@ export async function recordUnmeasuredUsage(usage: { orgId: string; runId: strin
 }
 
 /**
+ * A model call was stopped (Stop, timeout, output cap or a provider error) before the provider sent
+ * its counts (#186). Store an estimate instead of the unmeasured marker, so one stopped reply does not
+ * refuse the organisation's chat until 00:00 UTC. The row keeps `observed = false`: it is an estimate,
+ * not a provider count, and it still counts toward the daily caps. Counts that do not fit in a Postgres
+ * integer fall back to the unmeasured marker.
+ */
+export async function recordEstimatedUsage(usage: { orgId: string; runId: string; agentKey: string; provider: string; model: string; inputTokens: number; outputTokens: number }) {
+  if (!fitsPgInt(usage.inputTokens) || !fitsPgInt(usage.outputTokens)) return recordUnmeasuredUsage(usage)
+  const db = getDb()
+  return db.transaction(async (tx) => {
+    await tx.delete(agentUsage).where(and(eq(agentUsage.orgId, usage.orgId), eq(agentUsage.runId, usage.runId), eq(agentUsage.observed, false)))
+    const [row] = await tx
+      .insert(agentUsage)
+      .values({
+        orgId: usage.orgId,
+        runId: usage.runId,
+        agentKey: usage.agentKey,
+        provider: usage.provider,
+        model: usage.model,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        estimatedCostMicros: costMicros(usage.inputTokens, usage.outputTokens),
+        observed: false,
+      })
+      .returning()
+    return row!
+  })
+}
+
+/**
  * Read token counts the provider actually returned. TanStack puts them on RUN_FINISHED.usage.
  * Returns null when the chunk has no integer counts.
  */
@@ -410,6 +463,70 @@ export function usageFromChunk(chunk: unknown): { inputTokens: number; outputTok
   if (inputTokens === null || outputTokens === null) return null
   return { inputTokens, outputTokens }
 }
+
+/**
+ * Running total of provider counts for one turn (#185, #186). Each RUN_FINISHED carries one model
+ * call's usage, and a turn with tool calls makes several calls, so the counts are added up.
+ * A RUN_ERROR that carries counts is added too.
+ * `total()` is null when no count arrived, or when a RUN_FINISHED had none: that turn cannot be
+ * measured, so the daily cap stays fail-closed.
+ */
+export function createUsageTally() {
+  let inputTokens = 0
+  let outputTokens = 0
+  let seen = false
+  let missing = false
+  /** Characters the model wrote since the last RUN_FINISHED, for a call that is cut off. */
+  let openChars = 0
+  let errored = false
+  let errorCounted = false
+  return {
+    add(chunk: unknown) {
+      if (!chunk || typeof chunk !== 'object') return
+      const c = chunk as { type?: unknown; delta?: unknown }
+      if ((c.type === 'TEXT_MESSAGE_CONTENT' || c.type === 'TOOL_CALL_ARGS') && typeof c.delta === 'string') {
+        openChars += c.delta.length
+        return
+      }
+      if (c.type !== 'RUN_FINISHED' && c.type !== 'RUN_ERROR') return
+      const usage = usageFromChunk(chunk)
+      if (c.type === 'RUN_FINISHED') {
+        openChars = 0
+        if (!usage) missing = true
+      }
+      if (c.type === 'RUN_ERROR') errored = true
+      if (!usage) return
+      if (c.type === 'RUN_ERROR') errorCounted = true
+      inputTokens += usage.inputTokens
+      outputTokens += usage.outputTokens
+      seen = true
+    },
+    total(): { inputTokens: number; outputTokens: number } | null {
+      return seen && !missing ? { inputTokens, outputTokens } : null
+    },
+    /** The turn ended on a RUN_ERROR. */
+    get errored() {
+      return errored
+    },
+    /** The provider sent counts with its error, so the failed call is measured. */
+    get errorCounted() {
+      return errorCounted
+    },
+    /** A model call finished without a count, so this provider does not report usage. */
+    get missing() {
+      return missing
+    },
+    /**
+     * Counts that arrived, plus an estimate for the call that was cut off: its reserved input and
+     * ceil(chars / 4) output. This errs high: a stop just after a call finished still adds the reservation.
+     */
+    stoppedEstimate(reservedInputTokens: number) {
+      return { inputTokens: inputTokens + reservedInputTokens, outputTokens: outputTokens + Math.ceil(openChars / 4) }
+    },
+  }
+}
+
+export type UsageTally = ReturnType<typeof createUsageTally>
 
 function integer(value: unknown) {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null

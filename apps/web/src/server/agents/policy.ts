@@ -11,7 +11,8 @@ import { buildSquadConfig, type SquadSDKConfig } from './squad-sdk'
  * These rules are the reviewed map, checked by defineRouting, not a hidden router.
  */
 export const AGENT_TOOLS: Record<AgentKey, string[]> = {
-  lead: ['memory_search', 'search_intel', 'list_watch_hits', 'get_hunt', 'propose_response'],
+  // No propose_response (#198): Lead reads feed text, so containment goes through Responder.
+  lead: ['memory_search', 'search_intel', 'list_watch_hits', 'get_hunt'],
   hunter: ['memory_search', 'get_hunt', 'propose_kql', 'list_sentinel_incidents'],
   intel: ['memory_search', 'search_intel', 'compare_cve', 'list_watch_hits'],
   responder: ['memory_search', 'get_hunt', 'propose_response'],

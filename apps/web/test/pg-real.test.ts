@@ -8,8 +8,8 @@ import { setDb, getDb, type Db } from '../src/server/db/client'
 import * as schema from '../src/server/db/schema'
 import { approveAndRunKql, createHunt, proposeKql } from '../src/server/hunting/hunts'
 import { createSchedule, runDueSchedules } from '../src/server/hunting/schedules'
-import { acquireRunSlot, acquireSlot, checkBudget, claimDailyBudget, recordObservedUsage, recordUnmeasuredUsage, releaseOnce } from '../src/server/agents/budgets'
-import { reconcileStaleRuns, startRun } from '../src/server/agents/runs'
+import { acquireRunSlot, acquireSlot, checkBudget, claimDailyBudget, recordObservedUsage, recordUnmeasuredUsage, releaseOnce, releaseRunSlot } from '../src/server/agents/budgets'
+import { appendRunEvent, listRunEvents, reconcileStaleRuns, startRun } from '../src/server/agents/runs'
 import { resetEnvForTests } from '../src/server/env'
 import { makeOrg, team } from './helpers'
 import { responseRaceSuite } from './response-races'
@@ -182,5 +182,24 @@ d('real Postgres (postgres-js)', () => {
       else process.env.BUDGET_USD_PER_MILLION_TOKENS = savedRate
       resetEnvForTests()
     }
+  })
+
+  it('parallel run-event writes on separate connections get distinct sequence numbers (#191)', async () => {
+    const orgId = await makeOrg('Pg events')
+    const run = await startRun({ orgId, agentKey: 'lead' })
+    await Promise.all(Array.from({ length: 8 }, (_, i) => appendRunEvent(run!.id, orgId, 'probe', { i })))
+    const seqs = (await listRunEvents(orgId, run!.id)).map((e) => e.seq)
+    expect(seqs).toEqual(Array.from({ length: 9 }, (_, i) => i + 1))
+  })
+
+  it('parallel slot acquire and release on separate connections leave the count exact (#191)', async () => {
+    const orgId = await makeOrg('Pg slots')
+    const runs = await Promise.all(Array.from({ length: 6 }, () => startRun({ orgId, agentKey: 'lead' })))
+    await Promise.all(runs.map((r) => acquireRunSlot(orgId, r!.id)))
+    const [mid] = await getDb().select().from(schema.agentCapacity).where(eq(schema.agentCapacity.orgId, orgId))
+    expect(mid?.inflight).toBe(6)
+    await Promise.all(runs.flatMap((r) => [releaseRunSlot(orgId, r!.id), releaseRunSlot(orgId, r!.id)]))
+    const [after] = await getDb().select().from(schema.agentCapacity).where(eq(schema.agentCapacity.orgId, orgId))
+    expect(after?.inflight).toBe(0)
   })
 })
