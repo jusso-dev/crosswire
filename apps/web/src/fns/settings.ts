@@ -1,29 +1,73 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { authed } from './middleware'
-import { listOrgMembers, setMemberRole } from '../server/orgs'
-import { canApprove } from '../server/response/rbac'
-import { disableSchedulesApprovedBy } from '../server/hunting/schedules'
+import { changeMemberRole, listOrgMembers, MemberChangeError, removeMember } from '../server/orgs'
 import { listAudit } from '../server/audit'
-import { writeAudit } from '../server/audit'
 import { clearDigestEmail, confirmDigestEmail, DigestEmailError, getDigestEmailView, previewDigestEmail, requestDigestEmail } from '../server/notify/digest-contact'
 
 export const fetchMembers = createServerFn({ method: 'GET' })
   .middleware([authed])
   .handler(async ({ context }) => ({ members: await listOrgMembers(context.session.org.id), canManage: context.session.org.role === 'owner', me: context.session.user.id }))
 
-/** Owners grant/revoke the approver role (#55). Owners cannot demote themselves here. */
+/** Refusals from membership changes become `{ ok: false }` with a plain message. */
+async function memberResult(fn: () => Promise<unknown>) {
+  try {
+    await fn()
+    return { ok: true as const }
+  } catch (err) {
+    if (err instanceof MemberChangeError) return { ok: false as const, error: err.message }
+    throw err
+  }
+}
+
+/**
+ * Owners grant/revoke roles (#55). The owner check, the self check and the last-owner guard run in
+ * one transaction on fresh rows (#202), not on the session's role.
+ */
 export const setRoleFn = createServerFn({ method: 'POST' })
   .middleware([authed])
   .validator(z.object({ userId: z.string().min(1), role: z.enum(['owner', 'approver', 'analyst']) }))
+  .handler(async ({ context, data }) =>
+    memberResult(() => changeMemberRole({ orgId: context.session.org.id, userId: data.userId, role: data.role, actorId: context.session.user.id, audit: { action: 'role_changed' } })),
+  )
+
+/** Owners remove a member (#195). Audited; refuses the last owner and yourself. */
+export const removeMemberFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ userId: z.string().min(1) }))
+  .handler(async ({ context, data }) => memberResult(() => removeMember(context.session.org.id, data.userId, context.session.user.id)))
+
+// ---------- Entra group and app-role mappings (owner request, #195) ----------
+export const fetchEntraMappings = createServerFn({ method: 'GET' })
+  .middleware([authed])
+  .handler(async ({ context }) => {
+    const { listEntraMappings } = await import('../server/auth/entra-mappings')
+    const view = await listEntraMappings(context.session.org.id)
+    return { ...view, canManage: context.session.org.role === 'owner', mappings: view.mappings.map((m) => ({ ...m, createdAt: m.createdAt.toISOString() })) }
+  })
+
+export const addEntraMappingFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ kind: z.enum(['group', 'app_role']), value: z.string().min(1).max(200), role: z.enum(['owner', 'approver', 'analyst']) }))
   .handler(async ({ context, data }) => {
-    if (context.session.org.role !== 'owner') throw new Error('Only owners can change roles.')
-    if (data.userId === context.session.user.id) throw new Error('You cannot change your own role.')
-    await setMemberRole(context.session.org.id, data.userId, data.role)
-    // Scheduled hunts this person approved stop with their approver role (#189).
-    if (!canApprove(data.role)) await disableSchedulesApprovedBy(context.session.org.id, data.userId, 'the person who approved it is no longer an owner or approver; re-approve to resume')
-    await writeAudit({ category: 'auth', action: 'role_changed', actorType: 'user', actorId: context.session.user.id, orgId: context.session.org.id, targetType: 'user', targetId: data.userId, data: { role: data.role } })
-    return { ok: true }
+    const { addEntraMapping } = await import('../server/auth/entra-mappings')
+    return memberResult(() => addEntraMapping(context.session.org.id, context.session.user.id, data))
+  })
+
+export const removeEntraMappingFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ id: z.string().min(1).max(100) }))
+  .handler(async ({ context, data }) => {
+    const { removeEntraMapping } = await import('../server/auth/entra-mappings')
+    return memberResult(() => removeEntraMapping(context.session.org.id, context.session.user.id, data.id))
+  })
+
+export const setEntraRequireMappedGroupFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ on: z.boolean() }))
+  .handler(async ({ context, data }) => {
+    const { setEntraRequireMappedGroup } = await import('../server/auth/entra-mappings')
+    return memberResult(() => setEntraRequireMappedGroup(context.session.org.id, context.session.user.id, data.on))
   })
 
 export const fetchAuthAudit = createServerFn({ method: 'GET' })

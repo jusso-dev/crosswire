@@ -184,11 +184,20 @@ type RateRow = { count: number | string; retry_after_sec: number | string | null
  * prepending entries; they could only add entries to the left, which are ignored.
  */
 export function clientKey(request: Request, trusted: ProxyMatcher = trustedProxies()) {
-  const hops = (request.headers.get('x-forwarded-for') ?? '').split(',').map((h) => h.trim()).filter(Boolean)
+  return clientIp(request.headers, trusted) ?? 'local'
+}
+
+/**
+ * The client IP by the same rule, or null without X-Forwarded-For. X-Real-IP is never read: a
+ * client can send it, and Container Apps ingress does not overwrite it (#196). Also used for the
+ * sign-in limiter and auth audit rows (server/auth/auth.ts).
+ */
+export function clientIp(headers: Headers, trusted: ProxyMatcher = trustedProxies()): string | null {
+  const hops = (headers.get('x-forwarded-for') ?? '').split(',').map((h) => h.trim()).filter(Boolean)
   for (let i = hops.length - 1; i >= 0; i--) {
     if (!trusted.has(hops[i]!)) return hops[i]!
   }
-  return request.headers.get('x-real-ip') || hops[0] || 'local'
+  return hops[0] ?? null
 }
 
 let proxies: { source: string | undefined; matcher: ProxyMatcher } | undefined

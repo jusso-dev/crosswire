@@ -1,4 +1,5 @@
-import { bigint, boolean, index, integer, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
+import { sql } from 'drizzle-orm'
+import { bigint, boolean, index, integer, pgTable, text, timestamp, uniqueIndex } from 'drizzle-orm/pg-core'
 
 // Better Auth core tables (better-auth 1.7). Property names match Better Auth field names.
 export const user = pgTable('user', {
@@ -64,16 +65,23 @@ export const verification = pgTable(
 )
 
 // Better Auth SSO plugin table (SAML, issue #65). Only used when SAML_ENABLED=true.
-export const ssoProvider = pgTable('sso_provider', {
-  id: text('id').primaryKey(),
-  issuer: text('issuer').notNull(),
-  oidcConfig: text('oidc_config'),
-  samlConfig: text('saml_config'),
-  userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
-  providerId: text('provider_id').notNull().unique(),
-  organizationId: text('organization_id'),
-  domain: text('domain').notNull(),
-})
+export const ssoProvider = pgTable(
+  'sso_provider',
+  {
+    id: text('id').primaryKey(),
+    issuer: text('issuer').notNull(),
+    oidcConfig: text('oidc_config'),
+    samlConfig: text('saml_config'),
+    userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }),
+    providerId: text('provider_id').notNull().unique(),
+    organizationId: text('organization_id'),
+    domain: text('domain').notNull(),
+    /** Domain verification is on (#203): a provider signs nobody in until its domain is proven by a DNS TXT record. */
+    domainVerified: boolean('domain_verified').notNull().default(false),
+  },
+  // One provider per domain (#203), compared case-insensitively.
+  (t) => [uniqueIndex('sso_provider_domain_uq').on(sql`lower(${t.domain})`)],
+)
 
 // Better Auth rate limiter storage (rateLimit.storage = 'database'), shared by every replica.
 export const rateLimit = pgTable('rate_limit', {

@@ -10,6 +10,9 @@ const MESSAGES: Record<string, string> = {
   consent_required: 'Your administrator needs to grant consent for the Crosswire app in Entra ID.',
   invalid_code: 'The sign-in link expired. Try again.',
   email_not_found: 'Your Microsoft account did not provide an email address.',
+  NOT_IN_MAPPED_GROUP: 'Your Microsoft account is not in a group that can use Crosswire. Ask your Crosswire owner to add you to the right Entra group.',
+  MEMBER_REMOVED: 'An owner removed you from this Crosswire organisation. Ask an owner if you need access again.',
+  ENTRA_TOKEN_STALE: 'Microsoft sign-in did not finish. Try again.',
 }
 
 /** Readable SSO failure page (#19); never shows stack traces or raw provider payloads. */
