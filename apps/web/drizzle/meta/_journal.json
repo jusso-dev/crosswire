@@ -57,6 +57,13 @@
       "when": 1794500000000,
       "tag": "0007_hunt_playbooks",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794368254789,
+      "tag": "0008_hunt_schedule_binding",
+      "breakpoints": true
     }
   ]
 }
