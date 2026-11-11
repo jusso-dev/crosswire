@@ -43,6 +43,14 @@ describe('env config (#13)', () => {
       expect(startupWarnings(parseEnv({ NODE_ENV: 'development', DATABASE_URL: 'postgres://u:p@db/cw' }))).toEqual([])
     })
 
+    it('warns when Entra sign-in uses a multi-tenant authority in production (#195)', () => {
+      const db = 'postgres://u:p@db/cw?sslmode=verify-full'
+      expect(startupWarnings(parseEnv({ ...prod, DATABASE_URL: db, ENTRA_CLIENT_ID: 'c' }))).toEqual([expect.stringMatching(/ENTRA_TENANT_ID is "organizations"/)])
+      expect(startupWarnings(parseEnv({ ...prod, DATABASE_URL: db, ENTRA_CLIENT_ID: 'c', ENTRA_TENANT_ID: 'common' }))).toEqual([expect.stringMatching(/"common"/)])
+      expect(startupWarnings(parseEnv({ ...prod, DATABASE_URL: db, ENTRA_CLIENT_ID: 'c', ENTRA_TENANT_ID: '11111111-1111-1111-1111-111111111111' }))).toEqual([])
+      expect(startupWarnings(parseEnv({ ...prod, DATABASE_URL: db }))).toEqual([])
+    })
+
     it('only warns: the server still starts with sslmode=require', () => {
       expect(() => parseEnv({ ...prod, DATABASE_URL: 'postgres://u:p@db/cw?sslmode=require' })).not.toThrow()
     })

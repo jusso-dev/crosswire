@@ -224,6 +224,15 @@ export function startupWarnings(e: Env): string[] {
         'Add ?sslmode=verify-full (see docs/configuration.md). Set DATABASE_TLS_INSECURE_OK=true only for a database without TLS on a private network.',
     )
   }
+  // #195: a multi-tenant authority lets any work account reach the tenant check. Only mapped tenants
+  // get in, but a single-tenant install should name its tenant.
+  const tenant = e.ENTRA_TENANT_ID.trim().toLowerCase()
+  if (e.NODE_ENV === 'production' && e.ENTRA_CLIENT_ID && (tenant === 'organizations' || tenant === 'common')) {
+    warnings.push(
+      `ENTRA_TENANT_ID is "${tenant}", so Microsoft accepts accounts from any tenant and only Crosswire's tenant check keeps others out. ` +
+        'Set it to your directory (tenant) id unless one Crosswire serves several tenants (see docs/auth.md).',
+    )
+  }
   return warnings
 }
 

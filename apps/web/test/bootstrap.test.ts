@@ -19,6 +19,9 @@ describe('bootstrap (#78)', () => {
     const audit = await db.select().from(auditEvents).where(eq(auditEvents.action, 'bootstrap'))
     expect(audit).toHaveLength(1)
     expect(JSON.stringify(audit)).not.toContain('Admin@Contoso')
+    // The tenant's domain is recorded, so local sign-ups for it are refused (#203).
+    const [created] = await db.select().from(orgs).where(eq(orgs.id, r.orgId))
+    expect(created?.emailDomain).toBe('contoso.example')
 
     const admin = await makeUser('admin@contoso.example')
     const orgId = await placeEntraUser(admin, '44444444-4444-4444-4444-444444444444')

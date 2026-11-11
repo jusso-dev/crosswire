@@ -30,7 +30,8 @@ export async function bootstrap(input: { orgName: string; adminEmail: string; en
   }
   const email = input.adminEmail.trim().toLowerCase()
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new BootstrapError('ADMIN_EMAIL is not a valid email address.')
-  const org = await createOrg(input.orgName.trim() || 'Crosswire', { entraTenantId: input.entraTenantId || undefined })
+  // With a tenant, the admin's domain is the tenant's: local and SAML sign-ups for it are refused (#203).
+  const org = await createOrg(input.orgName.trim() || 'Crosswire', { entraTenantId: input.entraTenantId || undefined, emailDomain: input.entraTenantId ? email.split('@')[1] : undefined })
   await db.update(orgs).set({ bootstrapOwnerEmail: email }).where(eq(orgs.id, org.id))
   const [existing] = await db.select({ id: user.id }).from(user).where(eq(user.email, email)).limit(1)
   if (existing) await addMembership(org.id, existing.id, 'owner')
