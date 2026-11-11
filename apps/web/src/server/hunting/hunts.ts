@@ -1,10 +1,10 @@
 import { and, asc, count, desc, eq, lt } from 'drizzle-orm'
 import { getDb } from '../db/client'
-import { huntCases, huntEvidence, huntSchedules, kqlProposals, watchHits } from '../db/schema'
+import { chatThreads, huntCases, huntEvidence, huntSchedules, kqlProposals, watchHits } from '../db/schema'
 import { env } from '../env'
 import { recordDecision } from '../agents/decisions'
 import { assertSafeKql } from './safety'
-import { huntingClient } from './client'
+import { huntingClient, type QueryResult } from './client'
 import { logger } from '../lib/logger'
 import type { OrgRole } from '../orgs'
 import { canApprove } from '../response/rbac'
@@ -20,6 +20,18 @@ export class ForbiddenStepError extends Error {}
 export async function createHunt(orgId: string, userId: string | null, input: { title: string; hypothesis?: string; threadId?: string | null; watchHitId?: string | null }) {
   const title = input.title.trim()
   if (!title) throw new StateError('Title is required.')
+  // Both ids come from the browser (#208). A watch hit must belong to this organisation, and a chat
+  // thread to this organisation and this person, before a hunt can point at it.
+  if (input.watchHitId) {
+    const [hit] = await getDb().select({ id: watchHits.id }).from(watchHits).where(and(eq(watchHits.orgId, orgId), eq(watchHits.id, input.watchHitId))).limit(1)
+    if (!hit) throw new NotFoundError('That watch hit was not found in this organisation. Start the hunt from the hit again.')
+  }
+  if (input.threadId) {
+    const [thread] = userId
+      ? await getDb().select({ id: chatThreads.id }).from(chatThreads).where(and(eq(chatThreads.orgId, orgId), eq(chatThreads.userId, userId), eq(chatThreads.id, input.threadId))).limit(1)
+      : []
+    if (!thread) throw new NotFoundError('That chat was not found among your chats in this organisation.')
+  }
   const [row] = await getDb()
     .insert(huntCases)
     .values({ orgId, title: title.slice(0, 200), hypothesis: input.hypothesis?.trim() ?? '', createdBy: userId, threadId: input.threadId ?? null, watchHitId: input.watchHitId ?? null })
@@ -164,14 +176,12 @@ export async function approveAndRunKql(orgId: string, userId: string, proposalId
   if (!claimed) throw new StateError('Proposal was already decided.')
   await addEvidence(orgId, existing.huntId, 'kql_approved', { proposalId, kql, edited: kql !== existing.originalKql }, { type: 'user', id: userId })
 
+  // Only the search itself is in the try (#206). Once it has run, a failed audit write must never
+  // record the search as failed: the query already ran in the tenant.
+  let result: QueryResult
   try {
     const client = huntingClient()
-    const result = existing.target === 'defender' ? await client.runAdvancedHunting({ orgId, kql }) : await client.runSentinelKql({ orgId, kql })
-    const summary = { mode: result.mode, rowCount: result.rowCount, truncated: result.truncated, columns: result.columns, sample: result.rows.slice(0, 20), durationMs: result.durationMs }
-    await db.update(kqlProposals).set({ status: 'run', ranAt: new Date(), resultSummary: summary }).where(eq(kqlProposals.id, proposalId))
-    await addEvidence(orgId, existing.huntId, 'kql_result', { proposalId, kql, approvedBy: userId, ...summary }, { type: 'system', id: null })
-    await recordDecision({ orgId, actorType: 'user', actorKey: userId, action: 'run_kql', input: { proposalId, kql }, output: { rowCount: result.rowCount, mode: result.mode }, huntId: existing.huntId })
-    return { status: 'run' as const, summary }
+    result = existing.target === 'defender' ? await client.runAdvancedHunting({ orgId, kql }) : await client.runSentinelKql({ orgId, kql })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     logger.error('hunt run_kql failed', { orgId, proposalId, target: existing.target, error: message })
@@ -179,5 +189,24 @@ export async function approveAndRunKql(orgId: string, userId: string, proposalId
     await addEvidence(orgId, existing.huntId, 'kql_failed', { proposalId, error: message }, { type: 'system', id: null })
     await recordDecision({ orgId, actorType: 'user', actorKey: userId, action: 'run_kql_failed', input: { proposalId }, output: message, huntId: existing.huntId })
     return { status: 'failed' as const, error: message }
+  }
+  const summary = { mode: result.mode, rowCount: result.rowCount, truncated: result.truncated, columns: result.columns, sample: result.rows.slice(0, 20), durationMs: result.durationMs }
+  await db.update(kqlProposals).set({ status: 'run', ranAt: new Date(), resultSummary: summary }).where(eq(kqlProposals.id, proposalId))
+  await recordRunAudit('hunt run_kql audit write failed', { orgId, proposalId }, async () => {
+    await addEvidence(orgId, existing.huntId, 'kql_result', { proposalId, kql, approvedBy: userId, ...summary }, { type: 'system', id: null })
+    await recordDecision({ orgId, actorType: 'user', actorKey: userId, action: 'run_kql', input: { proposalId, kql }, output: { rowCount: result.rowCount, mode: result.mode }, huntId: existing.huntId })
+  })
+  return { status: 'run' as const, summary }
+}
+
+/**
+ * Write the evidence and decision rows for a search that already ran (#206). A failure here is
+ * logged on its own and never changes the search's status: the result is already stored on the row.
+ */
+export async function recordRunAudit(what: string, ids: Record<string, string>, write: () => Promise<void>) {
+  try {
+    await write()
+  } catch (err) {
+    logger.error(what, { ...ids, error: err instanceof Error ? err.message : String(err) })
   }
 }

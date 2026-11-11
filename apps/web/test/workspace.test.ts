@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { getDb } from '../src/server/db/client'
-import { watchEntries, watchHits } from '../src/server/db/schema'
+import { huntCases, watchEntries, watchHits } from '../src/server/db/schema'
 import { createHunt, getHunt } from '../src/server/hunting/hunts'
 import { applyFilters, cellText, decodeFilters, decodeSort, encodeFilters, encodeSort, kqlIdentifier, kqlLiteral, sortRows, summariseEntities } from '../src/components/results'
 import { controlPanel, lastCalendarDays } from '../src/server/ops/overview'
@@ -34,9 +34,11 @@ describe('hunt workspace data', () => {
     const own = await createHunt(orgA, ua, { title: 'From own hit', watchHitId: hitA })
     expect((await getHunt(orgA, own.id))!.origin?.title).toBe('FortiOS SSL-VPN heap overflow')
 
-    // A hunt that references another org's hit id never resolves it.
-    const crossed = await createHunt(orgA, ua, { title: 'Crossed reference', watchHitId: hitB })
-    expect((await getHunt(orgA, crossed.id))!.origin).toBeNull()
+    // createHunt refuses another org's hit id (#208). A row that already points at one (written
+    // before that check) still never resolves it.
+    await expect(createHunt(orgA, ua, { title: 'Crossed reference', watchHitId: hitB })).rejects.toThrow(/not found in this organisation/)
+    const [crossed] = await getDb().insert(huntCases).values({ orgId: orgA, title: 'Crossed reference', createdBy: ua, watchHitId: hitB }).returning()
+    expect((await getHunt(orgA, crossed!.id))!.origin).toBeNull()
     // And org B cannot read org A's hunt at all.
     expect(await getHunt(orgB, own.id)).toBeNull()
   })

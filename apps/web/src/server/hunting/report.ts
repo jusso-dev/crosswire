@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray } from 'drizzle-orm'
 import { getDb } from '../db/client'
-import { responseProposals, user, watchHits } from '../db/schema'
+import { orgMemberships, responseProposals, user, watchHits } from '../db/schema'
 import { redactString, redactValue, truncate } from '../lib/redact'
 import { writeAudit } from '../audit'
 import { getHunt } from './hunts'
@@ -102,7 +102,15 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
   const schedules = await listSchedules(orgId, huntId)
 
   const userIds = [...new Set([...proposals.map((p) => p.decidedBy), ...schedules.map((s) => s.approvedBy), ...responses.map((r) => r.decidedBy)].filter((x): x is string => Boolean(x)))]
-  const people = userIds.length ? await db.select({ id: user.id, name: user.name, email: user.email }).from(user).where(inArray(user.id, userIds)) : []
+  // Current members of this organisation only, as on the hunt page (#160, #209). Anyone who has left
+  // is "a former member", so an exported report never carries their name or email.
+  const people = userIds.length
+    ? await db
+        .select({ id: user.id, name: user.name, email: user.email })
+        .from(orgMemberships)
+        .innerJoin(user, eq(user.id, orgMemberships.userId))
+        .where(and(eq(orgMemberships.orgId, orgId), inArray(orgMemberships.userId, userIds)))
+    : []
   const who = (id: string | null | undefined) => {
     if (!id) return ''
     const p = people.find((x) => x.id === id)
