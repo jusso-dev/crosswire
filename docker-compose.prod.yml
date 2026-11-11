@@ -4,6 +4,19 @@
 # Put TLS in front (Caddy/Traefik/nginx); see docs/runbooks/local-docker.md.
 name: crosswire-prod
 
+# The app gets the password as PGPASSWORD, not inside the URL, so any characters work (#152).
+# postgres.js uses PGPASSWORD when DATABASE_URL has no password. To use an external database, set
+# DATABASE_URL in .env.prod (with sslmode=verify-full) and leave the bundled postgres unused.
+x-db-env: &db-env
+  NODE_ENV: production
+  DATABASE_URL: ${DATABASE_URL:-postgres://crosswire@postgres:5432/crosswire}
+  PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD (never use a default in production)}
+
+# Rotate container logs so they cannot fill the disk.
+x-logging: &logging
+  driver: json-file
+  options: { max-size: 10m, max-file: '5' }
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -12,6 +25,7 @@ services:
       POSTGRES_USER: crosswire
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD (never use a default in production)}
       POSTGRES_DB: crosswire
+    logging: *logging
     volumes:
       - pgdata:/var/lib/postgresql/data
     # Not published: only reachable on the internal compose network.
@@ -31,10 +45,12 @@ services:
     build: .
     restart: "no"
     env_file: .env.prod
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: postgres://crosswire:${POSTGRES_PASSWORD}@postgres:5432/crosswire
+    environment: *db-env
+    logging: *logging
     command: ["node_modules/.bin/tsx", "src/server/cli/migrate.ts"]
+    # One-shot: it serves nothing, so the image's web health check does not apply (#151).
+    healthcheck:
+      disable: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -43,9 +59,8 @@ services:
     image: ${CROSSWIRE_IMAGE:-crosswire:web}
     restart: unless-stopped
     env_file: .env.prod
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: postgres://crosswire:${POSTGRES_PASSWORD}@postgres:5432/crosswire
+    environment: *db-env
+    logging: *logging
     ports:
       # Bind to loopback and terminate TLS in a reverse proxy on the same host.
       - "127.0.0.1:3000:3000"
@@ -66,10 +81,19 @@ services:
     image: ${CROSSWIRE_IMAGE:-crosswire:web}
     restart: unless-stopped
     env_file: .env.prod
-    environment:
-      NODE_ENV: production
-      DATABASE_URL: postgres://crosswire:${POSTGRES_PASSWORD}@postgres:5432/crosswire
+    environment: *db-env
+    logging: *logging
     command: ["node_modules/.bin/tsx", "src/server/cli/worker.ts"]
+    # The worker's own health server (#142, #151): 200 while the last loop finished under 3 minutes ago.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||3001)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits: { memory: 512m }
     depends_on:
       web:
         condition: service_healthy

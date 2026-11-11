@@ -1,7 +1,7 @@
 # Reusable: deploy one image to one GitHub Environment's Azure Container Apps.
-# Each environment (staging, production) has its own variables, so staging can never touch
-# production resources: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
-# AZURE_RESOURCE_GROUP, CROSSWIRE_NAME_PREFIX, CROSSWIRE_BASE_URL.
+# Each environment has its own variables, so one environment can never touch another's
+# resources: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP,
+# CROSSWIRE_NAME_PREFIX, CROSSWIRE_BASE_URL.
 name: Deploy environment
 
 on:
@@ -13,6 +13,10 @@ on:
       image:
         type: string
         required: true
+      source_sha:
+        description: Commit the image was built from (for the smoke script and the migration journal).
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -20,13 +24,17 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # Required reviewers on the environment provide the manual approval gate.
+    # The gate (#136): code reaches main only through a pull request with CI green (main ruleset),
+    # and a deploy is a manual dispatch of deploy.yml by a maintainer. The environment's deployment
+    # branch policy allows main only. It has no required reviewers: with one maintainer, review
+    # happens on the pull request. With a second maintainer, add required reviewers to production
+    # with self-review prevented.
     environment: ${{ inputs.environment }}
     # One deploy per environment at a time, regardless of the dispatching branch.
     concurrency:
       group: deploy-env-${{ inputs.environment }}
       cancel-in-progress: false
-    timeout-minutes: 30
+    timeout-minutes: 40
     permissions:
       contents: read
       id-token: write
@@ -37,18 +45,24 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Same commit the image was built from (for the smoke script and migration journal).
-          ref: ${{ github.sha }}
+          # The commit the image was built from (#141), not the dispatching commit: the smoke test
+          # expects that commit's migration tag.
+          ref: ${{ inputs.source_sha }}
           persist-credentials: false
       - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Record current revision (for rollback)
+      - name: Record current images (for rollback)
+        id: prev
         run: |
-          prev=$(az containerapp show -g "$RG" -n "${PREFIX}-web" --query properties.latestRevisionName -o tsv)
-          echo "Previous web revision: $prev (rollback: docs/runbooks/rollback.md)" >> "$GITHUB_STEP_SUMMARY"
+          web=$(az containerapp show -g "$RG" -n "${PREFIX}-web" --query 'properties.template.containers[0].image' -o tsv)
+          worker=$(az containerapp show -g "$RG" -n "${PREFIX}-worker" --query 'properties.template.containers[0].image' -o tsv)
+          rev=$(az containerapp show -g "$RG" -n "${PREFIX}-web" --query properties.latestRevisionName -o tsv)
+          echo "web_image=$web" >> "$GITHUB_OUTPUT"
+          echo "worker_image=$worker" >> "$GITHUB_OUTPUT"
+          echo "Previous web revision: $rev, image $web; worker image $worker (rollback: docs/runbooks/rollback.md)" >> "$GITHUB_STEP_SUMMARY"
       - name: Run migrations (one-shot job, #69)
         run: |
           az containerapp job update -g "$RG" -n "${PREFIX}-web-migrate" --image "$IMAGE" >/dev/null
@@ -61,19 +75,26 @@ jobs:
           done
           echo "::error::Migration timed out"; exit 1
       - name: Roll out web and worker
+        id: rollout
         run: |
           az containerapp update -g "$RG" -n "${PREFIX}-web" --image "$IMAGE" >/dev/null
           az containerapp update -g "$RG" -n "${PREFIX}-worker" --image "$IMAGE" >/dev/null
-      - name: Wait for the new revision to be ready
+      # Both apps (#142): the worker's revision is ready only when its /healthz probe passes.
+      - name: Wait for the new web and worker revisions to be ready
         run: |
-          for _ in $(seq 1 60); do
-            latest=$(az containerapp show -g "$RG" -n "${PREFIX}-web" --query properties.latestRevisionName -o tsv)
-            ready=$(az containerapp show -g "$RG" -n "${PREFIX}-web" --query properties.latestReadyRevisionName -o tsv)
-            img=$(az containerapp revision show -g "$RG" -n "${PREFIX}-web" --revision "$latest" --query properties.template.containers[0].image -o tsv)
-            if [ "$latest" = "$ready" ] && [ "$img" = "$IMAGE" ]; then echo "revision $latest ready"; exit 0; fi
-            sleep 10
-          done
-          echo "::error::New revision did not become ready; see docs/runbooks/rollback.md"; exit 1
+          wait_ready() { # app name
+            local app="$1" latest ready img
+            for _ in $(seq 1 60); do
+              latest=$(az containerapp show -g "$RG" -n "$app" --query properties.latestRevisionName -o tsv)
+              ready=$(az containerapp show -g "$RG" -n "$app" --query properties.latestReadyRevisionName -o tsv)
+              img=$(az containerapp revision show -g "$RG" -n "$app" --revision "$latest" --query 'properties.template.containers[0].image' -o tsv)
+              if [ "$latest" = "$ready" ] && [ "$img" = "$IMAGE" ]; then echo "$app: revision $latest ready"; return 0; fi
+              sleep 10
+            done
+            echo "::error::$app: new revision did not become ready"; return 1
+          }
+          wait_ready "${PREFIX}-web"
+          wait_ready "${PREFIX}-worker"
       - name: Smoke test (#75)
         env:
           BASE_URL: ${{ vars.CROSSWIRE_BASE_URL }}
@@ -82,3 +103,22 @@ jobs:
           expected=$(jq -r '.entries[-1].tag' apps/web/drizzle/meta/_journal.json)
           bash scripts/smoke.sh "$base" "$expected"
           echo "Deployed $IMAGE to ${{ inputs.environment }} ($base); smoke passed." >> "$GITHUB_STEP_SUMMARY"
+      # Automatic rollback (#143): only when the rollout ran, so a failed migration (apps untouched)
+      # does not create new revisions. Migrations are not reversed: they are additive by policy
+      # (docs/runbooks/migrations.md), so the previous image runs on the newer schema.
+      - name: Roll back to the previous images
+        if: failure() && steps.rollout.outcome != 'skipped' && steps.prev.outputs.web_image != ''
+        env:
+          PREV_WEB: ${{ steps.prev.outputs.web_image }}
+          PREV_WORKER: ${{ steps.prev.outputs.worker_image }}
+        run: |
+          # Try both apps even if one update fails, then fail the step if either did.
+          rc=0
+          az containerapp update -g "$RG" -n "${PREFIX}-web" --image "$PREV_WEB" >/dev/null || rc=1
+          az containerapp update -g "$RG" -n "${PREFIX}-worker" --image "$PREV_WORKER" >/dev/null || rc=1
+          if [ "$rc" != 0 ]; then
+            echo "::error::Deploy failed after rollout, and rolling back at least one app also failed. Fix it by hand: docs/runbooks/rollback.md"
+            exit 1
+          fi
+          echo "::error::Deploy failed after rollout. Rolled web back to $PREV_WEB and worker to $PREV_WORKER. Check the revisions: docs/runbooks/rollback.md"
+          echo "Rolled back: web $PREV_WEB, worker $PREV_WORKER" >> "$GITHUB_STEP_SUMMARY"

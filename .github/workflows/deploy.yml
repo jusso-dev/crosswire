@@ -1,10 +1,14 @@
 # Deploy to Azure Container Apps (#61, Phase 8). Manual dispatch only; never on pull requests.
 #   1. CI on the dispatched commit.
 #   2. Image: build, SBOM, CRITICAL CVE gate (#85), push ghcr.io/<owner>/crosswire:sha-<sha>.
-#      Or pass an existing release tag (vX.Y.Z) to promote that exact image (#76).
-#   3. Optional staging (#86): deploy + migrate + smoke on the `staging` environment.
-#   4. Production: migration job (#69) -> update web/worker ->
-#      smoke test (#75). Rollback: docs/runbooks/rollback.md (#71).
+#      Or pass an existing image tag to promote or roll back to that exact image (#76, #140):
+#      a release tag vX.Y.Z, or sha-<40 hex> for any image an earlier deploy pushed.
+#   3. Production: migration job (#69) -> update web/worker -> wait for both -> smoke test (#75)
+#      -> automatic rollback to the previous images if the smoke test fails (#143).
+#      Rollback by hand: docs/runbooks/rollback.md (#71).
+# The gate (#136): code reaches main only through a pull request with CI green (main ruleset), and a
+# deploy is this manual dispatch by a maintainer. The production environment accepts main only.
+# There is no staging target: no staging environment exists. docs/runbooks/staging.md says how to add one.
 # Azure auth: OIDC federation, no long-lived secrets. Setup: docs/runbooks/azure-deploy.md.
 name: Deploy
 
@@ -12,12 +16,8 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: Promote an existing release tag (e.g. v1.2.0). Empty = build this commit.
+        description: 'Promote or roll back to an existing image: vX.Y.Z or sha-<40 hex>. Empty = build this commit.'
         default: ''
-      staging:
-        description: Deploy to the staging environment first
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -45,47 +45,57 @@ jobs:
     needs: image
     if: always() && (needs.image.result == 'success' || inputs.image_tag != '')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: read
       attestations: read
     outputs:
       image: ${{ steps.r.outputs.image }}
+      source_sha: ${{ steps.r.outputs.source_sha }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - id: r
         env:
           BUILT: ${{ needs.image.outputs.image }}
           TAG: ${{ inputs.image_tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -n "$TAG" ]; then
-            echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::image_tag must be vX.Y.Z"; exit 1; }
-            repo="ghcr.io/${GITHUB_REPOSITORY,,}"
-            echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null
-            # Resolve the tag once, verify that digest, and deploy that digest: a tag that moves
-            # after this point cannot change what runs.
-            digest="$(docker buildx imagetools inspect "$repo:$TAG" --format '{{json .Manifest}}' | jq -r .digest)"
-            echo "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::could not resolve $TAG to a digest"; exit 1; }
-            gh attestation verify "oci://$repo@$digest" --repo "$GITHUB_REPOSITORY" --source-ref "refs/tags/$TAG"
-            echo "image=$repo@$digest" >> "$GITHUB_OUTPUT"
-          else
+          if [ -z "$TAG" ]; then
             echo "image=$BUILT" >> "$GITHUB_OUTPUT"
+            echo "source_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-
-  staging:
-    needs: resolve
-    if: always() && needs.resolve.result == 'success' && inputs.staging
-    uses: ./.github/workflows/deploy-env.yml
-    permissions:
-      contents: read
-      id-token: write
-    with:
-      environment: staging
-      image: ${{ needs.resolve.outputs.image }}
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          # Which commit the image was built from (#141): it decides the smoke test's migration tag.
+          if echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            sha="$(git rev-list -n 1 "refs/tags/$TAG")" || { echo "::error::tag $TAG does not exist in the repository"; exit 1; }
+          elif echo "$TAG" | grep -Eq '^sha-[0-9a-f]{40}$'; then
+            sha="${TAG#sha-}"
+          else
+            echo "::error::image_tag must be vX.Y.Z or sha-<40 hex>"; exit 1
+          fi
+          # Only reviewed code: the commit must be on main. An image pushed by a run on another
+          # branch is refused here, even though it exists in the registry.
+          git cat-file -e "$sha^{commit}" 2>/dev/null || { echo "::error::commit $sha is not in this repository"; exit 1; }
+          git merge-base --is-ancestor "$sha" origin/main || { echo "::error::commit $sha is not on main"; exit 1; }
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin >/dev/null
+          # Resolve the tag once, verify that digest, and deploy that digest: a tag that moves
+          # after this point cannot change what runs.
+          digest="$(docker buildx imagetools inspect "$repo:$TAG" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::could not resolve $TAG to a digest"; exit 1; }
+          # The provenance must name this repository and the same commit.
+          gh attestation verify "oci://$repo@$digest" --repo "$GITHUB_REPOSITORY" --source-digest "$sha"
+          echo "image=$repo@$digest" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Promoting $TAG ($repo@$digest, commit $sha)" >> "$GITHUB_STEP_SUMMARY"
 
   production:
-    needs: [resolve, staging]
-    if: always() && needs.resolve.result == 'success' && (needs.staging.result == 'success' || needs.staging.result == 'skipped')
+    needs: resolve
+    if: always() && needs.resolve.result == 'success'
     uses: ./.github/workflows/deploy-env.yml
     permissions:
       contents: read
@@ -93,3 +103,4 @@ jobs:
     with:
       environment: production
       image: ${{ needs.resolve.outputs.image }}
+      source_sha: ${{ needs.resolve.outputs.source_sha }}

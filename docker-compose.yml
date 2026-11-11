@@ -32,6 +32,9 @@ services:
       NODE_ENV: ${NODE_ENV:-development}
       DATABASE_URL: postgres://crosswire:${POSTGRES_PASSWORD:-crosswire-local-dev}@postgres:5432/crosswire
     command: ["node_modules/.bin/tsx", "src/server/cli/migrate.ts"]
+    # One-shot: it serves nothing, so the image's web health check does not apply (#151).
+    healthcheck:
+      disable: true
     depends_on:
       postgres:
         condition: service_healthy
@@ -55,6 +58,13 @@ services:
       DATABASE_URL: postgres://crosswire:${POSTGRES_PASSWORD:-crosswire-local-dev}@postgres:5432/crosswire
       NODE_ENV: ${NODE_ENV:-development}
     command: ["node_modules/.bin/tsx", "src/server/cli/worker.ts"]
+    # The worker's own health server (#142, #151): 200 while the last loop finished under 3 minutes ago.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||3001)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     depends_on:
       web:
         condition: service_healthy

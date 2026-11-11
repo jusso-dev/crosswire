@@ -1,6 +1,8 @@
-# CI (#14): lint, typecheck, unit/integration tests, build. GitHub-hosted runners only; no secrets
+# CI (#14): lint, typecheck, unit/integration tests, build, the production image started and
+# smoke-tested (#144), and the Playwright e2e suite (#147). GitHub-hosted runners only; no secrets
 # needed, so forks run it too. Tests use PGlite (in-process Postgres) plus a Postgres service
-# container for the real-driver checks; no e2e tests in CI.
+# container for the real-driver checks. The job name "Lint, typecheck, test, build" is a required
+# status check in the main ruleset: do not rename it.
 name: CI
 
 on:
@@ -12,9 +14,10 @@ on:
 permissions:
   contents: read
 
+# Pull requests: a new push cancels the old run. main: every commit gets a completed run (#148).
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   verify:
@@ -62,9 +65,20 @@ jobs:
           fi
 
   docker:
-    name: Docker image (build, SBOM, CVE gate)
+    name: Docker image (build, start, smoke, SBOM, CVE gate)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    # Throwaway database for the container smoke test (#144). Fixed CI-only password, not a secret.
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+        env:
+          POSTGRES_USER: crosswire
+          POSTGRES_PASSWORD: crosswire-ci
+          POSTGRES_DB: crosswire
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U crosswire" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -77,14 +91,50 @@ jobs:
           tags: crosswire:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      # Syft 1.54.0 on GitHub releases returns 504. The same version is on Docker Hub.
+      # Start the image as production would (#144): migrate job, app role, web, then the smoke test.
+      # Host networking reaches the Postgres service on localhost. Values are CI-only placeholders.
+      - name: Start the image and smoke test it
+        env:
+          OWNER_URL: postgres://crosswire:crosswire-ci@localhost:5432/crosswire
+          APP_DB_URL: postgres://crosswire_app:ci-app-role-password-0000@localhost:5432/crosswire
+        run: |
+          cat > ci.env <<EOF
+          NODE_ENV=production
+          APP_URL=http://localhost:3000
+          BETTER_AUTH_SECRET=ci-only-not-a-secret-ci-only-not-a-secret
+          APP_ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000
+          DATABASE_TLS_INSECURE_OK=true
+          EOF
+          docker run --rm --network host --env-file ci.env -e DATABASE_URL="$OWNER_URL" -e APP_DATABASE_URL="$APP_DB_URL" \
+            crosswire:ci sh -c 'node_modules/.bin/tsx src/server/cli/migrate.ts && node scripts/app-db-role.mjs'
+          # The web container runs as the least-privilege app role, like production.
+          docker run -d --name web --network host --env-file ci.env -e DATABASE_URL="$APP_DB_URL" crosswire:ci
+          SMOKE_ATTEMPTS=10 SMOKE_DELAY=3 bash scripts/smoke.sh http://localhost:3000 "$(jq -r '.entries[-1].tag' apps/web/drizzle/meta/_journal.json)"
+      - name: The image refuses to start without its environment check (#150)
+        run: |
+          set +e
+          out=$(timeout 60 docker run --rm --env-file ci.env -e DATABASE_URL=postgres://u:p@localhost/x --entrypoint sh crosswire:ci \
+            -c 'rm dist/server/env-check.js && node server.mjs' 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -ne 1 ] || ! echo "$out" | grep -q 'environment check missing; refusing to start'; then
+            echo "::error::expected exit 1 with a clear message when env-check.js is missing, got exit $code"; exit 1
+          fi
+      - name: Web container logs
+        if: always()
+        run: docker logs web 2>&1 | tail -n 200 || true
+      # Syft scans a saved image archive, mounted read-only. No Docker socket in a third-party
+      # container (#145). Pinned by digest; Dependabot does not track it, so bump it by hand.
       - name: SBOM (SPDX, #85)
         run: |
+          docker save crosswire:ci -o image.tar
           docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/image.tar":/image.tar:ro \
             -v "$PWD":/out \
-            anchore/syft:v1.54.0 \
-            crosswire:ci -o spdx-json=/out/sbom.spdx.json
+            anchore/syft:v1.54.0@sha256:0356562f495d432056237fbea5cbc2d4839c9c75cd500784a66de2e7cc95ca7c \
+            docker-archive:/image.tar -o spdx-json=/out/sbom.spdx.json
+          rm image.tar
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sbom-ci.spdx.json
@@ -98,3 +148,48 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
           trivyignores: .trivyignore
+
+  e2e:
+    name: End-to-end (Playwright, Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Gating, but marked continue-on-error until the suite has passed several runs in a row on
+    # main (#147). Remove continue-on-error then, and add the job to the required checks.
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+        env:
+          POSTGRES_USER: crosswire
+          POSTGRES_PASSWORD: crosswire-ci
+          POSTGRES_DB: crosswire_e2e
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U crosswire" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PG_E2E_URL: postgres://crosswire:crosswire-ci@localhost:5432/crosswire_e2e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Typecheck the e2e package
+        run: pnpm --filter e2e typecheck
+      - name: Install Chromium
+        run: pnpm --filter e2e exec playwright install --with-deps chromium
+      # playwright.config.ts starts the mock model and the built app (webServer), migrating first.
+      - run: pnpm test:e2e
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+          retention-days: 14

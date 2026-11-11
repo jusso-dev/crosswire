@@ -1,5 +1,7 @@
 # Release (#76): push a semver tag vX.Y.Z on main -> verify CI -> build, scan (#85) and push
 # ghcr.io/<owner>/crosswire:vX.Y.Z (+ :sha-<full sha>) -> GitHub Release with CHANGELOG notes + SBOM.
+# Only repository admins can create v* tags (tag ruleset), and the tagged commit must be on main
+# (#149), so a release is always reviewed code.
 name: Release
 
 on:
@@ -10,7 +12,20 @@ permissions:
   contents: read
 
 jobs:
+  on-main:
+    name: Tagged commit is on main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main. Tag a commit on main."; exit 1; }
+
   ci:
+    needs: on-main
     uses: ./.github/workflows/ci.yml
 
   image:
@@ -27,6 +42,7 @@ jobs:
   release:
     needs: image
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

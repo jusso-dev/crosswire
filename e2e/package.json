@@ -3,10 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
-    "@playwright/test": "1.65.0"
+    "@playwright/test": "1.65.0",
+    "@types/node": "^24.19.2",
+    "typescript": "6.0.3"
   }
 }
