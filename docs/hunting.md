@@ -148,6 +148,10 @@ A saved playbook is a name plus up to eight Defender or Sentinel templates. Each
 contain `{{indicator}}` and must pass the same KQL blocklist as any other proposal. Built-in
 packs cannot be deleted. Another organisation cannot see or start a saved playbook.
 
+Any member can save a playbook or start a hunt. Only an owner or approver can delete a saved playbook
+(it is shared by the organisation) or close and reopen a hunt. Closing a hunt turns off every
+scheduled search on it, and those were approved by an owner or approver, so the same roles decide.
+
 ## 4. Safety rails (issue #49)
 
 - **Separate client.** `HuntingClient` is the only HTTP path for hunting. It has no generic

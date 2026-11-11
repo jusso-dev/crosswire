@@ -55,13 +55,24 @@ describe('council review regressions', () => {
 
   it('agent timeouts surface as RUN_ERROR even when the stream ends quietly on abort', async () => {
     const abort = new AbortController()
+    // The stream ends quietly once the timeout aborts it, with no fixed sleep (#178).
     async function* quiet(): AsyncIterable<StreamChunk> {
       yield { type: EventType.RUN_STARTED, runId: 'r', threadId: 't', timestamp: Date.now() } as unknown as StreamChunk
-      await new Promise((r) => setTimeout(r, 50))
+      await new Promise<void>((resolve) => abort.signal.addEventListener('abort', () => resolve(), { once: true }))
     }
-    const out: string[] = []
-    for await (const c of withTimeout(quiet(), 10, abort)) out.push(c.type)
-    expect(out.at(-1)).toBe(EventType.RUN_ERROR)
+    vi.useFakeTimers()
+    try {
+      const out: string[] = []
+      const done = (async () => {
+        for await (const c of withTimeout(quiet(), 10, abort)) out.push(c.type)
+      })()
+      await vi.advanceTimersByTimeAsync(10)
+      await done
+      expect(abort.signal.aborted).toBe(true)
+      expect(out.at(-1)).toBe(EventType.RUN_ERROR)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('an SMTP failure for one org does not stop other orgs, and the claim is released for retry', async () => {

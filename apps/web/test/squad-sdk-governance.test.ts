@@ -289,13 +289,11 @@ describe('budgets and egress', () => {
     const replay = await readRunReplay(orgId, run!.id)
     expect(replay?.outputs[0]?.body).toBe(output!.body)
     expect(await readRunReplay(other, run!.id)).toBeNull()
-    const agentsFn = readFileSync(path.resolve(__dirname, '../src/fns/agents.ts'), 'utf8')
-    expect(agentsFn).toContain('readRunReplay(context.session.org.id, data.runId)')
-    // The Agents run view reads the same redacted rows through the org-scoped run detail.
-    expect(agentsFn).toContain('readRunDetail(context.session.org.id, data.runId)')
-    expect(readFileSync(path.resolve(__dirname, '../src/routes/app.agents.tsx'), 'utf8')).toContain('fetchRunDetail')
+    // The Agents run view reads the same redacted rows through the org-scoped run detail, and
+    // another organisation gets nothing from either reader (behaviour, not source text: #178).
     const detail = await readRunDetail(orgId, run!.id)
     expect(detail?.outputs[0]?.body).toBe(output!.body)
+    expect(detail?.outputs[0]?.body).not.toContain('abc.def.ghi')
     expect(await readRunDetail(other, run!.id)).toBeNull()
   })
 
@@ -436,9 +434,5 @@ describe('export and diagnostics', () => {
     expect(text).toContain('HarnessAdapter')
     expect(text).toContain('max_tokens')
     expect(text).toContain('opentelemetry')
-    const worker = readFileSync(path.resolve(__dirname, '../src/server/cli/worker.ts'), 'utf8')
-    expect(worker).toContain("safe('runs:reconcile'")
-    expect(readFileSync(path.resolve(__dirname, '../src/start.ts'), 'utf8')).not.toContain('reconcileStaleRuns')
-    expect(readFileSync(path.resolve(__dirname, '../server.mjs'), 'utf8')).not.toContain('reconcileStaleRuns')
   })
 })

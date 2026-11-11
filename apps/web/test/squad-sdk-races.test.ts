@@ -1,12 +1,12 @@
 import { EventType, type StreamChunk } from '@tanstack/ai'
 import { eq } from 'drizzle-orm'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { auth, resetAuthForTests } from '../src/server/auth/auth'
 import { getDb } from '../src/server/db/client'
 import { agentCapacity, agentRunOutputs, agentRuns, agentUsage } from '../src/server/db/schema'
 import { resetEnvForTests } from '../src/server/env'
 import { handleChat } from '../src/server/chat/handler'
-import { createThread } from '../src/server/chat/threads'
+import { createThread, listMessages } from '../src/server/chat/threads'
 import { acquireRunSlot, acquireSlot, checkBudget, releaseOnce } from '../src/server/agents/budgets'
 import { LlmAgentRuntime, withTimeout } from '../src/server/agents/runtime'
 import { finishRun, requestRunCancel, reconcileStaleRuns, startRun } from '../src/server/agents/runs'
@@ -53,13 +53,14 @@ function chatRequest(cookie: string, threadId: string, text: string, signal: Abo
   })
 }
 
+/** Wait until `check` returns true, without a fixed sleep (#178). */
 async function waitFor(check: () => Promise<boolean>) {
-  const start = Date.now()
-  while (Date.now() - start < 5_000) {
-    if (await check()) return
-    await new Promise((resolve) => setTimeout(resolve, 20))
-  }
-  throw new Error('timed out waiting for run state')
+  await vi.waitFor(
+    async () => {
+      if (!(await check())) throw new Error('timed out waiting for run state')
+    },
+    { timeout: 5_000, interval: 20 },
+  )
 }
 
 describe('cancellation races', () => {
@@ -144,9 +145,18 @@ describe('cancellation races', () => {
     expect(after?.inflight).toBe(1)
   })
 
-  it('aborts a streaming run, releases the extra slot once, and keeps the partial output whole', async () => {
-    const partial = 'partial answer that stays whole'
-    const model = await startMockModel(() => ({ hold: true, text: partial }))
+  it('a client disconnect mid-stream ends only the stream: the run completes and the reply is saved (#128)', async () => {
+    const answer = 'the full answer arrives after the client left'
+    // The model answers only when the test releases it, so the client can leave mid-run.
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    let asked!: () => void
+    const modelAsked = new Promise<void>((resolve) => (asked = resolve))
+    const model = await startMockModel(async () => {
+      asked()
+      await gate
+      return { text: answer }
+    })
     const saved: Record<string, string | undefined> = {}
     try {
       for (const [key, value] of Object.entries(mockEnv(model.baseUrl))) {
@@ -155,44 +165,53 @@ describe('cancellation races', () => {
       }
       resetEnvForTests()
       resetAuthForTests()
-      const cookie = await signUp(`race-${crypto.randomUUID().slice(0, 8)}@example.test`)
+      const cookie = await signUp(`leave-${crypto.randomUUID().slice(0, 8)}@example.test`)
       const session = await auth().api.getSession({ headers: new Headers({ cookie }) })
       const org = (await getCurrentOrg(session!.user.id))!
       const thread = await createThread(org.id, session!.user.id)
       const abort = new AbortController()
-      const res = await handleChat(chatRequest(cookie, thread.id, 'Please hold this turn', abort.signal))
+      const res = await handleChat(chatRequest(cookie, thread.id, 'Please answer after I leave', abort.signal))
       expect(res.status).toBe(200)
       const reader = res.body!.getReader()
       const decoder = new TextDecoder()
-      let seen = ''
-      while (!seen.includes(partial)) {
-        const next = await reader.read()
-        if (next.done) break
-        seen += decoder.decode(next.value)
-      }
-      expect(seen).toContain(partial)
+      // The first event names the run, so the page can offer Stop and "Watch the steps".
+      const first = decoder.decode((await reader.read()).value)
+      expect(first).toContain('crosswire:run')
+      await modelAsked
+      const [running] = await getDb().select().from(agentRuns).where(eq(agentRuns.orgId, org.id))
+      expect(running?.status).toBe('running')
       await getDb().update(agentCapacity).set({ inflight: 5 }).where(eq(agentCapacity.orgId, org.id))
+
+      // The analyst follows "Watch the steps": the browser aborts the request and stops reading.
       abort.abort()
-      await waitFor(async () => {
-        const [row] = await getDb().select().from(agentRuns).where(eq(agentRuns.orgId, org.id))
-        return row?.cancelRequestedAt != null
-      })
       await reader.cancel()
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      release()
+
+      await vi.waitFor(
+        async () => {
+          const rows = await listMessages(org.id, session!.user.id, thread.id)
+          expect(rows.at(-1)?.role).toBe('assistant')
+        },
+        { timeout: 10_000, interval: 20 },
+      )
       const runs = await getDb().select().from(agentRuns).where(eq(agentRuns.orgId, org.id))
       const [capacity] = await getDb().select().from(agentCapacity).where(eq(agentCapacity.orgId, org.id))
       expect({ statuses: runs.map((row) => row.status), cancel: runs.map((row) => row.cancelRequestedAt != null), inflight: capacity?.inflight, runs: runs.length }).toEqual({
-        statuses: ['interrupted'],
-        cancel: [true],
+        statuses: ['completed'],
+        cancel: [false],
         inflight: 4,
         runs: 1,
       })
+      const messages = await listMessages(org.id, session!.user.id, thread.id)
+      expect(messages.map((m) => [m.role, m.content])).toEqual([
+        ['user', 'Please answer after I leave'],
+        ['assistant', answer],
+      ])
+      expect((messages[1]!.metadata as { runId?: string }).runId).toBe(running!.id)
       const outputs = await getDb().select().from(agentRunOutputs).where(eq(agentRunOutputs.orgId, org.id))
-      const assistant = outputs.find((row) => row.kind === 'assistant')
-      expect(assistant?.body).toBe(partial)
-      expect(assistant?.body.includes('[truncated')).toBe(false)
-      expect(seen.includes('timed out')).toBe(false)
+      expect(outputs.find((row) => row.kind === 'assistant')?.body).toBe(answer)
     } finally {
+      release()
       await model.close()
       for (const [key, value] of Object.entries(saved)) {
         if (value === undefined) delete process.env[key]
@@ -202,7 +221,7 @@ describe('cancellation races', () => {
     }
   })
 
-  it('stops a held stream when another caller requests cancel, and does not label it a timeout', async () => {
+  it('Stop still ends a run as interrupted, saves what was written, and does not label it a timeout', async () => {
     const partial = 'partial answer that stays whole'
     const model = await startMockModel(() => ({ hold: true, text: partial }))
     const saved: Record<string, string | undefined> = {}
@@ -240,6 +259,19 @@ describe('cancellation races', () => {
         seen += decoder.decode(next.value)
       }
       expect(abort.signal.aborted).toBe(false)
+      // The stored id reaches the page before the stream ends (#169).
+      expect(seen).toContain('crosswire:saved')
+      const events = seen
+        .split('\n\n')
+        .map((b) => b.replace(/^data: /, '').trim())
+        .filter(Boolean)
+        .map((b) => JSON.parse(b) as { type: string; name?: string })
+      const savedAt = events.findIndex((e) => e.name === 'crosswire:saved')
+      const terminalAt = events.findIndex((e) => e.type === 'RUN_FINISHED' || e.type === 'RUN_ERROR')
+      expect(savedAt).toBeGreaterThan(-1)
+      if (terminalAt !== -1) expect(savedAt).toBeLessThan(terminalAt)
+      const stored = await listMessages(org.id, session!.user.id, thread.id)
+      expect(stored.at(-1)).toMatchObject({ role: 'assistant', content: partial })
       const runs = await getDb().select().from(agentRuns).where(eq(agentRuns.orgId, org.id))
       const [capacity] = await getDb().select().from(agentCapacity).where(eq(agentCapacity.orgId, org.id))
       expect({ statuses: runs.map((row) => row.status), cancel: runs.map((row) => row.cancelRequestedAt != null), inflight: capacity?.inflight, runs: runs.length }).toEqual({

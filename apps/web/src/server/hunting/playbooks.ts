@@ -2,7 +2,9 @@ import { and, desc, eq } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { huntPlaybooks } from '../db/schema'
 import { assertSafeKql } from './safety'
-import { createHunt, NotFoundError, proposeKql, StateError } from './hunts'
+import { createHunt, ForbiddenStepError, NotFoundError, proposeKql, StateError } from './hunts'
+import { canApprove } from '../response/rbac'
+import type { OrgRole } from '../orgs'
 import {
   builtinPlaybook,
   checkRationale,
@@ -68,7 +70,9 @@ export async function savePlaybook(
   return row!
 }
 
-export async function deletePlaybook(orgId: string, playbookId: string) {
+/** Delete a saved playbook. Playbooks are shared by the organisation, so only owners and approvers may. */
+export async function deletePlaybook(orgId: string, actor: { userId: string; role: OrgRole }, playbookId: string) {
+  if (!canApprove(actor.role)) throw new ForbiddenStepError('Only owners and approvers can delete a saved playbook.')
   if (playbookId.startsWith('builtin:')) throw new StateError('Built-in playbooks stay available.')
   const [row] = await getDb()
     .delete(huntPlaybooks)

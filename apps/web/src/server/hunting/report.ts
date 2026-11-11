@@ -6,6 +6,7 @@ import { writeAudit } from '../audit'
 import { getHunt } from './hunts'
 import { listSchedules } from './schedules'
 import { HIT_ANSWER, OUTCOME_LABEL, coverageOf } from '../../shared/indicator-playbooks'
+import { safeHref } from '../../shared/links'
 
 /** Bounds for a report so a huge hunt cannot produce an unbounded download (#94). */
 export const REPORT_MAX_CHARS = 200_000
@@ -15,31 +16,65 @@ const SAMPLE_COLS = 8
 export const SCHEDULED_SAMPLE_RUNS = 5
 export const SCHEDULED_SAMPLE_BUDGET = Math.floor(REPORT_MAX_CHARS * 0.3)
 
-const md = (s: unknown) => redactString(String(s ?? '')).replace(/\r?\n/g, ' ').replace(/\|/g, '\\|')
 const fence = (s: string) => {
   const body = redactString(s)
   const longest = Math.max(0, ...(body.match(/`+/g) ?? []).map((r) => r.length))
   const ticks = '`'.repeat(Math.max(3, longest + 1))
   return `${ticks}kql\n${body}\n${ticks}`
 }
-/** Escape Markdown/HTML in free text so titles from feeds or agents cannot inject links or markup. */
-const mdText = (s: unknown) =>
-  redactString(String(s ?? ''))
-    .replace(/\r?\n/g, ' ')
-    .replace(/([\\`*_[\]#!|])/g, '\\$1')
+
+/**
+ * Text a Markdown renderer would turn into a link on its own (GFM autolink literals): a URL, a
+ * www. host or an email address. Escaping does not stop these, so they go in a code span. The match
+ * stops at a pipe, backslash, backtick, angle bracket or space, so the span is always one backtick
+ * pair and stays inside a table cell.
+ */
+const AUTOLINKABLE = /(?:\b(?:https?|ftp|mailto|xmpp):\/*|\bwww\.)[^\s|\\`<>]*|[^\s|\\`<>()[\]]+@[^\s|\\`<>()[\]]+\.[^\s|\\`<>()[\]]+/gi
+
+const escapeText = (s: string) =>
+  s
+    .replace(/([\\`*_~[\]#!|])/g, '\\$1')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
+    // The redactor's own markers ("[REDACTED]") read as written. Safe: no link follows (a "(", "[" or
+    // ":" keeps the escape), and the report holds no link definitions, since every other "[" is escaped.
+    .replace(/\\\[(REDACTED[A-Z_]*)\\\](?![([:])/g, '[$1]')
+
+/**
+ * Tenant, feed or agent text as plain Markdown text (#132): redacted, one line, and unable to make a
+ * link, image, HTML element, emphasis or table cell. Safe in prose and in table cells.
+ */
+export const mdText = (s: unknown) => {
+  const text = redactString(String(s ?? '')).replace(/\r?\n/g, ' ')
+  let out = ''
+  let last = 0
+  for (const m of text.matchAll(AUTOLINKABLE)) {
+    out += escapeText(text.slice(last, m.index)) + `\`${m[0]}\``
+    last = m.index + m[0].length
+  }
+  out += escapeText(text.slice(last))
+  // A value at the start of a line must not start a list, quote or heading underline.
+  return out.replace(/^(\s*)([-+=]|\d+[.)])/, '$1\\$2')
+}
+
+/** A link from feed data: only http and https become a link; anything else is plain text. */
+const mdLink = (raw: unknown) => {
+  const href = safeHref(raw)
+  return href ? `<${href}>` : mdText(raw)
+}
+
 const iso = (d: Date | string | null | undefined) => (d ? new Date(d).toISOString().replace('.000Z', 'Z') : '')
 
 function sampleTable(columns: string[], rows: Array<Record<string, unknown>>) {
   const cols = columns.slice(0, SAMPLE_COLS)
   if (!cols.length || !rows.length) return ''
   const safe = rows.slice(0, SAMPLE_ROWS).map((r) => redactValue(r) as Record<string, unknown>)
+  const cell = (v: unknown) => mdText(truncate(typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v ?? ''), 80))
   return [
-    `| ${cols.map(md).join(' | ')} |`,
+    `| ${cols.map(mdText).join(' | ')} |`,
     `| ${cols.map(() => '---').join(' | ')} |`,
-    ...safe.map((r) => `| ${cols.map((c) => truncate(md(typeof r[c] === 'object' ? JSON.stringify(r[c]) : r[c]), 80)).join(' | ')} |`),
+    ...safe.map((r) => `| ${cols.map((c) => cell(r[c])).join(' | ')} |`),
   ].join('\n')
 }
 
@@ -71,13 +106,13 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
   const who = (id: string | null | undefined) => {
     if (!id) return ''
     const p = people.find((x) => x.id === id)
-    return p ? `${md(p.name)} <${md(p.email)}>` : md(id)
+    return p ? `${mdText(p.name)} (${mdText(p.email)})` : 'a former member'
   }
 
   const out: string[] = []
   out.push(`# Hunt report: ${mdText(hunt.title)}`, '')
   out.push(`- **Status:** ${hunt.status}`, `- **Created:** ${iso(hunt.createdAt)}`, `- **Last updated:** ${iso(hunt.updatedAt)}`, `- **Exported:** ${iso(new Date())}`)
-  if (origin) out.push(`- **Origin watch hit:** ${mdText(origin.title)} (${mdText(origin.source)}${origin.url ? `, <${md(origin.url).replace(/[<>\s]/g, '')}>` : ''})`)
+  if (origin) out.push(`- **Origin watch hit:** ${mdText(origin.title)} (${mdText(origin.source)}${origin.url ? `, ${mdLink(origin.url)}` : ''})`)
   out.push('')
   if (hunt.hypothesis) out.push('## Hypothesis', '', mdText(hunt.hypothesis), '')
 
@@ -96,8 +131,8 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
     out.push(`- **Any hits:** ${HIT_ANSWER[coverage.answer]}`, `- **Checks ran:** ${coverage.ran} of ${coverage.total}`, '')
     out.push('| Check | Where | Status | Rows | Result |', '| --- | --- | --- | --- | --- |')
     for (const row of coverage.rows) {
-      const where = row.target === 'defender' ? 'Defender XDR' : row.target === 'sentinel' ? 'Sentinel' : md(row.target)
-      out.push(`| ${md(row.name)} | ${where} | ${md(row.status)} | ${row.rowCount ?? ''} | ${OUTCOME_LABEL[row.outcome]} |`)
+      const where = row.target === 'defender' ? 'Defender XDR' : row.target === 'sentinel' ? 'Sentinel' : mdText(row.target)
+      out.push(`| ${mdText(row.name)} | ${where} | ${mdText(row.status)} | ${row.rowCount ?? ''} | ${OUTCOME_LABEL[row.outcome]} |`)
     }
     out.push('')
   }
@@ -108,8 +143,8 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
   for (const p of ran) {
     const r = (p.resultSummary ?? {}) as StoredSummary
     out.push(`### ${p.target === 'defender' ? 'Defender XDR' : 'Sentinel'} · ${iso(p.ranAt)}`, '')
-    out.push(`- **Approved by:** ${who(p.decidedBy)} at ${iso(p.decidedAt)}`, `- **Proposed by:** ${p.proposedByType} ${md(p.proposedById)}${p.kql !== p.originalKql ? ' (edited before running)' : ''}`)
-    out.push(`- **Result:** ${r.rowCount ?? 0} rows${r.truncated ? ' (truncated to cap)' : ''}${r.mode === 'demo' ? ' · demo data' : ''}`, `- **Columns:** ${(r.columns ?? []).map(md).join(', ')}`, '')
+    out.push(`- **Approved by:** ${who(p.decidedBy)} at ${iso(p.decidedAt)}`, `- **Proposed by:** ${p.proposedByType} ${mdText(p.proposedById)}${p.kql !== p.originalKql ? ' (edited before running)' : ''}`)
+    out.push(`- **Result:** ${r.rowCount ?? 0} rows${r.truncated ? ' (truncated to cap)' : ''}${r.mode === 'demo' ? ' · demo data' : ''}`, `- **Columns:** ${(r.columns ?? []).map(mdText).join(', ')}`, '')
     out.push(fence(p.kql), '')
     out.push(...sampleBlock(r))
   }
@@ -117,14 +152,14 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
   const other = proposals.filter((p) => p.status !== 'run')
   if (other.length) {
     out.push('## Other proposed queries', '')
-    for (const p of other) out.push(`- ${p.status} · ${p.target} · proposed by ${p.proposedByType} ${md(p.proposedById)} · ${iso(p.createdAt)}${p.error ? ` · error: ${md(truncate(p.error, 200))}` : ''}`)
+    for (const p of other) out.push(`- ${p.status} · ${p.target} · proposed by ${p.proposedByType} ${mdText(p.proposedById)} · ${iso(p.createdAt)}${p.error ? ` · error: ${mdText(truncate(p.error, 200))}` : ''}`)
     out.push('')
   }
 
   if (schedules.length) {
     out.push('## Scheduled runs', '')
     for (const s of schedules) {
-      out.push(`- ${s.enabled ? 'enabled' : `disabled (${md(s.disabledReason)})`} · ${s.target} every ${s.intervalMinutes} min · approved by ${who(s.approvedBy)} until ${iso(s.approvalExpiresAt)} · ${s.lastRunAt ? `last ${s.lastStatus} ${iso(s.lastRunAt)}${s.lastRowCount !== null ? ` · ${s.lastRowCount} rows` : ''}` : `not run yet${s.lastRowCount !== null ? ` · baseline ${s.lastRowCount} rows` : ''}`}`)
+      out.push(`- ${s.enabled ? 'enabled' : `disabled (${mdText(s.disabledReason)})`} · ${s.target} every ${s.intervalMinutes} min · approved by ${who(s.approvedBy)} until ${iso(s.approvalExpiresAt)} · ${s.lastRunAt ? `last ${s.lastStatus} ${iso(s.lastRunAt)}${s.lastRowCount !== null ? ` · ${s.lastRowCount} rows` : ''}` : `not run yet${s.lastRowCount !== null ? ` · baseline ${s.lastRowCount} rows` : ''}`}`)
     }
     const runs = evidence.filter((e) => e.type === 'scheduled_result' || e.type === 'scheduled_failed').slice(-20)
     if (runs.length) {
@@ -137,7 +172,7 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
       let countsOnly = 0
       for (const e of runs) {
         const pl = e.payload as StoredSummary & { error?: string }
-        out.push(`- ${iso(e.createdAt)} · ${e.type === 'scheduled_result' ? `${pl.rowCount ?? 0} rows${pl.mode === 'demo' ? ' · demo data' : ''}` : `failed: ${md(truncate(pl.error ?? '', 200))}`}`)
+        out.push(`- ${iso(e.createdAt)} · ${e.type === 'scheduled_result' ? `${pl.rowCount ?? 0} rows${pl.mode === 'demo' ? ' · demo data' : ''}` : `failed: ${mdText(truncate(pl.error ?? '', 200))}`}`)
         if (e.type !== 'scheduled_result') continue
         const block = sampleBlock(pl).map((l) => (l ? `  ${l}` : l))
         if (!block.length) continue
@@ -157,7 +192,7 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
   for (const r of responses) {
     const exec = r.execution as { status?: string; mode?: string } | null
     out.push(
-      `- **${mdText(r.title)}** · ${r.actionType} · ${r.status}${r.rollbackOfId ? ` · rollback of ${md(r.rollbackOfId)}` : ''}${r.decidedBy ? ` · decided by ${who(r.decidedBy)} at ${iso(r.decidedAt)}` : ''}${exec?.mode === 'live' ? ` · execution ${exec.status}` : ''}`,
+      `- **${mdText(r.title)}** · ${r.actionType} · ${r.status}${r.rollbackOfId ? ` · rollback of ${mdText(r.rollbackOfId)}` : ''}${r.decidedBy ? ` · decided by ${who(r.decidedBy)} at ${iso(r.decidedAt)}` : ''}${exec?.mode === 'live' ? ` · execution ${exec.status}` : ''}`,
       `  - Blast radius: ${mdText(r.blastRadius.summary)}`,
     )
   }
@@ -167,7 +202,7 @@ export async function huntReportMarkdown(orgId: string, huntId: string, exported
   for (const e of evidence.slice(-200)) {
     const pl = e.payload as { note?: string; rowCount?: number }
     const detail = typeof pl.note === 'string' ? `: ${mdText(truncate(pl.note, 300))}` : typeof pl.rowCount === 'number' ? `: ${pl.rowCount} rows` : ''
-    out.push(`- ${iso(e.createdAt)} · ${e.type} · ${e.actorType}${e.actorId ? ` ${md(e.actorId)}` : ''}${detail}`)
+    out.push(`- ${iso(e.createdAt)} · ${e.type} · ${e.actorType}${e.actorId ? ` ${mdText(e.actorId)}` : ''}${detail}`)
   }
   out.push('', '---', '_Generated by Crosswire. Samples are bounded and redacted; full results stay in Defender/Sentinel._', '')
 

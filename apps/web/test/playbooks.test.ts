@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { approveAndRunKql, getHunt } from '../src/server/hunting/hunts'
-import { deletePlaybook, savePlaybook, startPlaybook } from '../src/server/hunting/playbooks'
+import { deletePlaybook, listSavedPlaybooks, savePlaybook, startPlaybook } from '../src/server/hunting/playbooks'
 import { huntReportMarkdown } from '../src/server/hunting/report'
 import { BUILTIN_PLAYBOOKS, answerText, builtinForKind, coverageOf, detectIndicator, fillIndicator, normaliseIndicator } from '../src/shared/indicator-playbooks'
 import { canApproveEveryProposal } from '../src/shared/kql-approval'
 import { assertSafeKql } from '../src/server/hunting/safety'
-import { makeOrg, makeUser, member } from './helpers'
+import { makeOrg, makeUser, member, team } from './helpers'
 
 const HASH = 'ab'.repeat(32)
 
@@ -85,12 +85,26 @@ describe('indicator playbooks', () => {
       checks: [{ name: 'Network', target: 'defender', kql: "DeviceNetworkEvents\n| where RemoteIP == '{{indicator}}'\n| take 5" }],
     })
     await expect(startPlaybook(other, user, { playbookId: saved.id, indicator: '203.0.113.10' })).rejects.toThrow(/not found/i)
-    await expect(deletePlaybook(other, saved.id)).rejects.toThrow(/not found/i)
+    await expect(deletePlaybook(other, { userId: user, role: 'owner' }, saved.id)).rejects.toThrow(/not found/i)
     await expect(savePlaybook(org, user, { name: 'Edge IP', indicatorKind: 'ip', checks: [{ name: 'Network', target: 'defender', kql: "x | where y == '{{indicator}}'" }] })).rejects.toThrow(/already has a playbook/)
     await expect(savePlaybook(org, user, { name: 'Bad', indicatorKind: 'ip', checks: [{ name: 'Nope', target: 'defender', kql: 'externaldata(a:string)["{{indicator}}"]' }] })).rejects.toThrow(/Blocked/)
     const started = await startPlaybook(org, user, { playbookId: saved.id, indicator: '203.0.113.10' })
     expect(started.proposalIds).toHaveLength(1)
-    await deletePlaybook(org, saved.id)
+    await deletePlaybook(org, { userId: user, role: 'owner' }, saved.id)
+  })
+
+  it('lets only owners and approvers delete a shared playbook', async () => {
+    const t = await team()
+    const saved = await savePlaybook(t.orgId, t.analyst, {
+      name: 'Shared domain',
+      indicatorKind: 'domain',
+      checks: [{ name: 'DNS', target: 'defender', kql: "DeviceNetworkEvents\n| where RemoteUrl has '{{indicator}}'\n| take 5" }],
+    })
+    // The analyst who wrote it cannot delete it either: it belongs to the organisation.
+    await expect(deletePlaybook(t.orgId, { userId: t.analyst, role: 'analyst' }, saved.id)).rejects.toThrow(/Only owners and approvers/)
+    expect((await listSavedPlaybooks(t.orgId)).map((p) => p.id)).toContain(saved.id)
+    await deletePlaybook(t.orgId, { userId: t.approver, role: 'approver' }, saved.id)
+    expect((await listSavedPlaybooks(t.orgId)).map((p) => p.id)).not.toContain(saved.id)
   })
 })
 

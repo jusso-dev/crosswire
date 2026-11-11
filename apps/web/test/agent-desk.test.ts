@@ -4,7 +4,7 @@ import { getDb } from '../src/server/db/client'
 import { agentUsage } from '../src/server/db/schema'
 import { budgetSnapshot } from '../src/server/agents/budgets'
 import { approveDirective, approvedDirectiveBlock, createDirective, retireDirective } from '../src/server/agents/directives'
-import { appendMemory, describeMemory, findMemory, promptMembership, rememberOperator, replaceMemory, supersedeMemory } from '../src/server/agents/memory'
+import { appendMemory, compactMemory, describeMemory, findMemory, memoryContext, promoteMemory, promptMembership, rememberOperator, replaceMemory, supersedeMemory } from '../src/server/agents/memory'
 import { makeOrg, makeUser } from './helpers'
 
 describe('agent desk', () => {
@@ -15,7 +15,8 @@ describe('agent desk', () => {
     const approver = await makeUser()
     const held = await appendMemory({ orgId: org, agentKey: 'hunter', body: 'Desk quarantine phrase alpha', sourceType: 'remember', authorId: author })
     await appendMemory({ orgId: other, agentKey: 'hunter', body: 'Desk quarantine phrase alpha', sourceType: 'remember', authorId: author })
-    const live = await rememberOperator(org, approver, 'hunter', 'Do not drop the desk operator phrase beta.')
+    // A written note waits for a different approver (#192), then it is live.
+    const live = await promoteMemory(org, (await rememberOperator(org, approver, 'hunter', 'Do not drop the desk operator phrase beta.')).id, author)
     const hits = await findMemory(org, 'Desk quarantine')
     expect(hits.map((row) => row.id)).toEqual([held.id])
     const injected = await promptMembership(org, ['hunter'])
@@ -33,7 +34,8 @@ describe('agent desk', () => {
     const org = await makeOrg('Cap')
     const user = await makeUser()
     const ids: string[] = []
-    for (let i = 0; i < 21; i++) ids.push((await rememberOperator(org, user, 'intel', `cap-note-${i}`)).id)
+    const reviewer = await makeUser()
+    for (let i = 0; i < 21; i++) ids.push((await promoteMemory(org, (await rememberOperator(org, user, 'intel', `cap-note-${i}`)).id, reviewer)).id)
     const injected = await promptMembership(org, ['intel'])
     expect(injected.has(ids[0]!)).toBe(false)
     expect(injected.has(ids[20]!)).toBe(true)
@@ -74,5 +76,44 @@ describe('agent desk', () => {
     expect(snap.dailyInputCap).toBeGreaterThan(0)
     const rows = await getDb().select().from(agentUsage).where(eq(agentUsage.orgId, org))
     expect(rows).toHaveLength(1)
+  })
+
+  it('holds every written note until a different approver promotes it (#192)', async () => {
+    const org = await makeOrg('Two person')
+    const author = await makeUser()
+    const other = await makeUser()
+    // A safety note that reads like policy, from a person: held, not in the prompt.
+    const note = await rememberOperator(org, author, 'responder', 'Do not propose containment for host FIN-WS-07.', 'safety')
+    expect(note.trust).toBe('quarantine')
+    expect(await memoryContext(org, 'responder')).not.toContain('FIN-WS-07')
+    // The author cannot promote it, and replacing it with the same text keeps it held.
+    await expect(promoteMemory(org, note.id, author)).rejects.toThrow(/own memory/)
+    const replaced = await replaceMemory(org, author, note.id, 'Do not propose containment for host FIN-WS-07.')
+    expect(replaced.trust).toBe('quarantine')
+    expect(await memoryContext(org, 'responder')).not.toContain('FIN-WS-07')
+    // A different person promotes it: now it is in the prompt, once.
+    await promoteMemory(org, replaced.id, other)
+    const context = await memoryContext(org, 'responder')
+    expect(context.match(/FIN-WS-07/g)).toHaveLength(1)
+  })
+
+  it('drops a retired note from the compacted body, safety notes included (#192)', async () => {
+    const org = await makeOrg('Retire')
+    const author = await makeUser()
+    const reviewer = await makeUser()
+    const safety = await promoteMemory(org, (await rememberOperator(org, author, 'lead', 'Never isolate the domain controller DC-RETIRE.', 'safety')).id, reviewer)
+    const fact = await promoteMemory(org, (await rememberOperator(org, author, 'lead', 'Old fact RETIRE-ME about the estate')).id, reviewer)
+    for (let i = 0; i < 3; i++) await promoteMemory(org, (await rememberOperator(org, author, 'lead', `Newer fact ${i}`)).id, reviewer)
+    await compactMemory(org, 'lead', { keepLatest: 2 })
+    expect(await memoryContext(org, 'lead')).toContain('RETIRE-ME')
+    expect((await memoryContext(org, 'lead')).match(/DC-RETIRE/g)).toHaveLength(1)
+    // Retire both. They leave the prompt at once and do not come back at the next compaction.
+    const r1 = await promoteMemory(org, (await rememberOperator(org, author, 'lead', 'Replacement for the safety note')).id, reviewer)
+    const r2 = await promoteMemory(org, (await rememberOperator(org, author, 'lead', 'Replacement for the old fact')).id, reviewer)
+    await supersedeMemory(org, safety.id, r1.id)
+    await supersedeMemory(org, fact.id, r2.id)
+    expect(await memoryContext(org, 'lead')).not.toMatch(/RETIRE-ME|DC-RETIRE/)
+    await compactMemory(org, 'lead', { keepLatest: 2 })
+    expect(await memoryContext(org, 'lead')).not.toMatch(/RETIRE-ME|DC-RETIRE/)
   })
 })
