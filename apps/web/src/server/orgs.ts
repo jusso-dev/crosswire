@@ -24,7 +24,7 @@ export interface CurrentOrg {
   role: OrgRole
 }
 
-function slugify(input: string) {
+export function slugify(input: string) {
   const base = input
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')

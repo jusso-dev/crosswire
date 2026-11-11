@@ -4,7 +4,7 @@ import { auth, resetAuthForTests, sessionLifetime } from '../src/server/auth/aut
 import { getAppSession, pastAbsoluteMaxAge, requireApiSession, safeReturnTo, HttpError, enforceAbsoluteSessionCap } from '../src/server/auth/session'
 import { getDb } from '../src/server/db/client'
 import { auditEvents, orgMemberships, orgs, session } from '../src/server/db/schema'
-import { entraEmailFallback, placeEntraUser, resolveEntraOrg, UnknownTenantError } from '../src/server/auth/entra'
+import { checkEntraGate, entraEmailFallback, placeEntraUser, UnknownTenantError } from '../src/server/auth/entra'
 import { createOrg } from '../src/server/orgs'
 import { resetEnvForTests } from '../src/server/env'
 import { makeUser } from './helpers'
@@ -119,20 +119,25 @@ describe('Entra org mapping (#19)', () => {
     expect(m?.role).toBe('analyst')
   })
 
-  it('rejects unknown tenants by default (safe default)', async () => {
-    await expect(resolveEntraOrg('22222222-2222-2222-2222-222222222222')).rejects.toBeInstanceOf(UnknownTenantError)
+  it('rejects unknown tenants by default (safe default), creating nothing', async () => {
+    await expect(checkEntraGate({ tid: '22222222-2222-2222-2222-222222222222' })).rejects.toBeInstanceOf(UnknownTenantError)
+    await expect(placeEntraUser(await makeUser(), '22222222-2222-2222-2222-222222222222')).rejects.toBeInstanceOf(UnknownTenantError)
     const rows = await getDb().select().from(orgs).where(eq(orgs.entraTenantId, '22222222-2222-2222-2222-222222222222'))
     expect(rows).toHaveLength(0)
   })
 
-  it('auto-provisions an org when explicitly enabled; first user is owner', async () => {
+  it('the auto-provision gate is check-only: it creates no org (#187)', async () => {
     process.env.ENTRA_AUTO_PROVISION_ORGS = 'true'
     resetEnvForTests()
     try {
-      const u = await makeUser()
-      const orgId = await placeEntraUser(u, '33333333-3333-3333-3333-333333333333')
-      const [m] = await getDb().select().from(orgMemberships).where(eq(orgMemberships.orgId, orgId))
-      expect(m?.role).toBe('owner')
+      await checkEntraGate({ tid: '33333333-3333-3333-3333-333333333333' })
+      expect(await getDb().select().from(orgs).where(eq(orgs.entraTenantId, '33333333-3333-3333-3333-333333333333'))).toHaveLength(0)
+      // Two first sign-ins at once: one org, one owner, one analyst.
+      const [a, b] = [await makeUser(), await makeUser()]
+      const [oa, ob] = await Promise.all([placeEntraUser(a, '33333333-3333-3333-3333-333333333333'), placeEntraUser(b, '33333333-3333-3333-3333-333333333333')])
+      expect(oa).toBe(ob)
+      const roles = (await getDb().select().from(orgMemberships).where(eq(orgMemberships.orgId, oa))).map((m) => m.role).sort()
+      expect(roles).toEqual(['analyst', 'owner'])
     } finally {
       delete process.env.ENTRA_AUTO_PROVISION_ORGS
       resetEnvForTests()

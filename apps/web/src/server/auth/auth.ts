@@ -9,9 +9,10 @@ import * as schema from '../db/schema'
 import { env } from '../env'
 import { writeAudit } from '../audit'
 import { ensurePersonalOrg, getCurrentOrg } from '../orgs'
-import { claimPendingBootstrapByEmail } from '../ops/bootstrap'
-import { UnknownTenantError, decodeJwtClaims, entraEmailFallback, placeEntraUser, resolveEntraOrg } from './entra'
+import { EntraSignInRefused, UnknownTenantError, checkEntraGate, entraEmailFallback, latestEntraClaims, syncEntraSignIn } from './entra'
+import { entraClaimedDomain } from './domains'
 import { logger } from '../lib/logger'
+import { clientIp } from '../lib/http-security'
 
 /** Map Better Auth endpoint paths to audit actions. */
 const AUDITED_PATHS: Record<string, string> = {
@@ -25,13 +26,43 @@ const AUDITED_PATHS: Record<string, string> = {
   '/revoke-other-sessions': 'session_revoke_others',
 }
 
+/**
+ * Header that carries the client IP to Better Auth (#196). `withClientIp` sets it from
+ * X-Forwarded-For (right-most untrusted hop, skipping TRUSTED_PROXIES, the same rule as the chat
+ * limiter) and drops any value the client sent. Better Auth reads only this header, so a client
+ * cannot pick its own rate-limit bucket with X-Real-IP or extra X-Forwarded-For entries.
+ */
+export const CLIENT_IP_HEADER = 'x-crosswire-client-ip'
+
+export function withClientIp(request: Request): Request {
+  const headers = new Headers(request.headers)
+  headers.delete(CLIENT_IP_HEADER)
+  const ip = clientIp(request.headers)
+  if (ip) headers.set(CLIENT_IP_HEADER, ip)
+  return new Request(request, { headers })
+}
+
 function requestMeta(headers: Headers | undefined) {
   return {
-    // Right-most hop is the one our proxy (ACA ingress / Caddy) appended; earlier entries are client-supplied.
-    ipAddress: headers?.get('x-forwarded-for')?.split(',').at(-1)?.trim() || headers?.get('x-real-ip') || null,
+    ipAddress: headers?.get(CLIENT_IP_HEADER) ?? (headers ? clientIp(headers) : null),
     userAgent: headers?.get('user-agent') ?? null,
   }
 }
+
+/** Plain codes for /auth-error. The callback turns an APIError with a code into that redirect. */
+function signInError(err: unknown): unknown {
+  if (err instanceof UnknownTenantError) return new APIError('FORBIDDEN', { message: 'unknown_tenant', code: 'UNKNOWN_TENANT' })
+  if (err instanceof EntraSignInRefused) return new APIError('FORBIDDEN', { message: err.code.toLowerCase(), code: err.code })
+  return err
+}
+
+/** Redirect to /auth-error from code that runs outside the callback's own error handling. */
+function authErrorRedirect(code: string) {
+  return new APIError('FOUND', undefined, new Headers({ location: `${env().APP_URL}/auth-error?error=${encodeURIComponent(code)}` }))
+}
+
+type HookCtx = { path?: string; params?: Record<string, string | undefined> } | null | undefined
+const isMicrosoftCallback = (ctx: HookCtx) => ctx?.path === '/callback/:id' && ctx.params?.id === 'microsoft'
 
 /**
  * Better Auth session lifetime from SESSION_IDLE_MINUTES. updateAge is how often the expiry is
@@ -58,10 +89,8 @@ function createAuth() {
       useSecureCookies: e.NODE_ENV === 'production',
       database: { generateId: () => crypto.randomUUID() },
       // Behind ACA / a reverse proxy the client IP arrives in X-Forwarded-For.
-      ipAddress: {
-        ipAddressHeaders: ['x-forwarded-for', 'x-real-ip'],
-        ...(e.TRUSTED_PROXIES ? { trustedProxies: e.TRUSTED_PROXIES.split(',').map((s) => s.trim()).filter(Boolean) } : {}),
-      },
+      // Set by withClientIp (#196), never by the client. TRUSTED_PROXIES is applied there.
+      ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] },
     },
     // Idle timeout: each authenticated request within updateAge of the last refresh slides the
     // expiry forward, so inactivity for SESSION_IDLE_MINUTES ends the session. The absolute cap
@@ -87,16 +116,19 @@ function createAuth() {
             tenantId: e.ENTRA_TENANT_ID,
             scope: ['openid', 'profile', 'email'],
             disableProfilePhoto: true,
-            // Reject unknown tenants before a user row is created (see docs/auth.md).
+            // Redirect flow only (#188): no POST /sign-in/social with a bare ID token.
+            disableIdTokenSignIn: true,
+            // Check only (#187): refuse an unknown tenant, or a token that matches no mapping when the
+            // org requires one, before a user row is created. Placement happens at session creation.
             mapProfileToUser: async (profile) => {
-              if (typeof profile.tid !== 'string') throw new APIError('FORBIDDEN', { message: 'missing_tenant' })
               try {
-                await resolveEntraOrg(profile.tid)
+                await checkEntraGate(profile)
               } catch (err) {
                 if (err instanceof UnknownTenantError) {
-                  await writeAudit({ category: 'auth', action: 'sso_rejected_unknown_tenant', result: 'failure', actorType: 'system', data: { tid: profile.tid } })
-                  throw new APIError('FORBIDDEN', { message: 'unknown_tenant', code: 'UNKNOWN_TENANT' })
+                  await writeAudit({ category: 'auth', action: 'sso_rejected_unknown_tenant', result: 'failure', actorType: 'system', data: { tid: err.tid || null } })
+                  throw authErrorRedirect('UNKNOWN_TENANT')
                 }
+                if (err instanceof EntraSignInRefused) throw authErrorRedirect(err.code)
                 throw err
               }
               return entraEmailFallback(profile)
@@ -107,23 +139,30 @@ function createAuth() {
     databaseHooks: {
       user: {
         create: {
+          // A local or SAML account cannot take an address in a domain an Entra tenant owns (#203).
+          before: async (u, ctx) => {
+            if (isMicrosoftCallback(ctx)) return
+            if (await entraClaimedDomain(u.email)) throw new APIError('FORBIDDEN', { message: 'Use Microsoft sign-in for this address.', code: 'DOMAIN_USES_ENTRA' })
+          },
           after: async (created, ctx) => {
-            // Entra users are placed by the account hook below; local users get a personal org.
-            if (ctx?.path?.startsWith('/callback') || ctx?.path?.startsWith('/sso/')) return
-            // Bootstrap admin signing up locally joins the bootstrapped org as owner (#78).
-            if (await claimPendingBootstrapByEmail(created.id, created.email)) return
+            // Only a local sign-up gets a personal workspace (#188). SSO users are placed by their
+            // provider; any other path (for example a direct API call) places nobody.
+            if (ctx?.path !== '/sign-up/email') return
             await ensurePersonalOrg(created.id, created.name || created.email)
           },
         },
       },
-      account: {
+      session: {
         create: {
-          after: async (acct) => {
-            if (acct.providerId !== 'microsoft' || !acct.idToken) return
-            const tid = decodeJwtClaims(acct.idToken).tid
-            if (typeof tid === 'string') {
-              const orgId = await placeEntraUser(acct.userId, tid)
-              await writeAudit({ category: 'auth', action: 'sso_linked', actorType: 'user', actorId: acct.userId, orgId, data: { provider: 'microsoft' } })
+          // Every Entra sign-in (#187, #195): place the user and sync their role from group and
+          // app-role mappings, using the ID token Better Auth stored just before this session.
+          // A refusal stops the session; the callback sends the user to /auth-error with the code.
+          before: async (s, ctx) => {
+            if (!isMicrosoftCallback(ctx)) return
+            try {
+              await syncEntraSignIn(s.userId, await latestEntraClaims(s.userId))
+            } catch (err) {
+              throw signInError(err)
             }
           },
         },
@@ -160,7 +199,10 @@ function createAuth() {
     },
     plugins: [
       // SAML SSO (Later, #65). Entra OIDC above stays the default; tanstackStartCookies must be last.
-      ...(e.SAML_ENABLED ? [sso({ providersLimit: samlProvidersLimit, provisionUser: async (d) => void (await provisionSamlUser(d)), provisionUserOnEveryLogin: true })] : []),
+      // Domain verification (#203): a provider signs nobody in until a DNS TXT record proves its domain.
+      ...(e.SAML_ENABLED
+        ? [sso({ providersLimit: samlProvidersLimit, domainVerification: { enabled: true }, provisionUser: async (d) => void (await provisionSamlUser(d)), provisionUserOnEveryLogin: true })]
+        : []),
       tanstackStartCookies(),
     ],
   })

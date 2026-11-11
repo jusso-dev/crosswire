@@ -1,7 +1,7 @@
 import { and, eq } from 'drizzle-orm'
 import { getDb } from '../db/client'
-import { orgMemberships, ssoOrgBindings } from '../db/schema'
-import { addMembership } from '../orgs'
+import { orgMemberships, orgs, ssoOrgBindings } from '../db/schema'
+import { addMembership, isRemovedMember } from '../orgs'
 import { writeAudit } from '../audit'
 
 /**
@@ -10,12 +10,16 @@ import { writeAudit } from '../audit'
  * Providers without a binding grant no org access (the user cannot reach /app).
  */
 
-/** Only owners of at least one org may register SAML providers (Better Auth `providersLimit`). */
+/**
+ * Only owners of a team org may register SAML providers (Better Auth `providersLimit`, #203). Owning
+ * a personal workspace, which every local sign-up does, is not enough.
+ */
 export async function samlProvidersLimit(user: { id: string }) {
   const [owner] = await getDb()
     .select({ orgId: orgMemberships.orgId })
     .from(orgMemberships)
-    .where(and(eq(orgMemberships.userId, user.id), eq(orgMemberships.role, 'owner')))
+    .innerJoin(orgs, eq(orgs.id, orgMemberships.orgId))
+    .where(and(eq(orgMemberships.userId, user.id), eq(orgMemberships.role, 'owner'), eq(orgs.isPersonal, false)))
     .limit(1)
   return owner ? 5 : 0
 }
@@ -31,7 +35,13 @@ export async function provisionSamlUser({ user, provider }: { user: { id: string
     await writeAudit({ category: 'auth', action: 'saml_unbound_provider', result: 'failure', actorType: 'user', actorId: user.id, data: { providerId: provider.providerId } })
     return null
   }
+  // A person an owner removed is not added back (#195).
+  if (await isRemovedMember(binding.orgId, user.id)) {
+    await writeAudit({ category: 'auth', action: 'sso_refused', result: 'failure', actorType: 'user', actorId: user.id, orgId: binding.orgId, data: { reason: 'member_removed', providerId: provider.providerId } })
+    return null
+  }
   await addMembership(binding.orgId, user.id, 'analyst')
+  // Needs a verified email (#188): SAML has no tenant id to bind the claim to.
   const { claimBootstrapOwner } = await import('../ops/bootstrap')
   await claimBootstrapOwner(binding.orgId, user.id)
   await writeAudit({ category: 'auth', action: 'saml_linked', actorType: 'user', actorId: user.id, orgId: binding.orgId, data: { providerId: provider.providerId } })
@@ -43,6 +53,8 @@ export class SamlBindingError extends Error {}
 /** Owner binds a provider they registered to their current org. */
 export async function bindOwnProvider(providerId: string, orgId: string, userId: string, role: string) {
   if (role !== 'owner') throw new SamlBindingError('Only org owners can bind SAML providers.')
+  const [org] = await getDb().select({ isPersonal: orgs.isPersonal }).from(orgs).where(eq(orgs.id, orgId)).limit(1)
+  if (!org || org.isPersonal) throw new SamlBindingError('SAML providers can only be bound to a team organisation, not a personal workspace.')
   const { ssoProvider } = await import('../db/schema')
   const [p] = await getDb().select().from(ssoProvider).where(and(eq(ssoProvider.providerId, providerId), eq(ssoProvider.userId, userId))).limit(1)
   if (!p) throw new SamlBindingError('Provider not found or not registered by you.')

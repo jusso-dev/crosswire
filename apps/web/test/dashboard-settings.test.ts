@@ -191,9 +191,12 @@ describe('role change confirmation (#130)', () => {
   })
 
   it('the server rules on who may change roles are unchanged', () => {
-    // UI-only change: setRoleFn still refuses non-owners and self-changes.
-    const src = readFileSync(path.resolve(__dirname, '../src/fns/settings.ts'), 'utf8')
-    expect(src).toContain("if (context.session.org.role !== 'owner') throw new Error('Only owners can change roles.')")
-    expect(src).toContain("if (data.userId === context.session.user.id) throw new Error('You cannot change your own role.')")
+    // setRoleFn goes through changeMemberRole, which refuses non-owners and self-changes on fresh
+    // rows inside its transaction (#202). Behaviour is tested in members.test.ts.
+    const fn = readFileSync(path.resolve(__dirname, '../src/fns/settings.ts'), 'utf8')
+    expect(fn).toMatch(/changeMemberRole\(\{ orgId: context\.session\.org\.id, userId: data\.userId, role: data\.role, actorId: context\.session\.user\.id/)
+    const orgs = readFileSync(path.resolve(__dirname, '../src/server/orgs.ts'), 'utf8')
+    expect(orgs).toContain("if (!owners.includes(actorId)) throw new MemberChangeError('Only owners can change roles.')")
+    expect(orgs).toContain("if (actorId === userId) throw new MemberChangeError('You cannot change your own role. Ask another owner.')")
   })
 })

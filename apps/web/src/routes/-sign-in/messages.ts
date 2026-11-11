@@ -33,6 +33,9 @@ export function signUpOutcome(res: { data?: { token?: string | null } | null; er
       return { kind: 'message', text: 'Use 128 characters or fewer for your password.', field: 'password' }
     case 'INVALID_EMAIL':
       return { kind: 'message', text: 'Enter an email address, for example name@example.com.', field: 'email' }
+    // Says only that the domain belongs to a Microsoft tenant, not whether the address is registered (#203).
+    case 'DOMAIN_USES_ENTRA':
+      return { kind: 'message', text: 'Addresses in this domain sign in with Microsoft. Use "Sign in with Microsoft" instead.', field: 'email' }
     default:
       // Already registered, could not create, or anything unexpected: one neutral sentence.
       return { kind: 'message', text: SIGN_UP_NEUTRAL }
