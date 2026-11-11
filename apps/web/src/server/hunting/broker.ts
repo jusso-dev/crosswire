@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { orgConnectors } from '../db/schema'
-import { decryptSecret, encryptSecret } from '../lib/crypto'
+import { decryptSecret, encryptSecret, SECRET_COLUMNS } from '../lib/crypto'
 import { writeAudit } from '../audit'
 
 /**
@@ -64,7 +64,7 @@ export function assertSecretRefAllowed(orgId: string, ref: string) {
 }
 
 export function resolveClientSecret(c: Pick<typeof orgConnectors.$inferSelect, 'orgId' | 'clientSecretEnc' | 'clientSecretRef'>): string | null {
-  if (c.clientSecretEnc) return decryptSecret(c.clientSecretEnc)
+  if (c.clientSecretEnc) return decryptSecret(c.clientSecretEnc, { orgId: c.orgId, column: SECRET_COLUMNS.huntingClientSecret })
   if (c.clientSecretRef) {
     assertSecretRefAllowed(c.orgId, c.clientSecretRef)
     return process.env[c.clientSecretRef.slice(4)] ?? null
@@ -154,7 +154,7 @@ export async function upsertConnector(orgId: string, input: ConnectorInput, acto
     orgId,
     tenantId: input.tenantId,
     clientId: input.clientId,
-    clientSecretEnc: keepSecret ? existing.clientSecretEnc : input.clientSecret ? encryptSecret(input.clientSecret) : null,
+    clientSecretEnc: keepSecret ? existing.clientSecretEnc : input.clientSecret ? encryptSecret(input.clientSecret, { orgId, column: SECRET_COLUMNS.huntingClientSecret }) : null,
     clientSecretRef: keepSecret ? existing.clientSecretRef : input.clientSecret ? null : (input.clientSecretRef ?? null),
     sentinelSubscriptionId: input.sentinelSubscriptionId ?? null,
     sentinelResourceGroup: input.sentinelResourceGroup ?? null,

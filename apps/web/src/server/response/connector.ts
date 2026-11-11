@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { orgResponseConnectors } from '../db/schema'
-import { decryptSecret, encryptSecret } from '../lib/crypto'
+import { decryptSecret, encryptSecret, SECRET_COLUMNS } from '../lib/crypto'
 import { writeAudit } from '../audit'
 import { entraSts, type Sts, type TokenResult } from '../hunting/broker'
 
@@ -31,7 +31,7 @@ export function assertResponseSecretRefAllowed(orgId: string, ref: string) {
 type Row = typeof orgResponseConnectors.$inferSelect
 
 export function resolveResponseSecret(c: Pick<Row, 'orgId' | 'clientSecretEnc' | 'clientSecretRef'>): string | null {
-  if (c.clientSecretEnc) return decryptSecret(c.clientSecretEnc)
+  if (c.clientSecretEnc) return decryptSecret(c.clientSecretEnc, { orgId: c.orgId, column: SECRET_COLUMNS.responseClientSecret })
   if (c.clientSecretRef) {
     assertResponseSecretRefAllowed(c.orgId, c.clientSecretRef)
     return process.env[c.clientSecretRef.slice(4)] ?? null
@@ -82,7 +82,7 @@ export async function upsertResponseConnector(
     orgId,
     tenantId: input.tenantId,
     clientId: input.clientId,
-    clientSecretEnc: keepSecret ? existing.clientSecretEnc : input.clientSecret ? encryptSecret(input.clientSecret) : null,
+    clientSecretEnc: keepSecret ? existing.clientSecretEnc : input.clientSecret ? encryptSecret(input.clientSecret, { orgId, column: SECRET_COLUMNS.responseClientSecret }) : null,
     clientSecretRef: keepSecret ? existing.clientSecretRef : input.clientSecret ? null : (input.clientSecretRef ?? null),
     playbookAllowlist: playbooks,
   }

@@ -2,7 +2,7 @@ import { and, asc, eq } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { orgNotificationChannels } from '../db/schema'
 import { env } from '../env'
-import { decryptSecret, encryptSecret } from '../lib/crypto'
+import { decryptSecret, encryptSecret, SECRET_COLUMNS } from '../lib/crypto'
 import { redactString, truncate } from '../lib/redact'
 import { logger } from '../lib/logger'
 import { writeAudit } from '../audit'
@@ -136,7 +136,7 @@ export async function notify(orgId: string, event: NotifyEvent, msg: NotifyMessa
       .from(orgNotificationChannels)
       .where(and(eq(orgNotificationChannels.orgId, orgId), eq(orgNotificationChannels.enabled, true)))
     for (const c of channels.filter((ch) => ch.events.includes(event))) {
-      const r = await post(c.kind, decryptSecret(c.urlEnc), msg)
+      const r = await post(c.kind, decryptSecret(c.urlEnc, { orgId: c.orgId, column: SECRET_COLUMNS.notificationUrl }), msg)
       if (r.ok) sent++
       else failed++
       await getDb().update(orgNotificationChannels).set({ lastStatus: r.status, lastSentAt: new Date() }).where(eq(orgNotificationChannels.id, c.id))
@@ -185,7 +185,7 @@ export async function addChannel(orgId: string, userId: string, input: { kind: C
   if (existing.length >= 10) throw new Error('At most 10 notification channels per org.')
   const [row] = await getDb()
     .insert(orgNotificationChannels)
-    .values({ orgId, kind: input.kind, name: input.name.trim().slice(0, 100) || input.kind, urlEnc: encryptSecret(u.toString()), urlHost: u.hostname, events, createdBy: userId })
+    .values({ orgId, kind: input.kind, name: input.name.trim().slice(0, 100) || input.kind, urlEnc: encryptSecret(u.toString(), { orgId, column: SECRET_COLUMNS.notificationUrl }), urlHost: u.hostname, events, createdBy: userId })
     .returning({ id: orgNotificationChannels.id })
   await writeAudit({ category: 'system', action: 'notification_channel_added', actorType: 'user', actorId: userId, orgId, targetType: 'notification_channel', targetId: row!.id, data: { kind: input.kind, host: u.hostname, events } })
   return row!.id
@@ -209,7 +209,7 @@ export async function deleteChannel(orgId: string, userId: string, id: string) {
 export async function testChannel(orgId: string, id: string) {
   const [c] = await getDb().select().from(orgNotificationChannels).where(and(eq(orgNotificationChannels.orgId, orgId), eq(orgNotificationChannels.id, id))).limit(1)
   if (!c) throw new Error('Channel not found.')
-  const r = await post(c.kind, decryptSecret(c.urlEnc), { title: 'Crosswire test notification', lines: ['If you can read this, the channel works.'], link: '/app/settings' })
+  const r = await post(c.kind, decryptSecret(c.urlEnc, { orgId: c.orgId, column: SECRET_COLUMNS.notificationUrl }), { title: 'Crosswire test notification', lines: ['If you can read this, the channel works.'], link: '/app/settings' })
   await getDb().update(orgNotificationChannels).set({ lastStatus: r.status, lastSentAt: new Date() }).where(eq(orgNotificationChannels.id, c.id))
   return r
 }
