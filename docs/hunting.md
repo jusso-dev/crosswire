@@ -95,7 +95,9 @@ One setting for the whole deployment. Choose it before go-live.
   and the button is disabled. The server enforces the same rules (`src/shared/kql-approval.ts`); the
   notice only explains them.
 - Any member can still **reject** a proposal under every policy.
-- Scheduling and re-approving schedules always need an owner or approver (3a).
+- Scheduling and re-approving schedules always need an owner or approver (3a), and the policy
+  applies to them too: under `second-person`, the person who asked for a search cannot schedule
+  or re-approve it.
 
 ## 3a. Scheduled hunts (v2, #92)
 
@@ -108,8 +110,24 @@ case, under the query card, pick an interval (hour, 6 hours, day, week) and clic
   `schedule_disabled` on the case; it never runs again until an approver clicks **Re-approve**.
 - Minimum interval 60 minutes. The worker checks every minute (ticks never overlap) and claims
   each due schedule atomically with a 10-minute lease (`FOR UPDATE SKIP LOCKED`, fresh clock per
-  claim), so extra worker replicas never run a schedule twice. One enabled schedule per query.
+  claim), so extra worker replicas never run a schedule twice.
+- **One enabled schedule per query.** A partial unique index on `source_proposal_id` (enabled
+  rows only) enforces it, so two requests at once cannot both succeed. Re-approving a paused
+  schedule is refused while another schedule for the same query is enabled.
+- **Approval policy.** Creating and re-approving a schedule apply `KQL_APPROVAL_POLICY` to the
+  search it came from, the same rules as **Approve and run**.
+- **Tied to the tenant it was approved for.** A schedule stores where its approval applies: demo
+  data, or the connector's tenant ID, client ID and Sentinel workspace ID at approval time. A
+  search that ran on demo data cannot be scheduled once a connector is saved.
+- **Checked before every run.** The worker disables the schedule (with the reason on the case)
+  instead of running it when the approver is no longer an owner or approver in the organisation,
+  when the approval policy no longer allows that approver (for example after a switch to
+  `second-person`), or when the connector no longer matches. Schedules approved before this
+  check existed are disabled at their next run. A person re-approves to resume.
+- Changing someone's role to analyst disables every schedule they approved.
 - Closing the hunt case disables its schedules; reopening needs a re-approval.
+- A run that completed stays recorded as run even if writing its evidence or audit row fails;
+  that failure is logged on its own.
 - Runs go through the same `HuntingClient` (allowlist, KQL blocklist, row and timeout caps) and
   add `scheduled_result` / `scheduled_failed` evidence with the approver's id.
 - When a run returns rows and the count changed since the last run, subscribed Teams/Slack
@@ -125,7 +143,9 @@ linked response proposals (including rollbacks) and the evidence timeline. Each 
 (repeat) run in the report has its own redacted sample, with the same 5-row × 8-column bounds
 (#99). Where retention has removed a sample, the report says so and keeps the row count. Any member of the org can
 export its hunts; exports are audited (`hunt_report_exported`). Reports are capped at 200,000
-characters. Full result sets stay in Defender / Sentinel.
+characters. Full result sets stay in Defender / Sentinel. Approvers are named only while they are
+members of the organisation; anyone who has left is shown as "a former member", as on the hunt
+page, so a report never carries a leaver's name or email.
 
 The same report starts with **What was checked**. It answers "any hits?" with yes (at least one
 check returned rows), no (every check ran and returned no rows), or not fully checked. Each
@@ -160,12 +180,23 @@ scheduled search on it, and those were approved by an owner or approver, so the 
   - `POST graph.microsoft.com/v1.0/security/runHuntingQuery`
   - `POST api.loganalytics.io/v1/workspaces/{guid}/query`
   - `GET management.azure.com/.../providers/Microsoft.SecurityInsights/incidents`
-- **KQL checks:** max 10,000 characters; scans the raw query text (including comments and string
-  literals, so a `//` in a URL cannot hide anything) and blocks `externaldata`, `external_table()`,
-  `evaluate http_request/sql_request/python/R`, management commands (`.drop`, `.set`, ...) and
-  `cluster()`.
+- **KQL checks:** max 10,000 characters. Each rule runs twice: on the raw query text (including
+  comments and string literals, so a `//` in a URL cannot hide anything), and on the text with
+  `//` comments outside string literals removed and whitespace collapsed (so a comment and a line
+  break between a keyword and `(` cannot hide a call). Blocked: `externaldata`, `external_table()`,
+  management commands (`.drop`, `.set`, ...), and the cross-service functions `cluster()`, `adx()`,
+  `arg()`, `workspace()`, `app()` and `resource()`.
+- **`evaluate` plugins are an allowlist:** `autocluster`, `bag_unpack`, `basket`, `diffpatterns`,
+  `narrow` and `pivot`. Any other plugin is refused, including `http_request`, `sql_request`,
+  `python` and `r`, and `hint.x=y` parameters before the plugin name are skipped when checking.
+  These checks are a guard, not a parser; the review step is still the main control.
 - **Limits:** default 100 rows (`HUNTING_MAX_ROWS`), hard cap 1,000; timeout default 60 s, hard
-  cap 120 s, whatever callers pass.
+  cap 120 s, whatever callers pass. The client reads at most 32 MB of a response body, counted as
+  it arrives, and fails the search with a plain message when a result is larger.
+- **Complete results only.** A successful response that carries a top-level `error` (for example
+  a Log Analytics `PartialError` when a limit cut the result short), has no `results` or `tables`,
+  or is not JSON fails the search. It is never recorded as zero rows, so "no hits" always means
+  the full search ran and matched nothing.
 - **Audit:** every proposal, approval, run and failure writes an `agent_decisions` row.
 
 Residual risk: approved KQL can read any table the app is allowed to read. That is the point of
