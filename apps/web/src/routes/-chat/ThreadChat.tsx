@@ -407,7 +407,7 @@ export function ThreadChat({ data, threadId }: { data: Loaded; threadId: string 
             ? 'Chat is not set up, so new messages are turned off. You can still read this conversation.'
             : working
               ? 'You can leave this page. The reply keeps going and is saved here. Use Stop to end it.'
-              : 'Enter to send, Shift+Enter for a new line. Agents can be wrong: check sources before acting. Nothing runs in your tenant without an approver.'}
+              : 'Enter to send, Shift+Enter for a new line. Agents can be wrong: check sources before acting. Nothing runs in your tenant without an approver. People in your organisation can see your questions and the replies in the agent log.'}
         </p>
       </form>
     </section>

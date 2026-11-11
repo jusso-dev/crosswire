@@ -82,13 +82,13 @@ export function Memory({ agent }: { agent: AgentKey }) {
               const saved = await action.run('remember', () => rememberFn({ data: { agentKey: agent, body: note, kind } }))
               if (!saved) return
               setNote('')
-              setMsg(saved.trust === 'quarantine' ? 'Saved. Governance held it out of the prompt.' : 'Saved. It can enter the prompt.')
+              setMsg(saved.trust === 'quarantine' ? 'Saved and waiting for review. A different owner or approver must promote it before the agent sees it.' : 'Saved. It can enter the prompt.')
               await reload().catch(() => {})
             }}
           >
             <label>
               Note
-              <span className="cw-help">An operator note. Forbidden text is refused. Text that looks like an instruction override is stored and kept out of the prompt.</span>
+              <span className="cw-help">A note for this agent. It waits in the review queue until a different owner or approver promotes it. Forbidden text is refused, and text that looks like an instruction override can never be promoted.</span>
               <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={2000} />
             </label>
             <div className="cw-cluster">

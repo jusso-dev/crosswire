@@ -67,7 +67,12 @@ export function describeMemory(row: Pick<MemoryRow, 'id' | 'trust' | 'tombstoned
  * Append a memory entry (#31). Secrets are redacted before storage.
  * Squad classify() runs on the redacted body. FORBIDDEN and TRANSIENT are refused.
  * classify() does not stop generic instruction injection, so untrusted sources and injection
- * text are quarantined here. Operator safety sentences stay live so compaction can keep them.
+ * text are quarantined here.
+ *
+ * Two-person rule (#192): a note written by a person (`authorId` set) is held out of the prompt
+ * until an owner or approver who is not the author promotes it, the same rule as org directives.
+ * That covers operator notes, replacements and feedback. Only rows with no author (system paths
+ * and tests) keep the old "operator safety sentence stays live" behaviour.
  */
 export async function appendMemory(input: {
   orgId: string
@@ -101,8 +106,9 @@ export async function appendMemory(input: {
       throw new MemoryRefusedError(`Memory refused (${classification.class}).`)
     }
   }
-  const safetyKeep = kind === 'safety' && !untrusted && !injection
-  const quarantine = governanceEnforced() && (injection || untrusted || ((sdkClass === 'POLICY' || sdkClass === 'DECISION') && !safetyKeep))
+  const authored = Boolean(input.authorId)
+  const safetyKeep = kind === 'safety' && !untrusted && !injection && !authored
+  const quarantine = governanceEnforced() && (injection || untrusted || authored || ((sdkClass === 'POLICY' || sdkClass === 'DECISION') && !safetyKeep))
   const [row] = await getDb()
     .insert(agentMemoryEntries)
     .values({
@@ -153,7 +159,8 @@ export async function memoryContext(orgId: string, agentKey: AgentKey) {
   const recent = eligible.filter((e) => e.kind !== 'safety').slice(0, 20)
   const lines = [...safety, ...recent].reverse().map((e) => `- ${e.kind === 'safety' ? '[safety] ' : ''}${e.body}`)
   const parts = []
-  const body = mem?.body ? (governanceEnforced() ? mem.body.split('\n').filter((line) => !isPersistentInjection(line)).join('\n') : mem.body) : ''
+  // Safety notes are injected from their live rows above, so the compacted copy is skipped (no double injection).
+  const body = mem?.body ? mem.body.split('\n').filter((line) => !line.startsWith('- [safety]') && !(governanceEnforced() && isPersistentInjection(line))).join('\n') : ''
   if (body.trim()) parts.push(`Compacted org memory (v${mem!.version}):\n${body}`)
   if (lines.length) parts.push(`Recent memory entries:\n${lines.join('\n')}`)
   return parts.join('\n\n')
@@ -250,14 +257,24 @@ export async function compactMemory(
   const fold = live.slice(keep).filter((e) => e.kind !== 'safety' && trusted(e))
   const safety = live.filter((e) => e.kind === 'safety' && trusted(e))
   const existing = (mem?.body ?? '').split('\n').filter((l) => l.startsWith('- '))
-  const existingSafety = existing.filter((l) => l.startsWith('- [safety]'))
   const existingOther = existing.filter((l) => !l.startsWith('- [safety]'))
+  // A line from an earlier compaction stays only while no tombstoned row holds the same text (#192).
+  const retired = new Set(
+    (
+      await db
+        .select({ body: agentMemoryEntries.body })
+        .from(agentMemoryEntries)
+        .where(and(eq(agentMemoryEntries.orgId, orgId), eq(agentMemoryEntries.agentKey, agentKey), sql`${agentMemoryEntries.tombstonedAt} is not null`))
+    ).map((r) => r.body),
+  )
 
-  let distilled = [...new Set([...existingOther.map((l) => l.slice(2)), ...fold.map((e) => e.body)])]
+  let distilled = [...new Set([...existingOther.map((l) => l.slice(2)).filter((b) => !retired.has(b)), ...fold.map((e) => e.body)])]
   if (opts.summarise && distilled.length > 0) distilled = await opts.summarise(distilled)
   distilled = distilled.slice(-50)
 
-  const safetyLines = [...new Set([...existingSafety.map((l) => l.slice('- [safety] '.length)), ...safety.map((e) => e.body)])]
+  // Safety rows are never folded, so they are always live rows. Rebuild from them only: a retired or
+  // held safety note drops out of the body at the next compaction instead of staying for good.
+  const safetyLines = [...new Set(safety.map((e) => e.body))]
   const body = [...safetyLines.map((s) => `- [safety] ${s}`), ...distilled.map((s) => `- ${s}`)].join('\n')
   const version = (mem?.version ?? 0) + 1
 
@@ -297,6 +314,19 @@ export async function promoteMemory(orgId: string, entryId: string, approverUser
   return updated!
 }
 
+/** Remove a retired note's text from the compacted body, so "Tombstoned. Not in the prompt." is true at once (#192). */
+async function dropFromCompactedBody(orgId: string, agentKey: AgentKey, text: string) {
+  const mem = await getMemory(orgId, agentKey)
+  if (!mem?.body) return
+  const lines = mem.body.split('\n')
+  const kept = lines.filter((l) => l !== `- ${text}` && l !== `- [safety] ${text}`)
+  if (kept.length === lines.length) return
+  await getDb()
+    .update(agentMemories)
+    .set({ body: kept.join('\n'), version: mem.version + 1, updatedAt: new Date() })
+    .where(and(eq(agentMemories.orgId, orgId), eq(agentMemories.agentKey, agentKey)))
+}
+
 /** Keep the old row and point it at the replacement. Tombstoned rows stay out of the prompt. The replacement must be in the same organisation and agent. */
 export async function supersedeMemory(orgId: string, entryId: string, replacementId: string) {
   if (entryId === replacementId) throw new Error('A memory entry cannot supersede itself.')
@@ -315,15 +345,16 @@ export async function supersedeMemory(orgId: string, entryId: string, replacemen
     .where(and(eq(agentMemoryEntries.orgId, orgId), eq(agentMemoryEntries.id, entryId)))
     .returning()
   if (!updated) throw new Error('Memory entry not found.')
+  await dropFromCompactedBody(orgId, existing.agentKey as AgentKey, existing.body)
   return updated
 }
 
-/** Operator note. Source `operator` is trusted. Squad classify still refuses forbidden text, and injection text is quarantined. */
+/** Operator note. Held out of the prompt until a different owner or approver promotes it (#192). Squad classify still refuses forbidden text. */
 export async function rememberOperator(orgId: string, userId: string, agentKey: AgentKey, body: string, kind?: 'fact' | 'safety') {
   return appendMemory({ orgId, agentKey, body, kind, sourceType: 'operator', authorId: userId })
 }
 
-/** Write a replacement note, then tombstone the old row. */
+/** Write a replacement note, then tombstone the old row. The replacement is held for review like any written note, so replacing your own held note cannot make it live. */
 export async function replaceMemory(orgId: string, userId: string, entryId: string, body: string) {
   const [existing] = await getDb()
     .select()

@@ -24,7 +24,7 @@ export const Route = createFileRoute('/app/chat/$threadId')({
   notFoundComponent: () => (
     <div className="cw-center">
       <h1>Conversation not found</h1>
-      <p className="cw-muted">It may have been deleted, or it belongs to someone else. Conversations are private to the person who started them.</p>
+      <p className="cw-muted">It may have been deleted, or it belongs to someone else. Only the person who started a conversation can open it here.</p>
       <Link to="/app/chat" className="cw-btn">
         Back to chat
       </Link>

@@ -8,7 +8,11 @@ import { isAgentKey, type AgentSelection } from '../../shared/agents'
 
 export class ThreadNotFoundError extends Error {}
 
-/** Every thread query filters by org AND user (#26): threads are private to their owner. */
+/**
+ * Every thread query filters by org AND user (#26): only the person who started a thread can open
+ * it here. The organisation can still see each question in the decision log and each reply in the
+ * run replay (#213, kept visible by the owner's decision).
+ */
 export async function listThreads(orgId: string, userId: string) {
   return getDb()
     .select({ id: chatThreads.id, title: chatThreads.title, agentKey: chatThreads.agentKey, updatedAt: chatThreads.updatedAt })
