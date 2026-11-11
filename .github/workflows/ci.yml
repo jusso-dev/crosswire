@@ -153,9 +153,7 @@ jobs:
     name: End-to-end (Playwright, Chromium)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Gating, but marked continue-on-error until the suite has passed several runs in a row on
-    # main (#147). Remove continue-on-error then, and add the job to the required checks.
-    continue-on-error: true
+    # Three consecutive main runs passed (#147). Browser regressions now fail CI.
     services:
       postgres:
         image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac

@@ -3,13 +3,18 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "lint": "eslint .",
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
+    "@eslint/js": "10.0.1",
     "@playwright/test": "1.65.0",
     "@types/node": "^24.19.2",
-    "typescript": "6.0.3"
+    "eslint": "10.14.0",
+    "globals": "17.14.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1"
   }
 }
