@@ -156,7 +156,14 @@ function AppShell() {
             <small>Analyst workspace</small>
           </span>
         </Link>
-        <nav className="cw-nav" aria-label="Main">
+        <nav
+          className="cw-nav"
+          aria-label="Main"
+          onFocus={(e) => {
+            // Native Tab scrolling can leave a partially visible link clipped in the narrow rail.
+            if (e.target instanceof HTMLAnchorElement) e.target.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+          }}
+        >
           {NAV_GROUPS.map((g) => (
             <div className="cw-navgroup" key={g.label} role="group" aria-labelledby={`nav-${g.label}`}>
               <div className="cw-navgroup-label" id={`nav-${g.label}`}>
