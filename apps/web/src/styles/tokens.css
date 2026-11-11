@@ -925,3 +925,8 @@ kbd { display: inline-block; min-width: 1.5em; text-align: center; line-height: 
 .cw-meter > span { display: block; height: 100%; background: var(--status-ok); }
 .cw-meter[data-tone='warn'] > span { background: var(--status-attention); }
 .cw-meter[data-tone='danger'] > span { background: var(--status-danger); }
+
+/* ---------- Stream: approvals, gated response and the worker ---------- */
+.cw-approvals-count { display: block; margin-top: 2px; font-size: var(--text-caption); text-align: right; }
+.cw-approvals-more { align-items: center; gap: var(--space-sm); border-top: 1px solid var(--border); }
+.cw-cell-wide .cw-badge { margin-left: var(--space-2xs); }
