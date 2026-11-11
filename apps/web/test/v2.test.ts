@@ -565,7 +565,11 @@ describe('council review fixes (v2)', () => {
     await approveAndRunKql(t.orgId, t.analyst, p.id)
     const s = await createSchedule(t.orgId, { userId: t.approver, role: 'approver' }, { proposalId: p.id, intervalMinutes: 60 })
     await expect(createSchedule(t.orgId, { userId: t.approver, role: 'approver' }, { proposalId: p.id, intervalMinutes: 60 })).rejects.toThrow(/already has an enabled schedule/)
-    await setHuntStatus(t.orgId, hunt.id, 'closed')
+    // An analyst cannot close it: that would stop a schedule an approver signed off on.
+    await expect(setHuntStatus(t.orgId, { userId: t.analyst, role: 'analyst' }, hunt.id, 'closed')).rejects.toThrow(/Only owners and approvers/)
+    const [still] = await getDb().select().from(huntSchedules).where(eq(huntSchedules.id, s.id))
+    expect(still!.enabled).toBe(true)
+    await setHuntStatus(t.orgId, { userId: t.approver, role: 'approver' }, hunt.id, 'closed')
     const [row] = await getDb().select().from(huntSchedules).where(eq(huntSchedules.id, s.id))
     expect(row!.enabled).toBe(false)
     expect(row!.disabledReason).toBe('hunt closed')

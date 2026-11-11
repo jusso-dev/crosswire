@@ -2,10 +2,17 @@ import { eq } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { orgConnectors } from '../db/schema'
 import { decryptSecret, encryptSecret } from '../lib/crypto'
+import { writeAudit } from '../audit'
 
+/**
+ * Hunting has no connector (or no usable secret) for this organisation. The message is shown to the
+ * analyst, so it carries no ids; the org id stays on the error for server logs.
+ */
 export class HuntingNotConfiguredError extends Error {
+  readonly orgId: string
   constructor(orgId: string) {
-    super(`Hunting is not configured for this org (${orgId}). Add a connector in Settings or enable demo mode.`)
+    super('Hunting is not set up for this organisation. An owner adds a connector in Settings, or the deployment enables demo mode.')
+    this.orgId = orgId
   }
 }
 
@@ -117,26 +124,38 @@ export async function getConnectorView(orgId: string) {
   }
 }
 
-export async function upsertConnector(
-  orgId: string,
-  input: {
-    tenantId: string
-    clientId: string
-    clientSecret?: string
-    clientSecretRef?: string
-    sentinelSubscriptionId?: string
-    sentinelResourceGroup?: string
-    sentinelWorkspaceName?: string
-    sentinelWorkspaceId?: string
-  },
-) {
+export type ConnectorInput = {
+  tenantId: string
+  clientId: string
+  /** Blank keeps the stored secret. */
+  clientSecret?: string
+  clientSecretRef?: string
+  /** Explicitly remove the stored secret (and reference). Ignored when a new secret is given. */
+  clearSecret?: boolean
+  sentinelSubscriptionId?: string
+  sentinelResourceGroup?: string
+  sentinelWorkspaceName?: string
+  sentinelWorkspaceId?: string
+}
+
+const AUDITED_FIELDS = ['tenantId', 'clientId', 'sentinelSubscriptionId', 'sentinelResourceGroup', 'sentinelWorkspaceName', 'sentinelWorkspaceId'] as const
+
+/**
+ * Save the org's hunting connector (#122). Blank secret fields keep the stored secret, the same rule
+ * as the response connector; `clearSecret` is the only way to remove it. Writes an audit record that
+ * names who changed which fields, never any value.
+ */
+export async function upsertConnector(orgId: string, input: ConnectorInput, actorUserId?: string) {
   if (!input.clientSecret && input.clientSecretRef) assertSecretRefAllowed(orgId, input.clientSecretRef)
+  const existing = await getConnector(orgId)
+  const newSecret = Boolean(input.clientSecret || input.clientSecretRef)
+  const keepSecret = !newSecret && !input.clearSecret && existing
   const values = {
     orgId,
     tenantId: input.tenantId,
     clientId: input.clientId,
-    clientSecretEnc: input.clientSecret ? encryptSecret(input.clientSecret) : null,
-    clientSecretRef: input.clientSecret ? null : (input.clientSecretRef ?? null),
+    clientSecretEnc: keepSecret ? existing.clientSecretEnc : input.clientSecret ? encryptSecret(input.clientSecret) : null,
+    clientSecretRef: keepSecret ? existing.clientSecretRef : input.clientSecret ? null : (input.clientSecretRef ?? null),
     sentinelSubscriptionId: input.sentinelSubscriptionId ?? null,
     sentinelResourceGroup: input.sentinelResourceGroup ?? null,
     sentinelWorkspaceName: input.sentinelWorkspaceName ?? null,
@@ -144,4 +163,18 @@ export async function upsertConnector(
   }
   await getDb().insert(orgConnectors).values(values).onConflictDoUpdate({ target: orgConnectors.orgId, set: values })
   tokenBroker().clear()
+  const changed: string[] = AUDITED_FIELDS.filter((f) => (existing?.[f] ?? null) !== values[f])
+  const secretChanged = !existing || existing.clientSecretEnc !== values.clientSecretEnc || existing.clientSecretRef !== values.clientSecretRef
+  if (secretChanged) changed.push(values.clientSecretEnc || values.clientSecretRef ? 'secret' : 'secret removed')
+  await writeAudit({
+    category: 'hunt',
+    action: 'hunting_connector_saved',
+    actorType: actorUserId ? 'user' : 'system',
+    actorId: actorUserId ?? null,
+    orgId,
+    targetType: 'hunting_connector',
+    targetId: orgId,
+    // Field names and the secret's kind only. Never a value.
+    data: { created: !existing, changed, secretSource: values.clientSecretEnc ? 'encrypted' : values.clientSecretRef ? 'env' : 'none' },
+  })
 }
