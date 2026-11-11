@@ -11,9 +11,10 @@ import { loadPolicy } from './policy'
 import { approvedDirectiveBlock } from './directives'
 import { prepareModelMessages } from './egress'
 import { appendRunEvent, finishRun, getRun, recordRunOutput, reconcileStaleRuns, requestRunCancel, startRun } from './runs'
-import { acquireRunSlot, checkBudget, claimDailyBudget, outputCharCap, providerFallback, recordObservedUsage, recordUnmeasuredUsage, releaseDailyClaim, releaseOnce, usageFromChunk, usageFromChunks } from './budgets'
+import { acquireRunSlot, checkBudget, claimDailyBudget, createUsageTally, outputCharCap, providerFallback, recordEstimatedUsage, recordObservedUsage, recordUnmeasuredUsage, releaseDailyClaim, releaseOnce, type UsageTally } from './budgets'
 import { sha256 } from './canonical'
 import { SQUAD_SDK_PIN } from './squad-sdk'
+import { logger } from '../lib/logger'
 
 export interface AgentRunInput {
   orgId: string
@@ -81,79 +82,66 @@ export class LlmAgentRuntime implements AgentRuntime {
     } catch (err) {
       return { stream: errorStream(err instanceof Error ? err.message : String(err)), traces }
     }
-    const messages = prepareModelMessages(input.messages)
-    const memory = await memoryContext(input.orgId, agentKey)
     const described = modelDescription()
-    const run = await startRun({
-      orgId: input.orgId,
-      agentKey,
-      threadId: input.threadId,
-      parentRunId: input.parentRunId,
-      modelProvider: described.provider,
-      modelName: described.model,
-      charterSha256: policy.charterSha256[agentKey],
-      policySha256: policy.sha256,
-      toolsetSha256: policy.toolsetSha256[agentKey],
-      memorySha256: sha256(memory),
-    })
-    if (run) ctx.runId = run.id
-    const tools: AnyTool[] = toolsFor(agentKey, ctx)
-    if (orchestrate) tools.push(this.delegateTool(input, traces, run?.id ?? null), this.delegateParallelTool(input, traces, run?.id ?? null))
+    const model = described.model ?? described.provider
+    const provider = env().MODEL_PROVIDER
+    let run: Awaited<ReturnType<typeof startRun>> = null
+    let claimed = false
+    let release: (() => Promise<void>) | undefined
+    // One clean-up for every setup step (#201): a throw after the row exists finishes it as failed,
+    // drops the daily claim and returns the slot, and the browser gets an error event, not a raw 500.
+    try {
+      const messages = prepareModelMessages(input.messages)
+      const memory = await memoryContext(input.orgId, agentKey)
+      run = await startRun({
+        orgId: input.orgId,
+        agentKey,
+        threadId: input.threadId,
+        parentRunId: input.parentRunId,
+        modelProvider: described.provider,
+        modelName: described.model,
+        charterSha256: policy.charterSha256[agentKey],
+        policySha256: policy.sha256,
+        toolsetSha256: policy.toolsetSha256[agentKey],
+        memorySha256: sha256(memory),
+      })
+      if (run) ctx.runId = run.id
+      const tools: AnyTool[] = toolsFor(agentKey, ctx)
+      if (orchestrate) tools.push(this.delegateTool(input, traces, run?.id ?? null), this.delegateParallelTool(input, traces, run?.id ?? null))
 
-    await recordDecision({
-      orgId: input.orgId,
-      actorType: 'agent',
-      actorKey: agentKey,
-      action: orchestrate ? 'orchestrate_turn' : 'turn',
-      input: input.messages.at(-1)?.content ?? '',
-      threadId: input.threadId,
-    })
+      await recordDecision({
+        orgId: input.orgId,
+        actorType: 'agent',
+        actorKey: agentKey,
+        action: orchestrate ? 'orchestrate_turn' : 'turn',
+        input: input.messages.at(-1)?.content ?? '',
+        threadId: input.threadId,
+      })
 
-    let adapter
-    try {
-      adapter = createModelAdapter(agentKey)
-    } catch (err) {
-      const message = err instanceof ModelNotConfiguredError ? err.message : `Chat model error: ${err instanceof Error ? err.message : String(err)}`
-      if (run) {
-        await recordRunOutput(run.id, input.orgId, 'error', message)
-        await finishRun(input.orgId, run.id, 'failed', message)
+      let adapter
+      try {
+        adapter = createModelAdapter(agentKey)
+      } catch (err) {
+        throw new SetupError(err instanceof ModelNotConfiguredError ? err.message : `Chat model error: ${errorText(err)}`)
       }
-      return { stream: errorStream(message), traces, runId: run?.id }
-    }
-    const budgetText = messages.map((m) => m.content).join('\n')
-    const budget = run
-      ? await claimDailyBudget(input.orgId, run.id, { sessionId: run.id, model: described.model ?? described.provider, text: budgetText, agentKey, provider: env().MODEL_PROVIDER })
-      : await checkBudget(input.orgId, { sessionId: input.threadId ?? input.orgId, model: described.model ?? described.provider, text: budgetText })
-    if (run) await appendRunEvent(run.id, input.orgId, 'budget_estimate', { estimatedInputTokens: budget.estimatedInputTokens, utilization: budget.utilization ?? null, warning: budget.warning ?? false, ok: budget.ok, observed: false })
-    if (!budget.ok) {
-      if (run) {
-        await recordRunOutput(run.id, input.orgId, 'error', budget.reason ?? 'budget')
-        await finishRun(input.orgId, run.id, 'failed', budget.reason)
-      }
-      return { stream: errorStream(budget.reason ?? 'Budget refused the model call.'), traces, runId: run?.id }
-    }
-    let slot: { orgId: string } | undefined
-    try {
-      slot = await acquireRunSlot(input.orgId, run?.id)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      if (run) {
-        await releaseDailyClaim(input.orgId, run.id)
-        await recordRunOutput(run.id, input.orgId, 'error', message)
-        await finishRun(input.orgId, run.id, 'failed', message)
-      }
-      return { stream: errorStream(message), traces, runId: run?.id }
-    }
-    const fallback = providerFallback(env().MODEL_PROVIDER)
-    if (run) await recordRunOutput(run.id, input.orgId, 'routing', { provider: fallback.provider, switched: fallback.switched, reason: fallback.reason, sdk: SQUAD_SDK_PIN })
-    const release = releaseOnce(slot.orgId, run?.id)
-    let stream: AsyncIterable<StreamChunk>
-    try {
-      stream = chat({
+      const systemPrompt = await systemPromptFor(input.orgId, agentKey, orchestrate)
+      // The estimate counts the system prompt as well as the messages (#201).
+      const budgetText = budgetTextFor(systemPrompt, messages)
+      const budget = run
+        ? await claimDailyBudget(input.orgId, run.id, { sessionId: run.id, model, text: budgetText, agentKey, provider })
+        : await checkBudget(input.orgId, { sessionId: input.threadId ?? input.orgId, model, text: budgetText })
+      claimed = Boolean(run && budget.ok)
+      if (run) await appendRunEvent(run.id, input.orgId, 'budget_estimate', { estimatedInputTokens: budget.estimatedInputTokens, utilization: budget.utilization ?? null, warning: budget.warning ?? false, ok: budget.ok, observed: false })
+      if (!budget.ok) throw new SetupError(budget.reason ?? 'Budget refused the model call.')
+      const slot = await acquireRunSlot(input.orgId, run?.id)
+      release = releaseOnce(slot.orgId, run?.id)
+      const fallback = providerFallback(provider)
+      if (run) await recordRunOutput(run.id, input.orgId, 'routing', { provider: fallback.provider, switched: fallback.switched, reason: fallback.reason, sdk: SQUAD_SDK_PIN })
+      const stream = chat({
         adapter,
         messages,
         threadId: input.threadId ?? `ephemeral-${crypto.randomUUID()}`,
-        systemPrompts: [await systemPromptFor(input.orgId, agentKey, orchestrate)],
+        systemPrompts: [systemPrompt],
         tools,
         agentLoopStrategy: maxIterations(6),
         abortController: input.abortController,
@@ -161,24 +149,29 @@ export class LlmAgentRuntime implements AgentRuntime {
         // TanStack AI 1.2.0 has no chat() output-cap field. max_tokens is a provider key the library recognises.
         modelOptions: { max_tokens: env().BUDGET_MAX_OUTPUT_TOKENS } as { max_tokens: number },
       })
+      return { stream: this.boundStream(stream, input, run?.id, release, budget.estimatedInputTokens), traces, runId: run?.id, release }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      const message = errorText(err)
       if (run) {
-        await recordUnmeasuredUsage({ orgId: input.orgId, runId: run.id, agentKey, provider: env().MODEL_PROVIDER, model: described.model ?? described.provider })
-        await recordRunOutput(run.id, input.orgId, 'error', message)
-        await finishRun(input.orgId, run.id, 'failed', message)
+        const runId = run.id
+        await bestEffort('setup clean-up', runId, async () => {
+          // No model call started, so there is nothing to measure. The reservation goes (#186).
+          if (claimed) await releaseDailyClaim(input.orgId, runId)
+          await recordRunOutput(runId, input.orgId, 'error', message)
+          await finishRun(input.orgId, runId, 'failed', message)
+        })
       }
-      await release()
+      if (release) await bestEffort('setup slot release', run?.id ?? null, release)
       return { stream: errorStream(message), traces, runId: run?.id }
     }
-    return { stream: this.boundStream(stream, input, run?.id, release), traces, runId: run?.id, release }
   }
 
-  private async *boundStream(stream: AsyncIterable<StreamChunk>, input: AgentRunInput, runId: string | undefined, release: () => Promise<void>): AsyncIterable<StreamChunk> {
+  private async *boundStream(stream: AsyncIterable<StreamChunk>, input: AgentRunInput, runId: string | undefined, release: () => Promise<void>, reservedInputTokens: number): AsyncIterable<StreamChunk> {
     const cap = outputCharCap()
     let chars = 0
     let assistantText = ''
-    let lastUsage: { inputTokens: number; outputTokens: number } | null = null
+    let finished = false
+    const tally = createUsageTally()
     const iterator = stream[Symbol.asyncIterator]()
     const signal = input.abortController.signal
     const stopCancelWatch = runId ? watchExternalCancel(input.orgId, runId, input.abortController) : () => {}
@@ -193,10 +186,12 @@ export class LlmAgentRuntime implements AgentRuntime {
           await iterator.return?.()
           break
         }
-        if (next.done) break
+        if (next.done) {
+          finished = true
+          break
+        }
         const chunk = next.value
-        const observed = usageFromChunk(chunk)
-        if (observed) lastUsage = observed
+        tally.add(chunk)
         if (chunk.type === EventType.TEXT_MESSAGE_CONTENT && 'delta' in chunk && typeof chunk.delta === 'string') {
           assistantText += chunk.delta
           chars += chunk.delta.length
@@ -214,14 +209,16 @@ export class LlmAgentRuntime implements AgentRuntime {
       try {
         if (runId) {
           const described = modelDescription()
-          await settleUsage({
+          await settleTurnUsage({
             orgId: input.orgId,
             runId,
             agentKey: selectionAgent(input.selection),
             provider: env().MODEL_PROVIDER,
             model: described.model ?? described.provider,
-            usage: lastUsage,
+            tally,
+            finished,
             assistantText,
+            reservedInputTokens,
           })
         }
       } finally {
@@ -230,12 +227,16 @@ export class LlmAgentRuntime implements AgentRuntime {
     }
   }
 
-  /** Run one specialist non-streaming with its own charter and tool allowlist; records a decision. */
+  /**
+   * Run one specialist with its own charter and tool allowlist; records a decision. The answer is
+   * collected from the stream, so the usage tally keeps every count even when the call is stopped.
+   */
   private async runSpecialist(input: AgentRunInput, traces: ToolContext['traces'], agent: Exclude<AgentKey, 'lead'>, task: string, via: 'delegate' | 'delegate_parallel', parentRunId: string | null) {
-    const childInput: AgentRunInput = { ...input, selection: agent, parentRunId, messages: [{ role: 'user', content: task }] }
     const sub: ToolContext = { orgId: input.orgId, userId: input.userId, agentKey: agent, threadId: input.threadId, traces }
     const policy = loadPolicy()
     const described = modelDescription()
+    const model = described.model ?? described.provider
+    const provider = env().MODEL_PROVIDER
     const memory = await memoryContext(input.orgId, agent)
     const run = await startRun({
       orgId: input.orgId,
@@ -250,51 +251,40 @@ export class LlmAgentRuntime implements AgentRuntime {
       memorySha256: sha256(memory),
     })
     if (run) sub.runId = run.id
-    const budget = run
-      ? await claimDailyBudget(input.orgId, run.id, { sessionId: run.id, model: described.model ?? described.provider, text: task, agentKey: agent, provider: env().MODEL_PROVIDER })
-      : await checkBudget(input.orgId, { sessionId: `${input.threadId ?? input.orgId}:${agent}`, model: described.model ?? described.provider, text: task })
-    if (run) await appendRunEvent(run.id, input.orgId, 'budget_estimate', { estimatedInputTokens: budget.estimatedInputTokens, utilization: budget.utilization ?? null, warning: budget.warning ?? false, ok: budget.ok, observed: false })
-    if (!budget.ok) {
-      if (run) await finishRun(input.orgId, run.id, 'failed', budget.reason)
-      throw new Error(budget.reason ?? 'Budget refused the specialist call.')
-    }
-    let slot: { orgId: string }
+    const tally = createUsageTally()
+    const progress = { finished: false, text: '' }
+    let claimed = false
+    let started = false
+    let reservedInputTokens = 0
+    let release: (() => Promise<void>) | undefined
+    let stopCancelWatch = () => {}
     try {
-      slot = await acquireRunSlot(input.orgId, run?.id)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      if (run) {
-        await releaseDailyClaim(input.orgId, run.id)
-        await finishRun(input.orgId, run.id, 'failed', message)
-      }
-      throw err instanceof Error ? err : new Error(message)
-    }
-    const release = releaseOnce(slot.orgId, run?.id)
-    const stopCancelWatch = run ? watchExternalCancel(input.orgId, run.id, input.abortController) : () => {}
-    let settled = false
-    try {
-      const filtered = prepareModelMessages(childInput.messages)
-      const text = await promiseUntilAbort(
-        chat({
-          adapter: createModelAdapter(agent),
-          messages: filtered,
-          threadId: `${input.threadId ?? 'ephemeral'}:delegate:${agent}:${crypto.randomUUID()}`,
-          systemPrompts: [await systemPromptFor(input.orgId, agent, false)],
-          tools: toolsFor(agent, sub),
-          agentLoopStrategy: maxIterations(4),
-          stream: false,
-          abortController: input.abortController,
-          modelOptions: { max_tokens: env().BUDGET_MAX_OUTPUT_TOKENS } as { max_tokens: number },
-        }),
-        input.abortController.signal,
-      )
-      const answer = typeof text === 'string' ? text : ((text as { text?: string }).text ?? '')
-      if (run) {
-        // chat({ stream: false }) returns { text, chunks }. The counts are on the RUN_FINISHED chunks (#185).
-        const chunks = typeof text === 'object' && text && 'chunks' in text && Array.isArray(text.chunks) ? text.chunks : []
-        await settleUsage({ orgId: input.orgId, runId: run.id, agentKey: agent, provider: env().MODEL_PROVIDER, model: described.model ?? described.provider, usage: usageFromChunks(chunks), assistantText: answer })
-        settled = true
-      }
+      const filtered = prepareModelMessages([{ role: 'user', content: task }])
+      const systemPrompt = await systemPromptFor(input.orgId, agent, false)
+      const budgetText = budgetTextFor(systemPrompt, filtered)
+      const budget = run
+        ? await claimDailyBudget(input.orgId, run.id, { sessionId: run.id, model, text: budgetText, agentKey: agent, provider })
+        : await checkBudget(input.orgId, { sessionId: `${input.threadId ?? input.orgId}:${agent}`, model, text: budgetText })
+      claimed = Boolean(run && budget.ok)
+      reservedInputTokens = budget.estimatedInputTokens
+      if (run) await appendRunEvent(run.id, input.orgId, 'budget_estimate', { estimatedInputTokens: budget.estimatedInputTokens, utilization: budget.utilization ?? null, warning: budget.warning ?? false, ok: budget.ok, observed: false })
+      if (!budget.ok) throw new SetupError(budget.reason ?? 'Budget refused the specialist call.')
+      const slot = await acquireRunSlot(input.orgId, run?.id)
+      release = releaseOnce(slot.orgId, run?.id)
+      if (run) stopCancelWatch = watchExternalCancel(input.orgId, run.id, input.abortController)
+      const stream = chat({
+        adapter: createModelAdapter(agent),
+        messages: filtered,
+        threadId: `${input.threadId ?? 'ephemeral'}:delegate:${agent}:${crypto.randomUUID()}`,
+        systemPrompts: [systemPrompt],
+        tools: toolsFor(agent, sub),
+        agentLoopStrategy: maxIterations(4),
+        stream: true,
+        abortController: input.abortController,
+        modelOptions: { max_tokens: env().BUDGET_MAX_OUTPUT_TOKENS } as { max_tokens: number },
+      })
+      started = true
+      const answer = await promiseUntilAbort(collectText(stream, tally, progress), input.abortController.signal)
       if (run) await recordRunOutput(run.id, input.orgId, 'assistant', answer)
       const capped = answer.length > outputCharCap() ? `${answer.slice(0, outputCharCap())}\n[output budget]` : answer
       const forParent = typeof prepareToolResult(capped) === 'string' ? (prepareToolResult(capped) as string) : capped
@@ -303,17 +293,22 @@ export class LlmAgentRuntime implements AgentRuntime {
       if (run) await finishRun(input.orgId, run.id, 'completed')
       return { agent: AGENT_LABELS[agent].name, answer: forParent }
     } catch (err) {
-      if (run) await finishRun(input.orgId, run.id, input.abortController.signal.aborted ? 'interrupted' : 'failed', err instanceof Error ? err.message : String(err))
+      if (run) {
+        const runId = run.id
+        await bestEffort('specialist finish', runId, () => finishRun(input.orgId, runId, input.abortController.signal.aborted ? 'interrupted' : 'failed', errorText(err)))
+      }
       throw err
     } finally {
       stopCancelWatch()
-      try {
-        if (run && !settled) {
-          await settleUsage({ orgId: input.orgId, runId: run.id, agentKey: agent, provider: env().MODEL_PROVIDER, model: described.model ?? described.provider, usage: null, assistantText: '' })
-        }
-      } finally {
-        await release()
+      if (run) {
+        const runId = run.id
+        await bestEffort('specialist usage', runId, async () => {
+          if (started) await settleTurnUsage({ orgId: input.orgId, runId, agentKey: agent, provider, model, tally, finished: progress.finished, assistantText: progress.text, reservedInputTokens })
+          // No model call started, so the reservation goes (#186).
+          else if (claimed) await releaseDailyClaim(input.orgId, runId)
+        })
       }
+      if (release) await release()
     }
   }
 
@@ -377,6 +372,47 @@ async function settleUsage(input: { orgId: string; runId: string; agentKey: stri
   await recordObservedUsage({ orgId: input.orgId, runId: input.runId, agentKey: input.agentKey, provider: input.provider, model: input.model, inputTokens: input.usage.inputTokens, outputTokens: input.usage.outputTokens })
 }
 
+/**
+ * Store one turn's usage (#186). A turn that ran to its end stores the sum of every model call's
+ * counts. A turn cut off by Stop, the timeout, the output cap or a provider error stores an estimate:
+ * the counts that did arrive, plus the reserved input and about ceil(chars / 4) output for the call
+ * that was cut off. A provider that finished a call without any count still gets the unmeasured
+ * marker, so the daily cap stays fail-closed for it.
+ */
+async function settleTurnUsage(input: { orgId: string; runId: string; agentKey: string; provider: string; model: string; tally: UsageTally; finished: boolean; assistantText: string; reservedInputTokens: number }) {
+  const { tally } = input
+  const ids = { orgId: input.orgId, runId: input.runId, agentKey: input.agentKey, provider: input.provider, model: input.model }
+  // A call that finished with no count means this provider does not report usage: fail closed.
+  // A turn that ran to its end, with a count for every call, stores the provider's sum.
+  if (tally.missing || (input.finished && (!tally.errored || tally.errorCounted))) {
+    await settleUsage({ ...ids, usage: tally.total(), assistantText: input.assistantText })
+    return
+  }
+  const estimate = tally.stoppedEstimate(input.reservedInputTokens)
+  await recordEstimatedUsage({ ...ids, inputTokens: estimate.inputTokens, outputTokens: estimate.outputTokens })
+}
+
+/** Text the input estimate is taken from: the system prompt and every message the model receives (#201). */
+export function budgetTextFor(systemPrompt: string, messages: Array<{ content: string }>) {
+  return [systemPrompt, ...messages.map((m) => m.content)].join('\n')
+}
+
+/** A setup step refused the turn with a message for the analyst. */
+class SetupError extends Error {}
+
+function errorText(err: unknown) {
+  return err instanceof Error ? err.message : String(err)
+}
+
+/** Clean-up after a failure must not hide the first error. */
+async function bestEffort(what: string, runId: string | null, fn: () => Promise<unknown>) {
+  try {
+    await fn()
+  } catch (err) {
+    logger.error(`agent ${what} failed`, { runId, error: errorText(err) })
+  }
+}
+
 function timeoutAbort(signal: AbortSignal) {
   const reason = signal.reason
   return reason instanceof Error && reason.message === 'agent timeout'
@@ -403,6 +439,25 @@ function watchExternalCancel(orgId: string, runId: string, abort: AbortControlle
   const stop = () => clearInterval(timer)
   abort.signal.addEventListener('abort', stop, { once: true })
   return stop
+}
+
+/**
+ * Read a specialist's stream to its end, like TanStack's streamToText, while the tally sees every
+ * chunk. A RUN_ERROR ends the read and is thrown.
+ */
+async function collectText(stream: AsyncIterable<StreamChunk>, tally: UsageTally, progress: { finished: boolean; text: string }) {
+  let error: string | null = null
+  for await (const chunk of stream) {
+    tally.add(chunk)
+    if (chunk.type === EventType.RUN_ERROR) {
+      error = (chunk as { message?: string }).message || 'An error occurred'
+      break
+    }
+    if (chunk.type === EventType.TEXT_MESSAGE_CONTENT && 'delta' in chunk && typeof chunk.delta === 'string') progress.text += chunk.delta
+  }
+  progress.finished = true
+  if (error !== null) throw new Error(error)
+  return progress.text
 }
 
 /** Reject when the signal aborts, even if the model promise does not. */
