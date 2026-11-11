@@ -637,9 +637,20 @@ export const huntSchedules = pgTable(
     lastRowCount: integer('last_row_count'),
     lastError: text('last_error'),
     disabledReason: text('disabled_reason'),
+    /**
+     * Where the approval applies (#189): demo or live, and the tenant, app registration and Sentinel
+     * workspace of the connector when it was approved. A run whose current connector differs is
+     * refused. Null on schedules created before this existed; those must be re-approved.
+     */
+    approvedContext: jsonb('approved_context').$type<{ mode: 'live' | 'demo'; tenantId: string | null; clientId: string | null; sentinelWorkspaceId: string | null }>(),
     createdAt: createdAt(),
   },
-  (t) => [index('hunt_schedules_due_idx').on(t.enabled, t.nextRunAt), index('hunt_schedules_hunt_idx').on(t.huntId)],
+  (t) => [
+    index('hunt_schedules_due_idx').on(t.enabled, t.nextRunAt),
+    index('hunt_schedules_hunt_idx').on(t.huntId),
+    // One enabled schedule per approved query (#207), enforced by the database, not only by a check.
+    uniqueIndex('hunt_schedules_source_enabled_uq').on(t.sourceProposalId).where(sql`${t.enabled}`),
+  ],
 )
 
 // ---------- Rate limits shared across replicas ----------

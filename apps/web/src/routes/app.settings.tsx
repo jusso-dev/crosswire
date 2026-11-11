@@ -4,7 +4,7 @@ import { fetchAuthAudit, fetchDigestEmail, fetchEntraMappings, fetchMembers } fr
 import { fetchChannels, fetchResponseConnector } from '../fns/notify'
 import { fetchSetupState } from '../fns/setup'
 import { fmtTimeExact, humanise } from '../components/format'
-import { PageHead, TableWrap, SkeletonPage } from '../components/ui'
+import { Notice, PageHead, TableWrap, SkeletonPage } from '../components/ui'
 import { pageTitle, RouteError } from '../components/errors'
 import { Section } from './-settings/shared'
 import { Members } from './-settings/members'
@@ -77,6 +77,11 @@ function Settings() {
             <ConnectorForm data={connector} health={setup.connector} now={setup.now} />
           </Section>
           <Section id="response" title="Response connection (optional)" intro="Only needed if your organisation lets approved actions run for real. Safe mode stays on until an admin changes it.">
+            {setup.approvalWarnings.map((w) => (
+              <Notice key={w} tone="warn" title="Approval check turned off">
+                {w}
+              </Notice>
+            ))}
             <ResponseConnectorForm data={response} />
           </Section>
           <Section id="alerts" title="Teams and Slack alerts" intro="Post a short message when something needs a decision or a repeat search finds results.">

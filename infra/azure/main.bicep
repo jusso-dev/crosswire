@@ -85,6 +85,8 @@ param appTimeZone string = 'Australia/Sydney'
 param kqlApprovalPolicy string = 'member'
 @description('Allow the requester to approve their own response action. Keep false.')
 param responseAllowSelfApproval bool = false
+@description('RESPONSE_LOGICAPP_ORG_ID: the one organisation id the response Logic App acts for. Empty = Logic App proposals are refused.')
+param responseLogicAppOrgId string = ''
 param sessionMaxAgeHours int = 12
 param sessionIdleMinutes int = 60
 param retentionChatDays int = 365
@@ -209,6 +211,7 @@ module apps 'modules/apps.bicep' = {
     infrastructureSubnetId: privateNetworking ? network!.outputs.acaSubnetId : ''
     kqlApprovalPolicy: kqlApprovalPolicy
     responseAllowSelfApproval: responseAllowSelfApproval
+    responseLogicAppOrgId: responseLogicAppOrgId
     sessionMaxAgeHours: sessionMaxAgeHours
     sessionIdleMinutes: sessionIdleMinutes
     retentionChatDays: retentionChatDays

@@ -29,7 +29,7 @@ export const fetchSetup = createServerFn({ method: 'GET' })
       dryRun: r.safety.dryRun,
       safety: r.safetyStatus,
       connector: r.connector,
-      warnings: r.safety.warnings,
+      warnings: [...r.safety.warnings, ...r.approvalWarnings],
       isOwner: context.session.org.role === 'owner',
       canLoadDemo: context.session.org.role === 'owner' && env().HUNTING_DEMO_MODE && (env().NODE_ENV !== 'production' || process.env.ALLOW_DEMO_FIXTURES === 'true'),
       // "Now" for relative times on the page, taken once on the server so the browser renders the same words.
@@ -42,7 +42,7 @@ export const fetchSetupState = createServerFn({ method: 'GET' })
   .middleware([authed])
   .handler(async ({ context }) => {
     const r = await setupChecklist(context.session.org.id)
-    return { connector: r.connector, dismissed: r.dismissed, hiddenForMe: hiddenForMe(context.session.user.id), isOwner: context.session.org.role === 'owner', now: Date.now() }
+    return { connector: r.connector, dismissed: r.dismissed, hiddenForMe: hiddenForMe(context.session.user.id), isOwner: context.session.org.role === 'owner', approvalWarnings: r.approvalWarnings, now: Date.now() }
   })
 
 export const dismissSetupFn = createServerFn({ method: 'POST' })

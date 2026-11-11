@@ -135,9 +135,15 @@ const roleListeners = new Set<(e: { orgId: string; userId: string; oldRole: OrgR
  * Entra sync and removal all call this, after their change commits.
  */
 export async function onRoleLowered(orgId: string, userId: string, oldRole: OrgRole, newRole: OrgRole | null) {
-  // TODO(#221): call disableSchedulesApprovedBy(orgId, userId) here once #221 merges, so repeat
-  // searches this person approved stop running under rights they no longer have.
   logger.info('member role lowered', { orgId, userId, oldRole, newRole })
+  // Repeat searches this person approved stop once they can no longer approve (#189). Imported
+  // lazily: the hunting module imports this one.
+  const { canApprove } = await import('./response/rbac')
+  if (newRole === null || !canApprove(newRole)) {
+    const { disableSchedulesApprovedBy } = await import('./hunting/schedules')
+    const why = newRole === null ? 'the person who approved it was removed from the organisation' : 'the person who approved it is no longer an owner or approver'
+    await disableSchedulesApprovedBy(orgId, userId, `${why}; re-approve to resume`)
+  }
   for (const fn of roleListeners) await fn({ orgId, userId, oldRole, newRole })
 }
 

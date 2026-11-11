@@ -122,7 +122,8 @@ affects another.
    in, and an `entra_role_synced_blocked_last_owner` audit row is written (with a log warning).
 4. Every change writes an `entra_role_synced` audit row with `from`, `to` and the matched
    mappings. A lowered role runs the same follow-up as a manual change (`onRoleLowered` in
-   `server/orgs.ts`).
+   `server/orgs.ts`): repeat searches the person approved are paused once they can no longer
+   approve.
 5. An owner can still change an Entra-managed member's role by hand. Settings shows "Managed by
    Entra group", because the next sign-in replaces the manual change.
 
@@ -164,7 +165,7 @@ for most installs.
 
 Owners remove a member in **Settings → People and roles** (`removeMemberFn`). The member loses
 access at once and a `member_removed` audit row is written. Owners cannot remove themselves, and
-the last owner cannot be removed. Because SSO places people on every sign-in, a removal row
+the last owner cannot be removed. Repeat searches they approved are paused. Because SSO places people on every sign-in, a removal row
 (`org_member_removals`) keeps the person out of that org on later Entra and SAML sign-ins. To let
 them back in:
 
@@ -297,6 +298,22 @@ person out. Set it for an existing org with:
 ```sql
 update orgs set email_domain = 'contoso.com' where id = '<org id>';
 ```
+
+**Stored provider secrets are not encrypted by Crosswire (#212).** The plugin stores the provider
+config as JSON text in `sso_provider` (`saml_config`, `oidc_config`), including `samlConfig.privateKey`
+(the SP signing key, when set) and `oidcConfig.clientSecret`. Crosswire does not wrap these with
+`APP_ENCRYPTION_KEY`, because the plugin reads and writes the table directly and has no supported hook
+to do it without patching the package. `pnpm rotate-secrets` does not cover them. Until that changes:
+
+- Prefer SAML without an SP private key (leave `authnRequestsSigned` off unless the IdP needs it),
+  and do not register OIDC providers through this plugin. Entra OIDC above uses
+  `ENTRA_CLIENT_SECRET` from Key Vault, not this table.
+- Treat database backups and read access to `sso_provider` as access to those secrets.
+- If an OIDC client secret may have leaked, rotate it at the IdP and register the provider again
+  with the new secret.
+- If the SP signing key (`samlConfig.privateKey`) may have leaked, generate a new SP key pair,
+  register the provider again with the new private key, and give the IdP the new SP certificate.
+  Rotating keys at the IdP alone does not replace the SP key.
 
 **Org mapping rule:** each SAML provider is bound to exactly one org (`sso_org_bindings`). Users who
 sign in through a bound provider join that org as `analyst` (unless an owner removed them). An unbound provider grants no org

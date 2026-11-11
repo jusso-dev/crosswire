@@ -15,6 +15,17 @@ How it works (`apps/web/src/server/lib/crypto.ts`): new values are always encryp
 `APP_ENCRYPTION_KEY_PREVIOUS` (comma-separated) in order. `pnpm rotate-secrets` then re-encrypts
 every stored value with the current key, after which the old key can go.
 
+Format (#212): values are written as `v2`, which binds each one to its organisation id and its
+table and column, so a value copied into another organisation's row, or into a different secret
+column, does not decrypt. A copy between two rows of the same organisation and column (for example
+two notification channels) still decrypts. Values written before
+#212 are `v1` (no binding). They still decrypt, and `pnpm rotate-secrets` rewrites them as `v2`
+even when no key change is due. Run it once after upgrading (no key change is needed for that);
+step 2 below covers it during a rotation. Every value must carry a full 16-byte GCM tag.
+
+Not covered: the SAML and OIDC provider secrets stored by `@better-auth/sso` in `sso_provider`
+(see [auth](../auth.md#saml-sso-later)).
+
 Other secrets are not affected: `BETTER_AUTH_SECRET` (sessions, Entra tokens) and
 `ENTRA_CLIENT_SECRET` rotate as described in [Azure deploy](azure-deploy.md#3-secrets-key-vault).
 
@@ -29,7 +40,7 @@ Other secrets are not affected: `BETTER_AUTH_SECRET` (sessions, Entra tokens) an
 
 The run in step 2 is **all-or-nothing**. It runs in one transaction with the rows locked; if any
 value cannot be decrypted with the current or a previous key, the whole run rolls back and nothing
-changes. It is idempotent: values already under the current key are left alone, so it is safe to
+changes. It is idempotent: `v2` values already under the current key are left alone, so it is safe to
 run again. It reports counts only (no plaintext, no ciphertext) and writes a `secrets_rotated`
 audit event with the same counts.
 

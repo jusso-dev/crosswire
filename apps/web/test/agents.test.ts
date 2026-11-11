@@ -9,7 +9,7 @@ import { appendMessage, createThread, listMessages, listMessagesPage, listThread
 import { appendMemory, compactMemory, exportHistoryMarkdown, getMemory, importHistoryMarkdown, listMemoryEntries } from '../src/server/agents/memory'
 import { listDecisions, recordDecision } from '../src/server/agents/decisions'
 import { charter, loadCharters } from '../src/server/agents/charters'
-import { AGENT_TOOLS, EXECUTION_TOOL_NAMES, buildTools } from '../src/server/agents/tools'
+import { AGENT_TOOLS, EXECUTION_TOOL_NAMES, buildTools, toolsFor } from '../src/server/agents/tools'
 import { systemPromptFor } from '../src/server/agents/runtime'
 import { AGENT_KEYS } from '../src/shared/agents'
 import { makeOrg, makeUser, member, readSse } from './helpers'
@@ -82,15 +82,22 @@ describe('charters + tools (#30, #56)', () => {
     for (const k of AGENT_KEYS) expect(c[k]).toMatch(/never execute containment without an approved proposal/i)
   })
 
-  it('no agent has an execute tool; only Responder and Lead can propose responses', () => {
+  it('no agent has an execute tool; only Responder can propose responses (#198)', () => {
     expect(EXECUTION_TOOL_NAMES).toHaveLength(0)
     const all = Object.keys(buildTools({ orgId: 'o', userId: 'u', agentKey: 'lead', threadId: null, traces: [] }))
     expect(all.some((n) => /execute|run_kql|approve/i.test(n))).toBe(false)
     for (const k of AGENT_KEYS) {
       const hasPropose = AGENT_TOOLS[k].includes('propose_response')
-      expect(hasPropose).toBe(k === 'responder' || k === 'lead')
+      expect(hasPropose).toBe(k === 'responder')
     }
     expect(AGENT_TOOLS.hunter).toContain('propose_kql')
+  })
+
+  it('Lead is not given propose_response at run time (#198)', () => {
+    const ctx = (agentKey: 'lead' | 'responder') => ({ orgId: 'o', userId: 'u', agentKey, threadId: null, traces: [] })
+    const names = (agentKey: 'lead' | 'responder') => toolsFor(agentKey, ctx(agentKey)).map((t) => t.name)
+    expect(names('lead')).not.toContain('propose_response')
+    expect(names('responder')).toContain('propose_response')
   })
 
   it('system prompt differs per agent (charter-driven)', async () => {

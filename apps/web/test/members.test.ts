@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { and, eq } from 'drizzle-orm'
 import { getDb } from '../src/server/db/client'
-import { auditEvents, orgMemberRemovals, orgMemberships } from '../src/server/db/schema'
+import { auditEvents, huntCases, huntSchedules, orgMemberRemovals, orgMemberships } from '../src/server/db/schema'
 import { changeMemberRole, highestRole, isRemovedMember, listenRoleLoweredForTests, MemberChangeError, removeMember } from '../src/server/orgs'
 import { makeOrg, makeUser, member, team } from './helpers'
 
@@ -114,5 +114,32 @@ describe('removing members (#195)', () => {
     await removeMember(orgId, owner, approver)
     expect(await roleOf(orgId, owner)).toBeNull()
     expect(await getDb().select().from(orgMemberRemovals).where(eq(orgMemberRemovals.orgId, orgId))).toHaveLength(1)
+  })
+})
+
+describe('lowered roles stop repeat searches (#189 via onRoleLowered)', () => {
+  async function scheduleBy(orgId: string, approvedBy: string) {
+    const [h] = await getDb().insert(huntCases).values({ orgId, title: 'H', createdBy: approvedBy }).returning()
+    const now = new Date()
+    const [s] = await getDb()
+      .insert(huntSchedules)
+      .values({ orgId, huntId: h!.id, target: 'defender', kql: 'DeviceInfo | take 1', intervalMinutes: 60, approvedBy, approvedAt: now, approvalExpiresAt: new Date(now.getTime() + 86_400_000), nextRunAt: now })
+      .returning()
+    return s!.id
+  }
+  const enabled = async (id: string) => (await getDb().select().from(huntSchedules).where(eq(huntSchedules.id, id)))[0]?.enabled
+
+  it('a demotion to analyst and a removal disable that person\'s schedules; approver to owner does not', async () => {
+    const { orgId, owner, approver } = await team()
+    const other = await makeUser()
+    await member(orgId, other, 'approver')
+    const s1 = await scheduleBy(orgId, approver)
+    const s2 = await scheduleBy(orgId, other)
+    await manual(orgId, other, 'owner', owner)
+    expect(await enabled(s2)).toBe(true)
+    await manual(orgId, approver, 'analyst', owner)
+    expect(await enabled(s1)).toBe(false)
+    await removeMember(orgId, other, owner)
+    expect(await enabled(s2)).toBe(false)
   })
 })

@@ -19,10 +19,11 @@ are Key Vault references (`infra/azure/modules/apps.bicep`):
 | `DATABASE_URL` (web, worker) | `database-url-app` | Least-privilege app role, written by Bicep; `sslmode=verify-full` |
 | `DATABASE_URL` (migration job) | `database-url` | Postgres owner, written by Bicep; the job also gets `APP_DATABASE_URL` to manage the app role |
 | `BETTER_AUTH_SECRET` | `better-auth-secret` | `openssl rand -hex 32` |
-| `APP_ENCRYPTION_KEY` | `app-encryption-key` | 64 hex chars; encrypts connector secrets in Postgres |
+| `APP_ENCRYPTION_KEY` | `app-encryption-key` | 64 hex chars; encrypts connector secrets in Postgres (AES-256-GCM, each value bound to its organisation and column) |
 | `ENTRA_CLIENT_SECRET` | `entra-client-secret` | SSO app registration secret |
 | `ENTRA_CLIENT_ID`, `ENTRA_TENANT_ID`, `APP_URL`, flags | (plain env) | Not secret |
 | `RESPONSE_LOGICAPP_URL` | add `response-logicapp-url` if used | Contains a SAS signature |
+| `RESPONSE_LOGICAPP_ORG_ID` | (plain env, Bicep parameter `responseLogicAppOrgId`, default empty) | The one organisation the Logic App acts for. Empty refuses every Logic App proposal (#190) |
 | `RESPONSE_DRY_RUN`, `RESPONSE_EXECUTOR_*` | (plain env, Bicep sets `true` / `off`) | Fail closed, see docs/response.md |
 | `APP_ENCRYPTION_KEY_PREVIOUS` | add `app-encryption-key-previous` during a rotation only | Old key(s) for decryption; see [key rotation](runbooks/key-rotation.md) |
 | `CORS_ALLOWED_ORIGINS`, `RATE_LIMIT_CHAT_PER_MIN`, `RATE_LIMIT_STORAGE`, `TRUSTED_PROXIES` | (plain env from Bicep parameters) | HTTP hardening (#74). `TRUSTED_PROXIES` takes IP addresses or CIDR ranges |
@@ -52,6 +53,8 @@ All optional. Defaults are shown; invalid values stop the server at boot.
 | Env var | Default | What it does |
 | --- | --- | --- |
 | `KQL_APPROVAL_POLICY` | `member` | Who may approve and run a KQL search: `member`, `approver` or `second-person`. See [hunting](hunting.md#approval-policy-kql_approval_policy). |
+| `RESPONSE_ALLOW_SELF_APPROVAL` | `false` | `true` lets a person approve a response action they asked for. Logs a production start-up warning, shows a warning in Settings, and marks `selfApproved` on the events (#205). Labs only. |
+| `APPROVAL_BINDING` | `enforced` | `legacy` runs approved actions without checking the content hash. Logs a production start-up warning, shows a warning in Settings, and marks `bindingEnforced: false` on the events (#205). Rollback only. |
 | `SESSION_MAX_AGE_HOURS` | `12` | Absolute session cap since sign-in (1 to 720). See [auth](auth.md#session-lifetime). |
 | `SESSION_IDLE_MINUTES` | `60` | Idle timeout; each request slides it forward (5 to 1440). |
 | `RATE_LIMIT_STORAGE` | `database` | `database`: chat and sign-in limits are shared by every replica. `memory`: per process, so N replicas allow N times the limit. |
@@ -64,6 +67,26 @@ All optional. Defaults are shown; invalid values stop the server at boot.
 | `TRUSTED_PROXIES` | (empty) | Comma-separated IPv4/IPv6 addresses or CIDR ranges of your proxies. An invalid entry stops the server. |
 | `DATABASE_TLS_INSECURE_OK` | `false` | Silences the production warning for a `DATABASE_URL` without `sslmode=verify-full`, for a database without TLS on a private network. It does not change how the app connects. |
 | `WORKER_HEALTH_PORT` | `3001` | Port of the worker's health server (`GET /healthz`), used by container probes. |
+| `SMTP_ALLOW_PLAINTEXT` | `false` | Allows digest and confirmation mail without TLS. See [SMTP](#smtp). |
+
+## SMTP
+
+Optional. Without `SMTP_HOST`, digests are in-app only. Mail is always encrypted unless you opt out:
+
+- `SMTP_PORT=465` uses TLS from the start.
+- Any other port (default `587`) must upgrade with STARTTLS. If the server does not offer it, or the
+  offer is stripped on the way, the send fails. Nothing goes out in plain text, including the SMTP
+  password, digests and confirmation links.
+- `SMTP_ALLOW_PLAINTEXT=true` allows plain text on ports other than 465. Use it only for a lab relay
+  on a trusted network (for example a local mail catcher). Production logs a warning at start-up
+  while it is set.
+
+Connect and greeting time out after 15 seconds and an idle connection after 30 seconds, so a stalled
+server fails the send (and the digest is retried) rather than holding the worker.
+
+Upgrading: a deployment whose relay has no STARTTLS on port 25 or 587 stops sending mail after this
+change (the worker logs `digest email failed`). Turn on TLS at the relay, or move to port 465. Set
+`SMTP_ALLOW_PLAINTEXT=true` only if the relay is on a trusted network.
 
 ## Database TLS
 

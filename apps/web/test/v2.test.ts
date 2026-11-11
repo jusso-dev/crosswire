@@ -521,6 +521,7 @@ describe('council review fixes (v2)', () => {
   it('Logic App rollback keeps the original device and incident targets', async () => {
     withEnv({ ...LIVE, RESPONSE_EXECUTOR_LOGICAPP: 'on', RESPONSE_LOGICAPP_URL: 'https://mock.logic.example/invoke?sig=s3cret' })
     const t = await liveTeam()
+    withEnv({ RESPONSE_LOGICAPP_ORG_ID: t.orgId })
     const p = await approved(t, { ...isolate(['host-1']), actionType: 'logic_app' })
     await executeProposal(t.orgId, { userId: t.approver, role: 'approver' }, p.id, vi.fn(async () => Response.json({}, { status: 202 })) as unknown as typeof fetch)
     const rb = await proposeRollback(t.orgId, { userId: t.approver }, p.id)
@@ -528,6 +529,7 @@ describe('council review fixes (v2)', () => {
     expect(rb.targets.devices).toEqual(['host-1'])
     delete process.env.RESPONSE_EXECUTOR_LOGICAPP
     delete process.env.RESPONSE_LOGICAPP_URL
+    delete process.env.RESPONSE_LOGICAPP_ORG_ID
   })
 
   it('duplicate targets are collapsed, so nothing runs twice', async () => {
