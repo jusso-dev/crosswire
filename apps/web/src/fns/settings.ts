@@ -1,26 +1,41 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { authed } from './middleware'
-import { listOrgMembers, setMemberRole } from '../server/orgs'
+import { changeMemberRole, listOrgMembers, MemberChangeError, removeMember } from '../server/orgs'
 import { listAudit } from '../server/audit'
-import { writeAudit } from '../server/audit'
 import { clearDigestEmail, confirmDigestEmail, DigestEmailError, getDigestEmailView, previewDigestEmail, requestDigestEmail } from '../server/notify/digest-contact'
 
 export const fetchMembers = createServerFn({ method: 'GET' })
   .middleware([authed])
   .handler(async ({ context }) => ({ members: await listOrgMembers(context.session.org.id), canManage: context.session.org.role === 'owner', me: context.session.user.id }))
 
-/** Owners grant/revoke the approver role (#55). Owners cannot demote themselves here. */
+/** Refusals from membership changes become `{ ok: false }` with a plain message. */
+async function memberResult(fn: () => Promise<unknown>) {
+  try {
+    await fn()
+    return { ok: true as const }
+  } catch (err) {
+    if (err instanceof MemberChangeError) return { ok: false as const, error: err.message }
+    throw err
+  }
+}
+
+/**
+ * Owners grant/revoke roles (#55). The owner check, the self check and the last-owner guard run in
+ * one transaction on fresh rows (#202), not on the session's role.
+ */
 export const setRoleFn = createServerFn({ method: 'POST' })
   .middleware([authed])
   .validator(z.object({ userId: z.string().min(1), role: z.enum(['owner', 'approver', 'analyst']) }))
-  .handler(async ({ context, data }) => {
-    if (context.session.org.role !== 'owner') throw new Error('Only owners can change roles.')
-    if (data.userId === context.session.user.id) throw new Error('You cannot change your own role.')
-    await setMemberRole(context.session.org.id, data.userId, data.role)
-    await writeAudit({ category: 'auth', action: 'role_changed', actorType: 'user', actorId: context.session.user.id, orgId: context.session.org.id, targetType: 'user', targetId: data.userId, data: { role: data.role } })
-    return { ok: true }
-  })
+  .handler(async ({ context, data }) =>
+    memberResult(() => changeMemberRole({ orgId: context.session.org.id, userId: data.userId, role: data.role, actorId: context.session.user.id, audit: { action: 'role_changed' } })),
+  )
+
+/** Owners remove a member (#195). Audited; refuses the last owner and yourself. */
+export const removeMemberFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ userId: z.string().min(1) }))
+  .handler(async ({ context, data }) => memberResult(() => removeMember(context.session.org.id, data.userId, context.session.user.id)))
 
 export const fetchAuthAudit = createServerFn({ method: 'GET' })
   .middleware([authed])
