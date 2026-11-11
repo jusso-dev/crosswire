@@ -301,21 +301,29 @@ person out. Set it for an existing org with:
 update orgs set email_domain = 'contoso.com' where id = '<org id>';
 ```
 
-**Stored provider secrets are not encrypted by Crosswire (#212).** The plugin stores the provider
-config as JSON text in `sso_provider` (`saml_config`, `oidc_config`), including `samlConfig.privateKey`
-(the SP signing key, when set) and `oidcConfig.clientSecret`. Crosswire does not wrap these with
-`APP_ENCRYPTION_KEY`, because the plugin reads and writes the table directly and has no supported hook
-to do it without patching the package. `pnpm rotate-secrets` does not cover them. Until that changes:
+**Stored provider secrets (#212).** Crosswire wraps the Better Auth database adapter so that
+`sso_provider.oidc_config` and `sso_provider.saml_config` are encrypted with
+`APP_ENCRYPTION_KEY` before storage and decrypted when the SSO plugin reads them. The whole JSON
+config is encrypted, including OIDC client secrets and nested SAML private keys and passphrases.
+Each value uses AES-256-GCM with a full authentication tag, bound to the immutable provider row id
+and config column. Copying ciphertext to another provider or column fails authentication. This
+works before a provider is bound to an organisation and needs no package patch.
 
-- Prefer SAML without an SP private key (leave `authnRequestsSigned` off unless the IdP needs it),
-  and do not register OIDC providers through this plugin. Entra OIDC above uses
-  `ENTRA_CLIENT_SECRET` from Key Vault, not this table.
-- Treat database backups and read access to `sso_provider` as access to those secrets.
-- If an OIDC client secret may have leaked, rotate it at the IdP and register the provider again
-  with the new secret.
-- If the SP signing key (`samlConfig.privateKey`) may have leaked, generate a new SP key pair,
-  register the provider again with the new private key, and give the IdP the new SP certificate.
-  Rotating keys at the IdP alone does not replace the SP key.
+New registrations and config updates require `APP_ENCRYPTION_KEY`, including in development.
+Existing plaintext JSON remains readable for upgrade compatibility. Run `pnpm rotate-secrets`
+once to encrypt those legacy configs; the same command rotates encrypted configs with connector
+and webhook secrets. See [key rotation](runbooks/key-rotation.md).
+
+For the first upgrade, stop SSO traffic and provider writes while replacing old application
+replicas. New code starts writing ciphertext immediately, which old code cannot read. Ensure all
+replicas and the rotation job use the new code and the same encryption key before running rotation
+and reopening traffic. Rolling back to code without this adapter requires restoring compatible
+data or an explicit decryption migration. Restoring a backup can lose changes made since it was taken.
+Historical backups containing plaintext configs remain sensitive after rotation.
+
+If a provider secret may have leaked, replace it at the IdP and update the provider configuration.
+For a compromised SP signing key, generate a new SP key pair, update the provider's private key,
+and give the IdP the new SP certificate. Storage encryption does not revoke exposed credentials.
 
 **Org mapping rule:** each SAML provider is bound to exactly one org (`sso_org_bindings`). Users who
 sign in through a bound provider join that org as `analyst` (unless an owner removed them). An unbound provider grants no org

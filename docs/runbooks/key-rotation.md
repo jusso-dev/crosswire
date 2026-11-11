@@ -6,9 +6,11 @@ AES-256-GCM:
 - hunting connector client secrets (`org_connectors.client_secret_enc`)
 - response connector client secrets (`org_response_connectors.client_secret_enc`)
 - Teams and Slack webhook URLs (`org_notification_channels.url_enc`)
+- whole OIDC and SAML provider configs (`sso_provider.oidc_config`, `sso_provider.saml_config`),
+  including client secrets, private keys and passphrases
 
 Changing the key on its own makes all of these unreadable. Rotate it with the three steps below
-instead. Nobody needs to re-save a connector or channel.
+instead. Nobody needs to re-save a connector, channel or SSO provider.
 
 How it works (`apps/web/src/server/lib/crypto.ts`): new values are always encrypted with
 `APP_ENCRYPTION_KEY`. Decryption tries `APP_ENCRYPTION_KEY` first, then each key in
@@ -23,8 +25,16 @@ two notification channels) still decrypts. Values written before
 even when no key change is due. Run it once after upgrading (no key change is needed for that);
 step 2 below covers it during a rotation. Every value must carry a full 16-byte GCM tag.
 
-Not covered: the SAML and OIDC provider secrets stored by `@better-auth/sso` in `sso_provider`
-(see [auth](../auth.md#saml-sso-later)).
+SSO configs also use `v2`, bound to the immutable provider row id and config column rather than
+an organisation id (a provider can exist before org binding). Legacy plaintext JSON is readable
+and is encrypted by `pnpm rotate-secrets`. Both config columns are included in the same transaction
+as connector and webhook secrets.
+
+**First upgrade to SSO encryption:** stop SSO traffic and provider writes while replacing old
+replicas. New code writes ciphertext immediately; old code cannot read it. Update every replica
+and the rotation job, with the same encryption key, before running rotation and reopening traffic.
+A rollback to code without SSO decryption requires compatible restored data or an explicit
+decryption migration. Historical plaintext backups remain sensitive. See [auth](../auth.md#saml-sso-later).
 
 Other secrets are not affected: `BETTER_AUTH_SECRET` (sessions, Entra tokens) and
 `ENTRA_CLIENT_SECRET` rotate as described in [Azure deploy](azure-deploy.md#3-secrets-key-vault).
@@ -100,9 +110,8 @@ or the apps cannot read stored secrets in between.
    old key, now from `APP_ENCRYPTION_KEY_PREVIOUS`.
 
 While the apps refresh at different times, a value saved by one app under the new key cannot be
-read by another app still on the old key. Expect at most a few failed notifications
-(`notification_failed`) or scheduled hunt runs in that window; they work again once both apps
-have the new key.
+read by another app still on the old key. Notifications, scheduled hunt runs and SSO sign-ins
+can fail in that window; they work again once all replicas have the new key.
 
 ### Step 2: re-encrypt stored secrets
 
@@ -129,8 +138,9 @@ ContainerAppConsoleLogs_CL
 | where j.msg in ("rotate-secrets complete", "rotate-secrets failed")
 ```
 
-The result has, per table (`orgConnectors`, `orgResponseConnectors`, `orgNotificationChannels`),
-`rotated` (re-encrypted now) and `current` (already under the new key).
+The result has counts for `orgConnectors`, `orgResponseConnectors`, `orgNotificationChannels`,
+`ssoOidcConfigs` and `ssoSamlConfigs`: `rotated` (encrypted or re-encrypted now) and `current`
+(already under the current key in `v2` format). Null config columns are not counted.
 
 - **First run:** `rotated` covers the stored values and `current` is 0 (or counts values saved
   since step 1). If `rotated` is 0 and `current` is not, the job still loaded the old key as
@@ -157,7 +167,7 @@ The result has, per table (`orgConnectors`, `orgResponseConnectors`, `orgNotific
    az containerapp job secret remove -g $RG -n crosswire-web-migrate --secret-names app-encryption-key-previous -o none
    ```
 
-2. Restart the web and worker revisions. Check a connector and a channel again.
+2. Restart the web and worker revisions. Check a connector, a channel and SSO sign-in again.
 3. Keep the Key Vault secret `app-encryption-key-previous`; do not delete it. Key Vault keeps a
    deleted secret's name reserved during soft delete (90 days by default), which would block step 1
    of the next rotation. The next rotation overwrites it with `az keyvault secret set`. If an earlier

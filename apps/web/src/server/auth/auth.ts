@@ -13,6 +13,7 @@ import { EntraSignInRefused, UnknownTenantError, checkEntraGate, entraEmailFallb
 import { entraClaimedDomain } from './domains'
 import { logger } from '../lib/logger'
 import { clientIp } from '../lib/http-security'
+import { ssoSecretAdapter } from './sso-secret-adapter'
 
 /** Map Better Auth endpoint paths to audit actions. */
 const AUDITED_PATHS: Record<string, string> = {
@@ -87,7 +88,7 @@ function createAuth() {
     // Custom domains and extra origins (#70, #74). APP_URL is always trusted.
     trustedOrigins: [e.APP_URL, ...(e.CORS_ALLOWED_ORIGINS ?? '').split(',').map((o) => o.trim()).filter((o) => o && o !== '*')],
     secret: e.BETTER_AUTH_SECRET,
-    database: drizzleAdapter(getDb(), { provider: 'pg', schema }),
+    database: ssoSecretAdapter(drizzleAdapter(getDb(), { provider: 'pg', schema })),
     advanced: {
       useSecureCookies: e.NODE_ENV === 'production',
       database: { generateId: () => crypto.randomUUID() },
