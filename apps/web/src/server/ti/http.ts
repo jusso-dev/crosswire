@@ -56,6 +56,33 @@ export async function readCappedText(res: Response, max: number): Promise<string
   return text + decoder.decode()
 }
 
+/** Most redirects one TI fetch follows. */
+export const TI_MAX_REDIRECTS = 3
+
+/**
+ * GET that follows a redirect only to https on the same host as the configured feed URL (#211).
+ * The default `redirect: 'follow'` would let a compromised or misconfigured upstream send the
+ * worker (and any Authorization header) to another host, including internal addresses. A redirect
+ * anywhere else, without a Location, or past the hop limit throws; the body is never read.
+ */
+async function fetchSameHost(doFetch: typeof fetch, url: string, init: { headers: Record<string, string>; signal: AbortSignal }): Promise<Response> {
+  const origin = new URL(url)
+  let current = url
+  for (let hop = 0; ; hop++) {
+    const res = await doFetch(current, { ...init, redirect: 'manual' })
+    if (res.status < 300 || res.status > 399 || res.status === 304) return res
+    await res.body?.cancel().catch(() => {})
+    const location = res.headers.get('location')
+    if (!location) throw new Error(`TI fetch refused: ${origin.host} sent a redirect without a location`)
+    const next = new URL(location, current)
+    if (next.protocol !== 'https:' || next.host !== origin.host) {
+      throw new Error(`TI fetch refused: ${origin.host} redirected to another host or to plain http`)
+    }
+    if (hop >= TI_MAX_REDIRECTS - 1) throw new Error(`TI fetch refused: more than ${TI_MAX_REDIRECTS} redirects from ${origin.host}`)
+    current = next.href
+  }
+}
+
 /**
  * Polite, cached GET for public TI feeds (#42).
  * - Skips the network entirely while the cached copy is younger than the TTL (default >= 1h).
@@ -65,6 +92,7 @@ export async function readCappedText(res: Response, max: number): Promise<string
  * - Refuses bodies over TI_MAX_RESPONSE_BYTES (header and streamed byte count); nothing is cached.
  *   A cached body over the cap (stored before the cap, or before it was lowered) is refused the
  *   same way and its cache row deleted.
+ * - Follows redirects only to https on the same host (#211).
  */
 export async function politeFetch(url: string, opts: PoliteFetchOptions = {}): Promise<FetchResult> {
   const e = env()
@@ -92,7 +120,7 @@ export async function politeFetch(url: string, opts: PoliteFetchOptions = {}): P
   if (cached?.lastModified) headers['If-Modified-Since'] = cached.lastModified
 
   for (let attempt = 0; ; attempt++) {
-    const res = await doFetch(url, { headers, signal: AbortSignal.timeout(e.TI_HTTP_TIMEOUT_MS) })
+    const res = await fetchSameHost(doFetch, url, { headers, signal: AbortSignal.timeout(e.TI_HTTP_TIMEOUT_MS) })
     if ((res.status === 429 || res.status === 503) && attempt < maxRetries) {
       const retryAfter = Number(res.headers.get('retry-after'))
       const wait = Math.min(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 2000 * 2 ** attempt, 60_000)

@@ -4,6 +4,7 @@ import { getDb } from '../src/server/db/client'
 import { auditEvents, orgConnectors } from '../src/server/db/schema'
 import { HuntingNotConfiguredError, TokenBroker, allowedSecretRefPrefix, resolveClientSecret, setTokenBroker, upsertConnector, type Sts } from '../src/server/hunting/broker'
 import { HuntingClient } from '../src/server/hunting/client'
+import { ResponseTokenBroker, upsertResponseConnector } from '../src/server/response/connector'
 import { plainMessage } from '../src/shared/messages'
 import { refusalMessage } from '../src/server/hunting/errors'
 import { StateError } from '../src/server/hunting/hunts'
@@ -129,5 +130,71 @@ describe('Microsoft API errors on a failed search (#129)', () => {
     expect(err.message).not.toContain('9f1c2d3e')
     expect(err.message.length).toBeLessThan(300)
     expect(plainMessage(err)).toBe(err.message)
+  })
+})
+
+describe('token caches follow connector changes in every process (#194)', () => {
+  const stsFor = (prefix: string) => {
+    const calls: Array<{ tenantId: string; clientId: string }> = []
+    const sts: Sts = {
+      clientCredentials: vi.fn(async (i) => {
+        calls.push({ tenantId: i.tenantId, clientId: i.clientId })
+        return { accessToken: `${prefix}-${i.tenantId}-${calls.length}`, expiresAt: Date.now() + 3600_000 }
+      }),
+    }
+    return { sts, calls }
+  }
+  const OTHER_TENANT = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+
+  it('a broker in another process gets a new token for the new tenant, not the cached one', async () => {
+    const org = await makeOrg('HuntTenantSwap')
+    await upsertConnector(org, { tenantId: TENANT, clientId: CLIENT, clientSecret: SECRET })
+    // The worker's broker: a separate instance that upsertConnector's clear() never reaches.
+    const { sts, calls } = stsFor('hunt')
+    const worker = new TokenBroker(sts)
+    const first = await worker.acquire({ orgId: org, scope: 's' })
+    expect(await worker.acquire({ orgId: org, scope: 's' })).toBe(first)
+    expect(calls).toHaveLength(1)
+
+    await upsertConnector(org, { tenantId: OTHER_TENANT, clientId: CLIENT })
+    const second = await worker.acquire({ orgId: org, scope: 's' })
+    expect(second).not.toBe(first)
+    expect(calls).toHaveLength(2)
+    expect(calls[1]!.tenantId).toBe(OTHER_TENANT)
+  })
+
+  it('a removed secret stops a cached token from being used anywhere', async () => {
+    const org = await makeOrg('HuntSecretGone')
+    await upsertConnector(org, { tenantId: TENANT, clientId: CLIENT, clientSecret: SECRET })
+    const worker = new TokenBroker(stsFor('hunt').sts)
+    await worker.acquire({ orgId: org, scope: 's' })
+    await upsertConnector(org, { tenantId: TENANT, clientId: CLIENT, clearSecret: true })
+    await expect(worker.acquire({ orgId: org, scope: 's' })).rejects.toBeInstanceOf(HuntingNotConfiguredError)
+  })
+
+  it('a new secret for the same tenant and app also gets a new token', async () => {
+    const org = await makeOrg('HuntSecretSwap')
+    await upsertConnector(org, { tenantId: TENANT, clientId: CLIENT, clientSecret: SECRET })
+    const { sts, calls } = stsFor('hunt')
+    const worker = new TokenBroker(sts)
+    await worker.acquire({ orgId: org, scope: 's' })
+    await upsertConnector(org, { tenantId: TENANT, clientId: CLIENT, clientSecret: 'rotated-secret' })
+    await worker.acquire({ orgId: org, scope: 's' })
+    expect(calls).toHaveLength(2)
+  })
+
+  it('the response broker in another process does the same', async () => {
+    const org = await makeOrg('RespTenantSwap')
+    const owner = await makeUser()
+    await member(org, owner, 'owner')
+    await upsertResponseConnector(org, owner, { tenantId: TENANT, clientId: CLIENT, clientSecret: SECRET })
+    const { sts, calls } = stsFor('resp')
+    const worker = new ResponseTokenBroker(sts)
+    const first = await worker.acquire({ orgId: org, scope: 's' })
+    expect(await worker.acquire({ orgId: org, scope: 's' })).toBe(first)
+
+    await upsertResponseConnector(org, owner, { tenantId: OTHER_TENANT, clientId: CLIENT })
+    expect(await worker.acquire({ orgId: org, scope: 's' })).not.toBe(first)
+    expect(calls.map((c) => c.tenantId)).toEqual([TENANT, OTHER_TENANT])
   })
 })

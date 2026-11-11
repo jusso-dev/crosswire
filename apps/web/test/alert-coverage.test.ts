@@ -23,6 +23,8 @@ const listed = new Set([...(BICEP.match(/var failureEvents = '(.*)'/)?.[1] ?? ''
 const PATTERNS: Record<string, string> = {
   'job ${name} failed': 'worker jobs: m startswith "job " and m endswith " failed"',
   'hunt ${step} failed': 'hunting refusals: m startswith "hunt " and m endswith " failed"',
+  'agent ${what} failed': 'agent clean-up (bestEffort): m startswith "agent " and m endswith " failed"',
+  '${what} failed': 'run recovery (reconcileStep): every step name starts with "reconcile ", matched by m startswith "reconcile "',
   '${name} failed': 'one-off CLI commands (runCli). In Azure only the migrate job runs them, and the migration-failed rule catches every error it logs.',
 }
 
@@ -40,10 +42,19 @@ describe('alert coverage (#153)', () => {
     expect(missing).toEqual([])
   })
 
+  it('names every run-recovery step with the reconcile prefix', () => {
+    const runs = readFileSync(path.join(SRC, 'server/agents/runs.ts'), 'utf8')
+    const steps = [...runs.matchAll(/reconcileStep\(\s*'([^']+)'/g)].map((m) => m[1])
+    expect(steps.length).toBeGreaterThan(0)
+    expect(steps.filter((s) => !s?.startsWith('reconcile '))).toEqual([])
+  })
+
   it('covers every templated error message with a known pattern', () => {
     const unknown = calls.filter((c) => c.quote === '`' && !(c.msg in PATTERNS)).map((c) => `${c.file}: ${c.msg}`)
     expect(unknown).toEqual([])
     expect(BICEP).toContain('(m startswith "job " and m endswith " failed")')
     expect(BICEP).toContain('(m startswith "hunt " and m endswith " failed")')
+    expect(BICEP).toContain('(m startswith "agent " and m endswith " failed")')
+    expect(BICEP).toContain('(m startswith "reconcile " and m endswith " failed")')
   })
 })

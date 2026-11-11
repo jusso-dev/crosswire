@@ -260,6 +260,9 @@ Setup:
 - Worker (#142): startup, liveness and readiness probes on its health server
   (`WORKER_HEALTH_PORT`, default 3001) `GET /healthz`, which is 200 while the last loop finished
   under 3 minutes ago. A stuck loop is restarted. All probes are in `infra/azure/modules/apps.bicep`.
+  The loop runs only the quick database jobs (expiry, stale runs and executions). Scheduled
+  searches, the daily digest and the retention purge start from it but run alongside (#197), so a
+  slow query or SMTP server does not make the probe fail. Each of them never runs twice at once.
 - Logs are JSON lines (`time`, `level`, `msg`, fields) in Log Analytics:
   `ContainerAppConsoleLogs_CL | where ContainerAppName_s == 'crosswire-web'`.
 - Authorization headers, cookies, tokens and secrets are redacted by the logger.

@@ -3,6 +3,7 @@ import { assertAllowedRequest, clampRows, clampTimeout, assertSafeKql } from './
 import { tokenBroker } from './broker'
 import { getConnector, HuntingNotConfiguredError } from './broker'
 import { demoAdvancedHunting, demoSentinelIncidents, demoSentinelQuery } from './fixtures'
+import { readCappedText } from '../ti/http'
 
 export interface QueryResult {
   mode: 'live' | 'demo'
@@ -14,6 +15,38 @@ export interface QueryResult {
 }
 
 export type FetchLike = typeof fetch
+
+/**
+ * Largest response body the hunting client reads (#200). The body is counted as it arrives and the
+ * read stops once this is passed, so a huge result set is never buffered whole. 1,000 rows is the
+ * most a search keeps, so a legitimate result is far below this.
+ */
+export const HARD_RESPONSE_BYTES = 32 * 1024 * 1024
+
+/** Microsoft answered, but not with a full result. The message is written for the analyst. */
+export class HuntingResultError extends Error {}
+
+/**
+ * Where a search runs right now (#189): demo fixtures, or the tenant, app registration and
+ * workspace in the saved connector. A schedule stores this when a person approves it and stops
+ * when it no longer matches.
+ */
+export interface HuntingContext {
+  mode: 'live' | 'demo'
+  tenantId: string | null
+  clientId: string | null
+  sentinelWorkspaceId: string | null
+}
+
+export async function huntingContext(orgId: string): Promise<HuntingContext> {
+  const c = await getConnector(orgId)
+  if (!c && env().HUNTING_DEMO_MODE) return { mode: 'demo', tenantId: null, clientId: null, sentinelWorkspaceId: null }
+  return { mode: 'live', tenantId: c?.tenantId ?? null, clientId: c?.clientId ?? null, sentinelWorkspaceId: c?.sentinelWorkspaceId ?? null }
+}
+
+export function sameHuntingContext(a: HuntingContext, b: HuntingContext) {
+  return a.mode === b.mode && a.tenantId === b.tenantId && a.clientId === b.clientId && a.sentinelWorkspaceId === b.sentinelWorkspaceId
+}
 
 /**
  * HuntingGraphClient (#45, #49): the only HTTP path hunting code may use. Every request is checked
@@ -32,14 +65,31 @@ export class HuntingClient {
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     })
-    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    let text: string
+    try {
+      text = await readCappedText(res, HARD_RESPONSE_BYTES)
+    } catch (err) {
+      if (/larger than/.test(err instanceof Error ? err.message : '')) {
+        throw new HuntingResultError(`The result is larger than ${HARD_RESPONSE_BYTES / 1024 / 1024} MB, so Crosswire stopped reading it. Add a take or summarize to the query and run it again.`)
+      }
+      throw err
+    }
+    let json: Record<string, unknown> = {}
+    try {
+      const parsed: unknown = JSON.parse(text)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) json = parsed as Record<string, unknown>
+    } catch {
+      if (res.ok) throw new HuntingResultError('Microsoft returned a result Crosswire could not read. Nothing was recorded as a hit or a miss. Try again.')
+    }
     if (!res.ok) throw new Error(translateError(res.status, json))
+    // A 200 can still carry a top-level error: Log Analytics returns PartialError when a limit cut
+    // the result short. A partial result must never read as "no hits", so it fails the search.
+    if (json.error) throw new HuntingResultError(`Microsoft returned only part of the result, so the search is recorded as failed rather than as no hits. Narrow the query and run it again. ${errorDetail(json)}`.trim())
     return json
   }
 
   private async isDemo(orgId: string) {
-    if (!env().HUNTING_DEMO_MODE) return false
-    return (await getConnector(orgId)) === null
+    return (await huntingContext(orgId)).mode === 'demo'
   }
 
   async runAdvancedHunting(input: { orgId: string; kql: string; maxRows?: number; timeoutMs?: number }): Promise<QueryResult> {
@@ -49,9 +99,10 @@ export class HuntingClient {
     const started = Date.now()
     if (await this.isDemo(input.orgId)) return cap(demoAdvancedHunting(kql), maxRows, 'demo', started)
     const json = await this.call(input.orgId, 'POST', 'https://graph.microsoft.com/v1.0/security/runHuntingQuery', 'https://graph.microsoft.com/.default', { Query: kql, Timespan: 'P30D' }, timeoutMs)
-    const schema = (json.schema as Array<{ name?: string; Name?: string }> | undefined) ?? []
-    const results = (json.results as Array<Record<string, unknown>> | undefined) ?? []
-    return cap({ columns: schema.map((c) => c.name ?? c.Name ?? ''), rows: results }, maxRows, 'live', started)
+    // A missing results list is an unreadable answer, never zero rows (#200).
+    if (!Array.isArray(json.results)) throw unreadable()
+    const schema = Array.isArray(json.schema) ? (json.schema as Array<{ name?: string; Name?: string }>) : []
+    return cap({ columns: schema.map((c) => c.name ?? c.Name ?? ''), rows: json.results as Array<Record<string, unknown>> }, maxRows, 'live', started)
   }
 
   async runSentinelKql(input: { orgId: string; kql: string; maxRows?: number; timeoutMs?: number; timespan?: string }): Promise<QueryResult> {
@@ -70,9 +121,11 @@ export class HuntingClient {
       { query: kql, timespan: input.timespan ?? 'P7D' },
       timeoutMs,
     )
-    const table = (json.tables as Array<{ columns: Array<{ name: string }>; rows: unknown[][] }> | undefined)?.[0]
-    const columns = table?.columns.map((col) => col.name) ?? []
-    const rows = (table?.rows ?? []).map((r) => Object.fromEntries(columns.map((name, i) => [name, r[i]])))
+    const table = (Array.isArray(json.tables) ? json.tables[0] : undefined) as { columns?: unknown; rows?: unknown } | undefined
+    // A missing table, column list or row list is an unreadable answer, never zero rows (#200).
+    if (!table || !Array.isArray(table.columns) || !Array.isArray(table.rows)) throw unreadable()
+    const columns = (table.columns as Array<{ name: string }>).map((col) => col.name)
+    const rows = (table.rows as unknown[][]).map((r) => Object.fromEntries(columns.map((name, i) => [name, r[i]])))
     return cap({ columns, rows }, maxRows, 'live', started)
   }
 
@@ -86,7 +139,8 @@ export class HuntingClient {
       `/providers/Microsoft.OperationalInsights/workspaces/${encodeURIComponent(c.sentinelWorkspaceName)}/providers/Microsoft.SecurityInsights/incidents` +
       `?api-version=2024-03-01&$top=${top}&$orderby=properties/createdTimeUtc desc`
     const json = await this.call(input.orgId, 'GET', url, 'https://management.azure.com/.default', undefined, clampTimeout())
-    const value = (json.value as Array<{ name: string; properties: Record<string, unknown> }> | undefined) ?? []
+    if (!Array.isArray(json.value)) throw unreadable()
+    const value = json.value as Array<{ name: string; properties: Record<string, unknown> }>
     return {
       mode: 'live' as const,
       incidents: value.map((v) => ({
@@ -105,8 +159,27 @@ function cap(r: { columns: string[]; rows: Array<Record<string, unknown>> }, max
   return { mode, columns: r.columns, rows: r.rows.slice(0, maxRows), rowCount: r.rows.length, truncated: r.rows.length > maxRows, durationMs: Date.now() - started }
 }
 
-function translateError(status: number, json: Record<string, unknown>) {
+const unreadable = () => new HuntingResultError('Microsoft returned a result without the expected rows, so Crosswire cannot tell whether anything matched. Nothing was recorded as a hit or a miss. Try again.')
+
+/**
+ * Microsoft's error code and a short message. Shown to the analyst and stored on the search, so the
+ * message is kept short and free of request ids; the screen falls back to a generic sentence for
+ * long or id-bearing text (#129).
+ */
+function errorParts(json: Record<string, unknown>) {
   const err = (json.error ?? {}) as { code?: string; message?: string }
+  const message = err.message ? String(err.message).replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '(id removed)').replace(/\s+/g, ' ').trim() : ''
+  return { code: err.code ? String(err.code).slice(0, 40) : '', detail: message.length > 110 ? `${message.slice(0, 110)}…` : message }
+}
+
+/** "(code: message)" for an error on a successful response, or empty when there is none. */
+function errorDetail(json: Record<string, unknown>) {
+  const { code, detail } = errorParts(json)
+  if (!code && !detail) return ''
+  return `(${code}${code && detail ? ': ' : ''}${detail})`
+}
+
+function translateError(status: number, json: Record<string, unknown>) {
   const hint =
     status === 401
       ? 'The app registration token was rejected. Check client ID/secret and tenant.'
@@ -117,11 +190,8 @@ function translateError(status: number, json: Record<string, unknown>) {
           : status === 429
             ? 'Microsoft throttled the request. Wait and try again.'
             : 'Microsoft API error.'
-  // Shown to the analyst and stored on the search, so keep Microsoft's detail short and free of
-  // request ids; the screen falls back to a generic sentence for long or id-bearing text (#129).
-  const detail = err.message ? String(err.message).replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '(id removed)').replace(/\s+/g, ' ').trim() : ''
-  const code = err.code ? String(err.code).slice(0, 40) : ''
-  return `${hint} (HTTP ${status}${code ? `, ${code}` : ''}${detail ? `: ${detail.length > 110 ? `${detail.slice(0, 110)}…` : detail}` : ''})`
+  const { code, detail } = errorParts(json)
+  return `${hint} (HTTP ${status}${code ? `, ${code}` : ''}${detail ? `: ${detail}` : ''})`
 }
 
 let client: HuntingClient | undefined

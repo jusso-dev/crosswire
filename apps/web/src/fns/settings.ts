@@ -2,6 +2,8 @@ import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { authed } from './middleware'
 import { listOrgMembers, setMemberRole } from '../server/orgs'
+import { canApprove } from '../server/response/rbac'
+import { disableSchedulesApprovedBy } from '../server/hunting/schedules'
 import { listAudit } from '../server/audit'
 import { writeAudit } from '../server/audit'
 import { clearDigestEmail, confirmDigestEmail, DigestEmailError, getDigestEmailView, previewDigestEmail, requestDigestEmail } from '../server/notify/digest-contact'
@@ -18,6 +20,8 @@ export const setRoleFn = createServerFn({ method: 'POST' })
     if (context.session.org.role !== 'owner') throw new Error('Only owners can change roles.')
     if (data.userId === context.session.user.id) throw new Error('You cannot change your own role.')
     await setMemberRole(context.session.org.id, data.userId, data.role)
+    // Scheduled hunts this person approved stop with their approver role (#189).
+    if (!canApprove(data.role)) await disableSchedulesApprovedBy(context.session.org.id, data.userId, 'the person who approved it is no longer an owner or approver; re-approve to resume')
     await writeAudit({ category: 'auth', action: 'role_changed', actorType: 'user', actorId: context.session.user.id, orgId: context.session.org.id, targetType: 'user', targetId: data.userId, data: { role: data.role } })
     return { ok: true }
   })

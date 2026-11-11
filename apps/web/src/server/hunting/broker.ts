@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { eq } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { orgConnectors } from '../db/schema'
@@ -72,26 +73,64 @@ export function resolveClientSecret(c: Pick<typeof orgConnectors.$inferSelect, '
   return null
 }
 
-/** Token broker (#44): per-org client-credentials tokens, cached in memory until shortly before expiry. */
+/**
+ * Identity of the credential a cached token was minted from (#194): tenant, app, the row's
+ * `updatedAt` and a hash of the stored secret or reference. Every process reads the row from the
+ * database, so a token cached by another web replica or the worker stops matching as soon as the
+ * connector is saved, without a shared cache or a cross-process signal. The hash is never logged.
+ */
+export function connectorFingerprint(c: { tenantId: string; clientId: string; updatedAt: Date; clientSecretEnc: string | null; clientSecretRef: string | null }) {
+  const secret = createHash('sha256').update(`${c.clientSecretEnc ?? ''}|${c.clientSecretRef ?? ''}`).digest('hex').slice(0, 16)
+  return `${c.tenantId}|${c.clientId}|${c.updatedAt.getTime()}|${secret}`
+}
+
+/**
+ * In-memory token cache shared by the hunting and response brokers. One entry per org and scope,
+ * tagged with the connector fingerprint it was minted under; a different fingerprint is a miss.
+ */
+export class FingerprintedTokenCache {
+  private entries = new Map<string, { fingerprint: string; token: TokenResult }>()
+
+  get(orgId: string, scope: string, fingerprint: string): string | null {
+    const hit = this.entries.get(`${orgId}|${scope}`)
+    if (!hit || hit.fingerprint !== fingerprint || hit.token.expiresAt - 60_000 <= Date.now()) return null
+    return hit.token.accessToken
+  }
+
+  set(orgId: string, scope: string, fingerprint: string, token: TokenResult) {
+    this.entries.set(`${orgId}|${scope}`, { fingerprint, token })
+  }
+
+  clear(orgId?: string) {
+    if (!orgId) return this.entries.clear()
+    for (const k of this.entries.keys()) if (k.startsWith(`${orgId}|`)) this.entries.delete(k)
+  }
+}
+
+/**
+ * Token broker (#44): per-org client-credentials tokens, cached in memory until shortly before expiry.
+ * The connector is read on every call and the cache is keyed on its fingerprint (#194), so a changed
+ * tenant, app or secret never reuses a token minted for the old one, in any process.
+ */
 export class TokenBroker {
-  private cache = new Map<string, TokenResult>()
+  private cache = new FingerprintedTokenCache()
   constructor(private readonly sts: Sts = entraSts) {}
 
   async acquire({ orgId, scope }: { orgId: string; scope: string }): Promise<string> {
-    const cacheKey = `${orgId}|${scope}`
-    const hit = this.cache.get(cacheKey)
-    if (hit && hit.expiresAt - 60_000 > Date.now()) return hit.accessToken
     const connector = await getConnector(orgId)
     if (!connector) throw new HuntingNotConfiguredError(orgId)
+    const fingerprint = connectorFingerprint(connector)
+    const hit = this.cache.get(orgId, scope, fingerprint)
+    if (hit) return hit
     const clientSecret = resolveClientSecret(connector)
     if (!clientSecret) throw new HuntingNotConfiguredError(orgId)
     const token = await this.sts.clientCredentials({ tenantId: connector.tenantId, clientId: connector.clientId, clientSecret, scope })
-    this.cache.set(cacheKey, token)
+    this.cache.set(orgId, scope, fingerprint, token)
     return token.accessToken
   }
 
-  clear() {
-    this.cache.clear()
+  clear(orgId?: string) {
+    this.cache.clear(orgId)
   }
 }
 
@@ -160,9 +199,11 @@ export async function upsertConnector(orgId: string, input: ConnectorInput, acto
     sentinelResourceGroup: input.sentinelResourceGroup ?? null,
     sentinelWorkspaceName: input.sentinelWorkspaceName ?? null,
     sentinelWorkspaceId: input.sentinelWorkspaceId ?? null,
+    // Set explicitly on insert and on conflict: other processes key their token cache on it (#194).
+    updatedAt: new Date(),
   }
   await getDb().insert(orgConnectors).values(values).onConflictDoUpdate({ target: orgConnectors.orgId, set: values })
-  tokenBroker().clear()
+  tokenBroker().clear(orgId)
   const changed: string[] = AUDITED_FIELDS.filter((f) => (existing?.[f] ?? null) !== values[f])
   const secretChanged = !existing || existing.clientSecretEnc !== values.clientSecretEnc || existing.clientSecretRef !== values.clientSecretRef
   if (secretChanged) changed.push(values.clientSecretEnc || values.clientSecretRef ? 'secret' : 'secret removed')

@@ -5,7 +5,7 @@ Owners add webhook channels under **Settings → Notifications**. Each channel s
 | Event | When | Content |
 | --- | --- | --- |
 | `watch_hit` | A matcher run finds new hits for the org (one batched message per run) | Count, up to 5 titles, link to Watches |
-| `approval_pending` | A response proposal (or rollback) is created | Title, action type, target counts, blast radius, link to the proposal |
+| `approval_pending` | A response proposal (or rollback) is created. An agent turn sends one message for all its proposals when it ends (#214) | Title, action type, target counts, link to the proposal. A person's proposal also has the blast radius |
 | `execution` | A live execution finishes (succeeded, partial or failed) | Title, calls succeeded / total, link |
 | `scheduled_hunt` | A scheduled hunt returns rows and the count changed | Row count (and previous), interval, link to the hunt |
 

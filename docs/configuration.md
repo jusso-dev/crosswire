@@ -67,6 +67,26 @@ All optional. Defaults are shown; invalid values stop the server at boot.
 | `TRUSTED_PROXIES` | (empty) | Comma-separated IPv4/IPv6 addresses or CIDR ranges of your proxies. An invalid entry stops the server. |
 | `DATABASE_TLS_INSECURE_OK` | `false` | Silences the production warning for a `DATABASE_URL` without `sslmode=verify-full`, for a database without TLS on a private network. It does not change how the app connects. |
 | `WORKER_HEALTH_PORT` | `3001` | Port of the worker's health server (`GET /healthz`), used by container probes. |
+| `SMTP_ALLOW_PLAINTEXT` | `false` | Allows digest and confirmation mail without TLS. See [SMTP](#smtp). |
+
+## SMTP
+
+Optional. Without `SMTP_HOST`, digests are in-app only. Mail is always encrypted unless you opt out:
+
+- `SMTP_PORT=465` uses TLS from the start.
+- Any other port (default `587`) must upgrade with STARTTLS. If the server does not offer it, or the
+  offer is stripped on the way, the send fails. Nothing goes out in plain text, including the SMTP
+  password, digests and confirmation links.
+- `SMTP_ALLOW_PLAINTEXT=true` allows plain text on ports other than 465. Use it only for a lab relay
+  on a trusted network (for example a local mail catcher). Production logs a warning at start-up
+  while it is set.
+
+Connect and greeting time out after 15 seconds and an idle connection after 30 seconds, so a stalled
+server fails the send (and the digest is retried) rather than holding the worker.
+
+Upgrading: a deployment whose relay has no STARTTLS on port 25 or 587 stops sending mail after this
+change (the worker logs `digest email failed`). Turn on TLS at the relay, or move to port 465. Set
+`SMTP_ALLOW_PLAINTEXT=true` only if the relay is on a trusted network.
 
 ## Database TLS
 

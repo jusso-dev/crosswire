@@ -25,7 +25,8 @@ var actions = empty(alertEmail) ? [] : [actionGroup.id]
 
 // Error-level log lines whose `msg` is a known failure event (#153), not a free-text word match.
 // Keep this list in step with logger.error calls in apps/web/src (test/alert-coverage.test.ts checks it).
-// `job <name> failed` (worker) and `hunt <step> failed` (hunting refusals) match by pattern below.
+// `job <name> failed` (worker), `hunt <step> failed` (hunting refusals), `agent <step> failed` (agent
+// clean-up) and `reconcile <step> failed` (run recovery) match by pattern below.
 var failureEvents = '"hunt run_kql failed", "scheduled hunt failed", "response execute failed", "response execution claim went stale; outcome unknown", "response result recorded after its claim closed", "approval step failed", "notify failed", "digest email failed", "digest confirmation email failed", "retention purge stopped part way", "retention purge audit write failed", "auth audit write failed", "session expiry audit write failed", "agent run task failed", "failed to finish agent run", "failed to persist assistant message", "failed to release agent run slot", "worker health server did not start", "migration failed", "request failed"'
 
 var rules = [
@@ -47,7 +48,7 @@ var rules = [
     name: '${prefix}-job-failures'
     description: 'Failed hunts, KQL runs, executions, notifications or worker jobs (error-level events).'
     severity: 2
-    query: 'ContainerAppConsoleLogs_CL | extend j = parse_json(Log_s) | extend m = tostring(j.msg) | where tostring(j.level) == "error" and (m in (${failureEvents}) or (m startswith "job " and m endswith " failed") or (m startswith "hunt " and m endswith " failed"))'
+    query: 'ContainerAppConsoleLogs_CL | extend j = parse_json(Log_s) | extend m = tostring(j.msg) | where tostring(j.level) == "error" and (m in (${failureEvents}) or (m startswith "job " and m endswith " failed") or (m startswith "hunt " and m endswith " failed") or (m startswith "agent " and m endswith " failed") or (m startswith "reconcile " and m endswith " failed"))'
     threshold: 1
   }
   {

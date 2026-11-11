@@ -25,7 +25,9 @@ pwn.watch incidents and CISA KEV records and writes `watch_hits`. A unique index
 `pnpm digest:daily [YYYY-MM-DD]`, or the worker once per local day (00:05 in `APP_TIMEZONE`, default
 `Australia/Sydney`, for the previous day). One `digests` row per org per local day (DST-safe); quiet days produce a "no hits" digest. **Digests**
 page shows them. Email goes to that org's owners only when `SMTP_HOST` is set; `emailed_at`
-prevents double sends. Each owner gets it at their confirmed digest address if they set one (below),
+prevents double sends. It is set only after the mail server accepts the message, so a failed send,
+or a worker stopped mid-send, is retried 15 minutes later rather than lost. A digest that failed
+for any org keeps the day open until it is sent (#197). Each owner gets it at their confirmed digest address if they set one (below),
 otherwise at their sign-in email. Dates are stored in UTC; the UI shows local time.
 
 ### Digest email address (#102)
@@ -57,7 +59,8 @@ added), with a deterministic "agree / differ" summary (dates, severity labels, e
 Missing sources show as absent. Non-CVE keys do a text search on pwn.watch.
 
 All TI fetches (pwn.watch, CISA KEV, Radar) refuse responses larger than `TI_MAX_RESPONSE_BYTES`
-(default 25 MB); a refused response is not cached. Fetch rules: [pwn.watch](ti/pwn.watch.md#politeness-issue-42).
+(default 25 MB); a refused response is not cached. They follow redirects only to `https` on the
+same host (#211). Fetch rules: [pwn.watch](ti/pwn.watch.md#politeness-issue-42).
 
 ### Cloudflare Radar (optional, Later #64)
 

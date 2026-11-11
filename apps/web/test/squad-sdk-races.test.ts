@@ -9,7 +9,7 @@ import { handleChat } from '../src/server/chat/handler'
 import { createThread, listMessages } from '../src/server/chat/threads'
 import { acquireRunSlot, acquireSlot, checkBudget, releaseOnce } from '../src/server/agents/budgets'
 import { LlmAgentRuntime, withTimeout } from '../src/server/agents/runtime'
-import { finishRun, requestRunCancel, reconcileStaleRuns, startRun } from '../src/server/agents/runs'
+import { finishRun, requestRunCancel, reconcileStaleRuns, SLOT_RELEASE_GRACE_MS, startRun } from '../src/server/agents/runs'
 import { getCurrentOrg } from '../src/server/orgs'
 import { makeOrg, team } from './helpers'
 import { mockEnv, startMockModel } from './mock-model'
@@ -101,6 +101,12 @@ describe('cancellation races', () => {
     expect(rows.find((row) => row.id === staleHeld!.id)?.slotReleased).toBe(true)
     expect(rows.find((row) => row.id === cancelledHeld!.id)?.status).toBe('interrupted')
     expect(rows.find((row) => row.id === neverHeld!.id)?.slotReleased).toBe(false)
+    // A cancelled row keeps its slot for the owning process until the grace period ends (#191).
+    expect(rows.find((row) => row.id === cancelledHeld!.id)?.slotReleased).toBe(false)
+    const [held] = await getDb().select().from(agentCapacity).where(eq(agentCapacity.orgId, orgId))
+    expect(held?.inflight).toBe(2)
+    await getDb().update(agentRuns).set({ finishedAt: new Date(Date.now() - SLOT_RELEASE_GRACE_MS - 1000) }).where(eq(agentRuns.id, cancelledHeld!.id))
+    await reconcileStaleRuns()
     const [capacity] = await getDb().select().from(agentCapacity).where(eq(agentCapacity.orgId, orgId))
     expect(capacity?.inflight).toBe(1)
     const [otherCap] = await getDb().select().from(agentCapacity).where(eq(agentCapacity.orgId, other))

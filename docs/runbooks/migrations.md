@@ -38,8 +38,8 @@ Rules:
   migration, `1794500000001`). After that time, the generated value is already higher.
 - Never edit a `when` to a time in the future, and never lower an existing one.
 - `apps/web/test/migrations-journal.test.ts` fails when the `when` values are not strictly
-  increasing, or when the newest is more than a day ahead of the clock (the two entries above are
-  allowed).
+  increasing, or when the newest is more than a day ahead of the clock (the two entries above, and
+  an entry pinned to one more than the entry before it, are allowed).
 
 ## Verify the applied version
 
