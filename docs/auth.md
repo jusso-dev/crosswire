@@ -163,6 +163,22 @@ Optional, off by default (`SAML_ENABLED=false`). Uses Better Auth's SSO plugin
 4. Bind the provider to your org (server function `bindSamlProviderFn`, owner only; it must be a
    provider you registered).
 
+**Stored provider secrets are not encrypted by Crosswire (#212).** The plugin stores the provider
+config as JSON text in `sso_provider` (`saml_config`, `oidc_config`), including `samlConfig.privateKey`
+(the SP signing key, when set) and `oidcConfig.clientSecret`. Crosswire does not wrap these with
+`APP_ENCRYPTION_KEY`, because the plugin reads and writes the table directly and has no supported hook
+to do it without patching the package. `pnpm rotate-secrets` does not cover them. Until that changes:
+
+- Prefer SAML without an SP private key (leave `authnRequestsSigned` off unless the IdP needs it),
+  and do not register OIDC providers through this plugin. Entra OIDC above uses
+  `ENTRA_CLIENT_SECRET` from Key Vault, not this table.
+- Treat database backups and read access to `sso_provider` as access to those secrets.
+- If an OIDC client secret may have leaked, rotate it at the IdP and register the provider again
+  with the new secret.
+- If the SP signing key (`samlConfig.privateKey`) may have leaked, generate a new SP key pair,
+  register the provider again with the new private key, and give the IdP the new SP certificate.
+  Rotating keys at the IdP alone does not replace the SP key.
+
 **Org mapping rule:** each SAML provider is bound to exactly one org (`sso_org_bindings`). Users who
 sign in through a bound provider join that org as `analyst`. An unbound provider grants no org
 access (the user cannot open `/app`) and writes a `saml_unbound_provider` audit row. SAML sign-ins

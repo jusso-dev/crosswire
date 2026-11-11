@@ -106,6 +106,8 @@ const schema = z.object({
   RESPONSE_EXECUTOR_LOGICAPP: executorFlag,
   RESPONSE_EXECUTOR_GRAPH: executorFlag,
   RESPONSE_LOGICAPP_URL: z.url().optional(),
+  /** The one organisation the Logic App acts for (#190). Unset = the Logic App executor refuses every proposal. */
+  RESPONSE_LOGICAPP_ORG_ID: z.string().trim().min(1).optional(),
   /** Global dry-run switch (#83). Unset = true. Live execution needs RESPONSE_DRY_RUN=false explicitly. */
   RESPONSE_DRY_RUN: optionalBool,
   RESPONSE_ALLOW_SELF_APPROVAL: bool(false),
@@ -231,6 +233,22 @@ export function startupWarnings(e: Env): string[] {
   }
   if (e.NODE_ENV === 'production' && e.SMTP_HOST && e.SMTP_ALLOW_PLAINTEXT) {
     warnings.push('SMTP_ALLOW_PLAINTEXT=true: mail, including the SMTP password and confirmation links, may be sent without TLS. Use it only for a relay on a trusted network.')
+  }
+  if (e.NODE_ENV === 'production') warnings.push(...approvalSafetyWarnings(e))
+  return warnings
+}
+
+/**
+ * Switches that weaken the human-approval model (#205). Logged at start-up in production and shown
+ * in Settings. Each approval and execution event also records whether they applied.
+ */
+export function approvalSafetyWarnings(e: Env): string[] {
+  const warnings: string[] = []
+  if (e.RESPONSE_ALLOW_SELF_APPROVAL) {
+    warnings.push('RESPONSE_ALLOW_SELF_APPROVAL=true: people can approve response actions they asked for, so the two-person rule is off. Use it in small labs only.')
+  }
+  if (e.APPROVAL_BINDING === 'legacy') {
+    warnings.push('APPROVAL_BINDING=legacy: response actions run without checking that the content still matches what was approved. Set it back to enforced.')
   }
   return warnings
 }

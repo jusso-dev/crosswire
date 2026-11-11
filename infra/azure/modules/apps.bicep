@@ -49,6 +49,8 @@ param rateLimitStorage string = 'database'
 param trustedProxies string = ''
 @description('Hunting demo mode (labs only). Off in production.')
 param huntingDemoMode bool = false
+@description('RESPONSE_LOGICAPP_ORG_ID: the one organisation the response Logic App acts for (#190). Empty = Logic App proposals are refused.')
+param responseLogicAppOrgId string = ''
 @description('Allow loading [DEMO] fixtures in production (labs only).')
 param allowDemoFixtures bool = false
 @description('Port of the worker health server (GET /healthz). Probes use it.')
@@ -99,6 +101,7 @@ var plainEnv = [
   { name: 'RESPONSE_EXECUTOR_SENTINEL', value: 'off' }
   { name: 'RESPONSE_EXECUTOR_LOGICAPP', value: 'off' }
   { name: 'RESPONSE_EXECUTOR_GRAPH', value: 'off' }
+  { name: 'RESPONSE_LOGICAPP_ORG_ID', value: responseLogicAppOrgId }
   // Fail-closed global dry-run (#83). Live execution requires changing this to 'false' via a change ticket.
   { name: 'RESPONSE_DRY_RUN', value: 'true' }
   { name: 'MIGRATIONS_DIR', value: '/app/drizzle' }
