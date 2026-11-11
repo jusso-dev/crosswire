@@ -12,14 +12,15 @@ type ShortcutEvent = Pick<globalThis.KeyboardEvent, 'metaKey' | 'ctrlKey' | 'alt
 
 /**
  * An open dialog or confirmation. A closed `<dialog role="alertdialog">` (ConfirmDialog stays
- * mounted while closed) does not count; an `alertdialog` built from another element always does.
+ * mounted while closed) does not count. Non-native alert dialogs and modal dialogs count while
+ * mounted, including the narrow-screen row inspector.
  */
-export const OPEN_DIALOG_SELECTOR = 'dialog[open], [role="alertdialog"]:not(dialog)'
+export const OPEN_DIALOG_SELECTOR = 'dialog[open], [role="alertdialog"]:not(dialog), [role="dialog"][aria-modal="true"]:not(dialog)'
 
 /**
  * Whether a single-key shortcut (`?`, `/`, `g` then a letter) may act on this key press.
  * No while typing, with a modifier held, after another handler took the key, or while any dialog
- * or confirmation is open (a native `dialog[open]` or an ARIA `alertdialog`). Cmd/Ctrl+K is
+ * or confirmation is open (a native `dialog[open]`, ARIA `alertdialog` or ARIA modal dialog). Cmd/Ctrl+K is
  * handled separately: it works while typing, but cannot open over another confirmation or dialog.
  */
 export function shouldHandleShortcut(event: ShortcutEvent, doc: Pick<Document, 'querySelector'>) {
