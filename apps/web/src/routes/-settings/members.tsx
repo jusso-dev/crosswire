@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { fetchMembers, setRoleFn } from '../../fns/settings'
+import { fetchMembers, removeMemberFn, setRoleFn } from '../../fns/settings'
 import { ConfirmDialog } from '../../components/confirm'
 import { TableWrap } from '../../components/ui'
 import { ROLE_LABEL, useSave } from './shared'
@@ -25,19 +25,25 @@ const ROLE_EFFECT: Record<Role, string> = {
 export function Members({ data }: { data: MembersData }) {
   const { busy, save, feedback, setError, error } = useSave()
   const [pending, setPending] = useState<{ member: Member; role: Role } | null>(null)
+  const [removing, setRemoving] = useState<Member | null>(null)
 
   const apply = (member: Member, role: Role) =>
     save(`role:${member.userId}`, () => setRoleFn({ data: { userId: member.userId, role } }), `${member.name || member.email} is now ${ROLE_LABEL[role]}.`)
 
   return (
     <>
-      {!pending && feedback}
+      {!pending && !removing && feedback}
       <TableWrap label="Members">
         <table className="cw-table">
           <thead>
             <tr>
               <th scope="col">Person</th>
               <th scope="col">Role</th>
+              {data.canManage && (
+                <th scope="col">
+                  <span className="cw-sr-only">Actions</span>
+                </th>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -65,14 +71,39 @@ export function Members({ data }: { data: MembersData }) {
                     </span>
                   )}
                   {m.userId === data.me && <span className="cw-muted"> (you)</span>}
+                  {m.roleSource === 'entra' && (
+                    <div className="cw-muted cw-entra-managed">
+                      <span className="cw-badge">Managed by Entra group</span>
+                      {data.canManage && m.userId !== data.me && ' A change here is replaced at their next sign-in.'}
+                    </div>
+                  )}
                 </td>
+                {data.canManage && (
+                  <td>
+                    {m.userId !== data.me && (
+                      <button
+                        type="button"
+                        className="cw-btn"
+                        data-variant="danger"
+                        data-size="sm"
+                        disabled={Boolean(busy)}
+                        onClick={() => {
+                          setError(null)
+                          setRemoving(m)
+                        }}
+                      >
+                        Remove<span className="cw-sr-only"> {m.email}</span>
+                      </button>
+                    )}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
         </table>
       </TableWrap>
       {!data.canManage && <p className="cw-muted">Only owners change roles.</p>}
-      {data.canManage && <p className="cw-muted">Choose a role, then press Apply. You cannot change your own role. Ask another owner.</p>}
+      {data.canManage && <p className="cw-muted">Choose a role, then press Apply. You cannot change your own role or remove yourself. Ask another owner.</p>}
       <ConfirmDialog
         open={pending !== null}
         tone={pending?.member.role === 'owner' ? 'danger' : 'accent'}
@@ -81,6 +112,7 @@ export function Members({ data }: { data: MembersData }) {
           pending && (
             <p>
               <strong>{pending.member.email}</strong> changes from {ROLE_LABEL[pending.member.role]} to {ROLE_LABEL[pending.role]}. {ROLE_EFFECT[pending.role]}
+              {pending.member.roleSource === 'entra' && ' Their role is managed by an Entra group, so this change is replaced at their next sign-in.'}
             </p>
           )
         }
@@ -94,6 +126,30 @@ export function Members({ data }: { data: MembersData }) {
         onConfirm={async () => {
           if (!pending) return
           if (await apply(pending.member, pending.role)) setPending(null)
+        }}
+      />
+      <ConfirmDialog
+        open={removing !== null}
+        tone="danger"
+        title={removing ? `Remove ${removing.name || removing.email} from this organisation?` : ''}
+        body={
+          removing && (
+            <p>
+              <strong>{removing.email}</strong> loses access now and cannot sign in to this organisation again, even with Microsoft sign-in. To let them back in, an admin deletes their removal record
+              (see docs/auth.md).
+            </p>
+          )
+        }
+        confirmLabel="Remove person"
+        busy={Boolean(busy)}
+        error={removing ? error : null}
+        onCancel={() => {
+          setError(null)
+          setRemoving(null)
+        }}
+        onConfirm={async () => {
+          if (!removing) return
+          if (await save(`remove:${removing.userId}`, () => removeMemberFn({ data: { userId: removing.userId } }), `${removing.name || removing.email} removed.`)) setRemoving(null)
         }}
       />
     </>

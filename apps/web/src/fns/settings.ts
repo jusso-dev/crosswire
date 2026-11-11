@@ -37,6 +37,39 @@ export const removeMemberFn = createServerFn({ method: 'POST' })
   .validator(z.object({ userId: z.string().min(1) }))
   .handler(async ({ context, data }) => memberResult(() => removeMember(context.session.org.id, data.userId, context.session.user.id)))
 
+// ---------- Entra group and app-role mappings (owner request, #195) ----------
+export const fetchEntraMappings = createServerFn({ method: 'GET' })
+  .middleware([authed])
+  .handler(async ({ context }) => {
+    const { listEntraMappings } = await import('../server/auth/entra-mappings')
+    const view = await listEntraMappings(context.session.org.id)
+    return { ...view, canManage: context.session.org.role === 'owner', mappings: view.mappings.map((m) => ({ ...m, createdAt: m.createdAt.toISOString() })) }
+  })
+
+export const addEntraMappingFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ kind: z.enum(['group', 'app_role']), value: z.string().min(1).max(200), role: z.enum(['owner', 'approver', 'analyst']) }))
+  .handler(async ({ context, data }) => {
+    const { addEntraMapping } = await import('../server/auth/entra-mappings')
+    return memberResult(() => addEntraMapping(context.session.org.id, context.session.user.id, data))
+  })
+
+export const removeEntraMappingFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ id: z.string().min(1).max(100) }))
+  .handler(async ({ context, data }) => {
+    const { removeEntraMapping } = await import('../server/auth/entra-mappings')
+    return memberResult(() => removeEntraMapping(context.session.org.id, context.session.user.id, data.id))
+  })
+
+export const setEntraRequireMappedGroupFn = createServerFn({ method: 'POST' })
+  .middleware([authed])
+  .validator(z.object({ on: z.boolean() }))
+  .handler(async ({ context, data }) => {
+    const { setEntraRequireMappedGroup } = await import('../server/auth/entra-mappings')
+    return memberResult(() => setEntraRequireMappedGroup(context.session.org.id, context.session.user.id, data.on))
+  })
+
 export const fetchAuthAudit = createServerFn({ method: 'GET' })
   .middleware([authed])
   .handler(async ({ context }) => {

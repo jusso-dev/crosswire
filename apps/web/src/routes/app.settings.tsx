@@ -1,6 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { fetchConnector } from '../fns/hunts'
-import { fetchAuthAudit, fetchDigestEmail, fetchMembers } from '../fns/settings'
+import { fetchAuthAudit, fetchDigestEmail, fetchEntraMappings, fetchMembers } from '../fns/settings'
 import { fetchChannels, fetchResponseConnector } from '../fns/notify'
 import { fetchSetupState } from '../fns/setup'
 import { fmtTimeExact, humanise } from '../components/format'
@@ -8,6 +8,7 @@ import { PageHead, TableWrap, SkeletonPage } from '../components/ui'
 import { pageTitle, RouteError } from '../components/errors'
 import { Section } from './-settings/shared'
 import { Members } from './-settings/members'
+import { EntraMappings } from './-settings/entra-mappings'
 import { ConnectorForm, ResponseConnectorForm } from './-settings/connectors'
 import { Channels } from './-settings/channels'
 import { DigestEmail } from './-settings/digest-email'
@@ -19,8 +20,17 @@ import { SetupSteps } from './-settings/setup-steps'
  */
 export const Route = createFileRoute('/app/settings')({
   loader: async () => {
-    const [members, connector, audit, response, channels, digestEmail, setup] = await Promise.all([fetchMembers(), fetchConnector(), fetchAuthAudit(), fetchResponseConnector(), fetchChannels(), fetchDigestEmail(), fetchSetupState()])
-    return { members, connector, audit, response, channels, digestEmail, setup }
+    const [members, entra, connector, audit, response, channels, digestEmail, setup] = await Promise.all([
+      fetchMembers(),
+      fetchEntraMappings(),
+      fetchConnector(),
+      fetchAuthAudit(),
+      fetchResponseConnector(),
+      fetchChannels(),
+      fetchDigestEmail(),
+      fetchSetupState(),
+    ])
+    return { members, entra, connector, audit, response, channels, digestEmail, setup }
   },
   pendingComponent: () => <SkeletonPage label="Loading settings" />,
   errorComponent: ({ error }) => <RouteError error={error} title="Settings did not load" />,
@@ -30,6 +40,7 @@ export const Route = createFileRoute('/app/settings')({
 
 const SECTIONS = [
   ['people', 'People and roles'],
+  ['entra-groups', 'Entra groups'],
   ['hunting', 'Defender and Sentinel'],
   ['response', 'Response connection'],
   ['alerts', 'Teams and Slack alerts'],
@@ -39,7 +50,7 @@ const SECTIONS = [
 ] as const
 
 function Settings() {
-  const { members, connector, audit, response, channels, digestEmail, setup } = Route.useLoaderData()
+  const { members, entra, connector, audit, response, channels, digestEmail, setup } = Route.useLoaderData()
   // Only owners receive digest email, so only they see that section.
   const sections = SECTIONS.filter(([id]) => id !== 'digest-email' || digestEmail.allowed)
   return (
@@ -58,6 +69,9 @@ function Settings() {
         <div>
           <Section id="people" title="People and roles" intro="Analysts investigate and ask for actions. Approvers decide on actions. Owners also manage people and settings. New people join as analysts.">
             <Members data={members} />
+          </Section>
+          <Section id="entra-groups" title="Entra groups" intro="Give people a Crosswire role from their Entra groups or app roles, applied at each Microsoft sign-in.">
+            <EntraMappings data={entra} />
           </Section>
           <Section id="hunting" title="Defender and Sentinel" intro="A read-only connection so approved searches run on your real data. Until it is set, hunts return labelled demo data.">
             <ConnectorForm data={connector} health={setup.connector} now={setup.now} />

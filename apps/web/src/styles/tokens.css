@@ -950,3 +950,8 @@ kbd { display: inline-block; min-width: 1.5em; text-align: center; line-height: 
 .cw-approvals-count { display: block; margin-top: 2px; font-size: var(--text-caption); text-align: right; }
 .cw-approvals-more { align-items: center; gap: var(--space-sm); border-top: 1px solid var(--border); }
 .cw-cell-wide .cw-badge { margin-left: var(--space-2xs); }
+
+/* ---------- Stream: auth and organisations (fix/auth-orgs) ---------- */
+.cw-entra-managed { margin-top: var(--space-2xs); }
+.cw-entra-managed .cw-badge { margin-right: var(--space-2xs); }
+.cw-entra-require { margin-top: var(--space-sm); font-weight: 600; }
