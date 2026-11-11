@@ -16,6 +16,7 @@ const NOT_FOR_AZURE: Record<string, string> = {
   SMTP_USER: 'optional email',
   SMTP_PASSWORD: 'optional email secret',
   SMTP_FROM: 'optional email',
+  SMTP_ALLOW_PLAINTEXT: 'off by default; lab relays only, never in Azure',
   AZURE_OPENAI_API_KEY: 'keyless managed identity in Azure',
   AZURE_OPENAI_API_VERSION: 'v1 API needs none',
   OPENAI_BASE_URL: 'openai-compatible provider is not used in Azure',

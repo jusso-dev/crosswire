@@ -42,4 +42,7 @@ Queues; plain Node timers.
 - **Timeouts:** `TI_HTTP_TIMEOUT_MS` (30 s).
 - **Size cap:** responses over `TI_MAX_RESPONSE_BYTES` (default 25 MB) are refused, by
   `Content-Length` and by counting the streamed body; nothing is cached.
+- **Redirects:** followed only to `https` on the same host as the configured URL, at most 3 hops.
+  A redirect to another host (including internal addresses), to plain `http` or without a
+  `Location` fails the fetch, so a moved or compromised feed cannot send the worker elsewhere.
 - `robots.txt` allows all paths (checked 2026-11-07). We use JSON feeds only, never HTML scraping.

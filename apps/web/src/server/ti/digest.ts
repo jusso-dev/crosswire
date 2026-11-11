@@ -90,6 +90,11 @@ export function renderDigestEmail(orgName: string, digest: { day: string; hitCou
  * Idempotent: `emailed_at` guards against double-sending for the same org-day.
  * Recipients always come from that org's own membership, never from global config: each owner's
  * confirmed digest address, or their sign-in email (#102).
+ *
+ * Each send runs in a transaction that holds the digest row (`for update skip locked`) and sets
+ * `emailed_at` only once the mail is accepted (#197). A concurrent run skips a row that is being
+ * sent. A failed send, or a process killed mid-send, leaves `emailed_at` empty (the transaction
+ * rolls back with the connection), so the next run retries that org-day instead of losing it.
  */
 export async function runDailyDigest(day = appDay()) {
   const db = getDb()
@@ -103,23 +108,24 @@ export async function runDailyDigest(day = appDay()) {
     if (digest.emailedAt) continue
     const recipients = await listOrgOwnerEmails(org.id)
     const { subject, text } = renderDigestEmail(org.name, digest)
-    // Claim the send first so a concurrent or repeated run cannot double-send.
-    const claimed = await db
-      .update(digests)
-      .set({ emailedAt: new Date() })
-      .where(and(eq(digests.id, digest.id), isNull(digests.emailedAt)))
-      .returning({ id: digests.id })
-    if (claimed.length === 0) continue
-    let sent = false
     try {
-      sent = await sendMail(recipients, subject, text)
+      const sent = await db.transaction(async (tx) => {
+        const [held] = await tx
+          .select({ id: digests.id })
+          .from(digests)
+          .where(and(eq(digests.id, digest.id), isNull(digests.emailedAt)))
+          .for('update', { skipLocked: true })
+        // Already sent, or another run is sending it now.
+        if (!held) return false
+        if (!(await sendMail(recipients, subject, text))) return false
+        await tx.update(digests).set({ emailedAt: new Date() }).where(eq(digests.id, digest.id))
+        return true
+      })
+      if (sent) emailed++
     } catch (err) {
       failed++
       logger.error('digest email failed', { orgId: org.id, error: err instanceof Error ? err.message : String(err) })
     }
-    if (sent) emailed++
-    // Release the claim so the next run retries this org-day.
-    else await db.update(digests).set({ emailedAt: null }).where(eq(digests.id, digest.id))
   }
   logger.info('daily digest complete', { day, built, emailed, failed })
   return { day, built, emailed, failed }

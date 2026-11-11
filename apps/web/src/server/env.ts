@@ -57,6 +57,11 @@ const schema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASSWORD: z.string().optional(),
   SMTP_FROM: z.string().default('Crosswire <crosswire@localhost>'),
+  /**
+   * Allows SMTP without TLS (#210). Off by default: port 465 uses implicit TLS and every other port
+   * must upgrade with STARTTLS, or the send fails. Only for a lab relay on a trusted network.
+   */
+  SMTP_ALLOW_PLAINTEXT: bool(false),
 
   /**
    * Chat model (ADR 0004). Crosswire hosts the agents; the model only answers.
@@ -223,6 +228,9 @@ export function startupWarnings(e: Env): string[] {
       'DATABASE_URL does not set sslmode=verify-full, so the Postgres server certificate and host name are not checked. ' +
         'Add ?sslmode=verify-full (see docs/configuration.md). Set DATABASE_TLS_INSECURE_OK=true only for a database without TLS on a private network.',
     )
+  }
+  if (e.NODE_ENV === 'production' && e.SMTP_HOST && e.SMTP_ALLOW_PLAINTEXT) {
+    warnings.push('SMTP_ALLOW_PLAINTEXT=true: mail, including the SMTP password and confirmation links, may be sent without TLS. Use it only for a relay on a trusted network.')
   }
   return warnings
 }

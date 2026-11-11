@@ -97,3 +97,51 @@ describe('council review regressions', () => {
     expect((await buildDigest(a, day)).day).toBe(day)
   })
 })
+
+describe('daily digest send claim (#197)', () => {
+  it('a concurrent run never sends the same org-day twice, and the claim is set only after the send', async () => {
+    const day = appDay()
+    const org = await makeOrg('MailOnce')
+    const u = await makeUser('mail-once@example.test')
+    await member(org, u, 'owner')
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    let inSend!: () => void
+    const sending = new Promise<void>((r) => (inSend = r))
+    let mine = 0
+    const send = vi.spyOn(mail, 'sendMail').mockImplementation(async (to) => {
+      if (!to.includes('mail-once@example.test')) return true
+      mine++
+      inSend()
+      // Hold the send open while a second run starts. (PGlite has one connection, so the second
+      // run waits for this transaction; on Postgres `skip locked` makes it skip the row.)
+      await gate
+      return true
+    })
+    const first = runDailyDigest(day)
+    await sending
+    const second = runDailyDigest(day)
+    release()
+    await Promise.all([first, second])
+    send.mockRestore()
+    expect(mine).toBe(1)
+    const [row] = await getDb().select().from(digests).where(eq(digests.orgId, org))
+    expect(row!.emailedAt).not.toBeNull()
+  })
+
+  it('a send that never returns true leaves the org-day unclaimed for the next run', async () => {
+    const day = appDay()
+    const org = await makeOrg('MailFalse')
+    const u = await makeUser('mail-false@example.test')
+    await member(org, u, 'owner')
+    const send = vi.spyOn(mail, 'sendMail').mockImplementation(async (to) => !to.includes('mail-false@example.test'))
+    await runDailyDigest(day)
+    let [row] = await getDb().select().from(digests).where(eq(digests.orgId, org))
+    expect(row!.emailedAt).toBeNull()
+    send.mockImplementation(async () => true)
+    await runDailyDigest(day)
+    ;[row] = await getDb().select().from(digests).where(eq(digests.orgId, org))
+    expect(row!.emailedAt).not.toBeNull()
+    send.mockRestore()
+  })
+})
