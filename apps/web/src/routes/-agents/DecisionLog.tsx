@@ -2,7 +2,7 @@ import { Link } from '@tanstack/react-router'
 import { useEffect, useState } from 'react'
 import type { fetchActivity } from '../../fns/agents'
 import { AGENT_LABELS, isAgentKey } from '../../shared/agents'
-import { fmtTime, humanise } from '../../components/format'
+import { fmtTimeExact, humanise } from '../../components/format'
 import { RefreshButton } from './RefreshButton'
 import { agentsRoute, useSetSearch } from './route'
 import { syncSearchText } from './helpers'
@@ -97,7 +97,7 @@ export function DecisionLog({ rows: activity, hasMore, actors }: { rows: Awaited
               <tbody>
                 {activity.map((a) => (
                   <tr key={a.id}>
-                    <td className="num cw-nowrap">{fmtTime(a.createdAt)}</td>
+                    <td className="num cw-nowrap">{fmtTimeExact(a.createdAt)}</td>
                     <td>{a.actorType === 'agent' && isAgentKey(a.actorKey) ? AGENT_LABELS[a.actorKey].name : a.actorType === 'user' ? (a.actorLabel ?? 'A person') : a.actorType === 'system' ? 'Crosswire' : a.actorKey}</td>
                     <td>
                       {ACTION_WORDS[a.action] ?? humanise(a.action)}

@@ -299,7 +299,9 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-lg) 0; 
 .cw-sev[data-sev='low'] { border: 2px solid var(--sev-low); border-radius: 50%; }
 
 /* ---------- Freshness: clock + relative age; stale is spelled out ---------- */
-.cw-fresh { display: inline-flex; align-items: center; gap: 4px; font-size: var(--text-caption); color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cw-fresh { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: var(--text-caption); color: var(--text-muted); white-space: normal; font-variant-numeric: tabular-nums; }
+.cw-fresh .cw-linkbtn { position: relative; color: inherit; font: inherit; }
+.cw-fresh-exact { flex-basis: 100%; }
 .cw-fresh::before { content: ''; width: 10px; height: 10px; flex: none; border: 1.5px solid currentColor; border-radius: 50%; background: linear-gradient(currentColor, currentColor) 50% 30% / 1.5px 35% no-repeat, linear-gradient(currentColor, currentColor) 62% 50% / 30% 1.5px no-repeat; opacity: 0.8; }
 .cw-fresh[data-state='stale'] { color: var(--status-attention); font-weight: 600; }
 .cw-fresh[data-state='missing'] { color: var(--text-muted); font-style: normal; }

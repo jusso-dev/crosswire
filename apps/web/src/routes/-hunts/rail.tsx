@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import { addNote } from '../../fns/hunts'
-import { fmtTime, plural } from '../../components/format'
+import { fmtTimeExact, plural } from '../../components/format'
 import { Notice } from '../../components/ui'
 import { useAction } from '../../components/action'
 import { plainMessage } from '../../shared/messages'
@@ -126,7 +126,7 @@ export function Timeline({
                   <span className="cw-ev-label">{label}</span>
                 )}
                 <span className="cw-tl-time">
-                  <time dateTime={e.createdAt}>{fmtTime(e.createdAt)}</time> · {e.actorType === 'agent' ? (e.actorId ?? 'agent') : e.actorType === 'user' ? personName(data.people, e.actorId) : 'Crosswire'}
+                  <time dateTime={e.createdAt}>{fmtTimeExact(e.createdAt)}</time> · {e.actorType === 'agent' ? (e.actorId ?? 'agent') : e.actorType === 'user' ? personName(data.people, e.actorId) : 'Crosswire'}
                 </span>
                 {typeof pl.note === 'string' && <p>{pl.note}</p>}
                 {typeof pl.rowCount === 'number' && (

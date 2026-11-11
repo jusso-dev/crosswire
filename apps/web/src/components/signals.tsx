@@ -1,4 +1,5 @@
-import { fmtAgo, fmtTime } from './format'
+import { useId, useState } from 'react'
+import { fmtAgo, fmtTimeExact } from './format'
 import { statusWord } from '../shared/labels'
 
 /**
@@ -25,11 +26,13 @@ export function SeverityTag({ value }: { value: string | null | undefined }) {
 }
 
 /**
- * Relative age, with the full time (zone included) inside the same <time> element so keyboard,
- * touch and screen reader users get it too, not only a mouse hover. Pass `now` from the loader so
+ * Relative age, with an inline disclosure of the full time and zone for keyboard, touch and
+ * screen reader users. Pass `now` from the loader so
  * the server and the browser render the same words. `staleAfterMs` turns it into an explicit warning.
  */
 export function Freshness({ at, label, staleAfterMs, now }: { at: string | Date | null | undefined; label?: string; staleAfterMs?: number; now?: number }) {
+  const [expanded, setExpanded] = useState(false)
+  const exactId = useId()
   if (!at) {
     return (
       <span className="cw-fresh" data-state="missing">
@@ -38,14 +41,20 @@ export function Freshness({ at, label, staleAfterMs, now }: { at: string | Date 
     )
   }
   const stale = staleAfterMs !== undefined && now !== undefined && now - new Date(at).getTime() > staleAfterMs
-  const exact = fmtTime(at)
+  const exact = fmtTimeExact(at)
+  const iso = new Date(at).toISOString()
   return (
-    <time className="cw-fresh" data-state={stale ? 'stale' : 'fresh'} dateTime={new Date(at).toISOString()} title={exact}>
-      {stale ? 'stale · ' : ''}
-      {label ? `${label} ` : ''}
-      {fmtAgo(at, now)}
-      <span className="cw-sr-only"> ({exact})</span>
-    </time>
+    <span className="cw-fresh" data-state={stale ? 'stale' : 'fresh'}>
+      <button type="button" className="cw-linkbtn" aria-expanded={expanded} aria-controls={exactId} onClick={() => setExpanded(!expanded)}>
+        <time dateTime={iso} title={exact}>
+          {stale ? 'stale · ' : ''}
+          {label ? `${label} ` : ''}
+          {fmtAgo(at, now)}
+        </time>
+        <span className="cw-sr-only">. {expanded ? 'Hide' : 'Show'} exact time</span>
+      </button>
+      <time id={exactId} className="cw-fresh-exact" dateTime={iso} hidden={!expanded}>{exact}</time>
+    </span>
   )
 }
 
