@@ -11,12 +11,27 @@ next purge removes them again.
 
 ## Backups
 
-- Automated backups with point-in-time restore (PITR), retention **7 days** in the Bicep
-  (`backup.backupRetentionDays`). Production: raise to 14–35 days and consider
-  `geoRedundantBackup: 'Enabled'` (set at server creation).
+- Automated backups with point-in-time restore (PITR). Retention is the Bicep parameter
+  `postgresBackupRetentionDays` (7 to 35; the template default is 7, `main.bicepparam` sets 14).
+  Geo-redundant backup is `postgresGeoRedundantBackup` and can only be set when the server is created.
 - Compose deployments: schedule `pg_dump` from the host, e.g.
   `docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T postgres pg_dump -U crosswire -Fc crosswire > crosswire-$(date +%F).dump`,
   and copy dumps off the host.
+
+## Data-tier resilience (#154)
+
+The database holds the audit trail and approval history. These are the chosen levels. Each is a
+Bicep parameter, so a production deployment can raise them without editing the template.
+
+| Setting | Lab (`crosswire-lab`) | Production (`main.bicepparam`) | Why |
+| --- | --- | --- | --- |
+| Backup retention | 7 days | 14 days | Two weeks to notice and recover from a bad change. Raise to 35 for stricter record keeping. |
+| Geo-redundant backup | Disabled | Disabled (decide at creation) | Doubles backup storage cost. Enable on a new server when a region-wide outage must be survivable. |
+| High availability | Disabled | Disabled | Not available on Burstable B1ms. Needs General Purpose (`postgresSkuTier`), which costs several times more. |
+| SKU | `Standard_B1ms` (Burstable) | `Standard_B1ms` | Enough for one organisation's SOC team. Change `postgresSkuName` and `postgresSkuTier` together. |
+| `CanNotDelete` locks on Postgres and Key Vault | Off | On (`enableDeleteLocks`) | Stops an accidental delete of the server or vault. Creating locks needs Owner or User Access Administrator. |
+| Key Vault purge protection | On | On | Deleted secrets can be recovered for 30 days. |
+| Key Vault network access | Public, RBAC only | Public, RBAC only | A private endpoint needs private networking and a jump host for operators. Follow-up, not built. |
 
 ## v1 lab targets
 
@@ -30,7 +45,9 @@ next purge removes them again.
 1. Pick a restore point (e.g. 30 minutes ago):
    `az postgres flexible-server restore -g <rg> -n <prefix>-pg-restore --source-server <prefix>-pg-<suffix> --restore-time "<UTC ISO time>"`
 2. Wait for the new server; allow access from the Container Apps environment (same networking as the original).
-3. Build the new connection string and update the Key Vault secret `database-url` to point at the restored server.
+3. Build the new connection strings (owner and `crosswire_app`, both with `sslmode=verify-full`)
+   and update the Key Vault secrets `database-url` and `database-url-app` to point at the restored
+   server. The app role and its grants are restored with the database.
 4. Restart the web and worker revisions so they pick up the secret.
 5. Verify: `/readyz` ready with the expected `migration`; sign in; open a known hunt case and approval.
 6. Record the drill in the [drill log](#drill-log) below and the RPO/RTO in the go-live checklist.

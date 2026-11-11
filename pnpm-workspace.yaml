@@ -10,3 +10,6 @@ onlyBuiltDependencies:
 # Force the patched esbuild everywhere (API-compatible for drizzle-kit's usage).
 overrides:
   esbuild: 0.28.2
+  # GHSA-g3hv-75wg-m249 (ReDoS, fixed in 11.0.1). Only eslint and typescript-eslint use minimatch (dev
+  # tooling); they declare ^10 but only use the Minimatch class and minimatch(), unchanged in 11.
+  'minimatch@>=7.0.0 <11.0.1': ^11.0.1

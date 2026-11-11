@@ -35,8 +35,10 @@ pnpm fixtures:load --email you@example.test --reset  # remove [DEMO] records aga
 Demo data needs `HUNTING_DEMO_MODE=true` and no hunting connector, never touches shared TI tables,
 and is refused in production unless `ALLOW_DEMO_FIXTURES=true`.
 
-Golden-path E2E (local only, not in CI): start the app, then `BASE_URL=http://localhost:3000 pnpm test:e2e`
-(first time: `pnpm --filter e2e exec playwright install chromium`).
+End-to-end tests (Playwright, Chromium) run in CI as the `e2e` job. Locally: `pnpm build`, then
+`PG_E2E_URL=postgres://... pnpm test:e2e` against a throwaway database, because the specs write to it.
+Playwright starts the mock model and the app itself. To test an app you already run, set `BASE_URL`
+instead. First time: `pnpm --filter e2e exec playwright install chromium`.
 
 ## The same checks CI runs
 

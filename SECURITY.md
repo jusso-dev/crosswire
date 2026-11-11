@@ -36,3 +36,10 @@ basis; there is no support SLA.
 ## Supported versions
 
 Only the latest `main` is supported.
+
+## How we watch for known vulnerabilities
+
+- Dependabot alerts and security updates are on for the repository.
+- CI fails an image build on a CRITICAL vulnerability with a fix available.
+- A weekly scan (`.github/workflows/image-scan.yml`) checks the newest published image on `main`
+  for HIGH and CRITICAL vulnerabilities, fixed or not, and reports them to code scanning.

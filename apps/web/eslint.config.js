@@ -30,8 +30,15 @@ export default tseslint.config(
       'no-restricted-imports': [
         'error',
         {
-          paths: [{ name: '../response/proposals', importNames: ['executeProposal', 'decideProposal', 'dryRunProposal'], message: 'Agents may only create proposals, never decide or execute them.' }],
-          patterns: [{ group: ['**/response/executors'], message: 'Agents must not import executors.' }],
+          // Patterns, not one exact path (#158): any relative spelling or alias of these modules matches.
+          patterns: [
+            {
+              group: ['**/response/proposals', '~/server/response/proposals'],
+              importNames: ['executeProposal', 'decideProposal', 'dryRunProposal'],
+              message: 'Agents may only create proposals, never decide or execute them.',
+            },
+            { group: ['**/response/executors', '~/server/response/executors'], message: 'Agents must not import executors.' },
+          ],
         },
       ],
     },

@@ -111,7 +111,7 @@ docs/             ADRs, runbooks, auth, hunting, response, TI
 - [Go-live checklist](docs/go-live-checklist.md) and [Day-1 operator playbook](docs/day-1-operator-playbook.md)
 - Runbooks: [bootstrap](docs/runbooks/bootstrap.md), [migrations](docs/runbooks/migrations.md), [custom domain + TLS](docs/runbooks/custom-domain.md), [rollback](docs/runbooks/rollback.md), [backup and restore](docs/runbooks/backup-restore.md), [staging](docs/runbooks/staging.md)
 - [Releasing](docs/releasing.md) ([latest release](https://github.com/jusso-dev/crosswire/releases/latest), [CHANGELOG](CHANGELOG.md)) and the [v1 ship gate](docs/ship-gate.md)
-- Post-deploy smoke: `pnpm smoke https://<host>`; golden-path E2E (local, not in CI): `pnpm test:e2e`
+- Post-deploy smoke: `pnpm smoke https://<host>`; end-to-end tests (also run in CI): `pnpm build && PG_E2E_URL=<disposable database> pnpm test:e2e`
 
 ## Contributing
 

@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm'
-import { env } from '../env'
+import { env, parseTrustedProxies, type ProxyMatcher } from '../env'
 import { getDb } from '../db/client'
 import { logger } from './logger'
 
@@ -179,11 +179,11 @@ type RateRow = { count: number | string; retry_after_sec: number | string | null
 
 /**
  * Client key for rate limiting: walk X-Forwarded-For from the right, skipping hops listed in
- * TRUSTED_PROXIES (exact IPs), and use the first untrusted hop. Without TRUSTED_PROXIES the
- * right-most hop is used (the one the nearest proxy appended). Clients cannot choose a bucket by
+ * TRUSTED_PROXIES (IPs or CIDR ranges), and use the first untrusted hop. Without TRUSTED_PROXIES
+ * the right-most hop is used (the one the nearest proxy appended). Clients cannot choose a bucket by
  * prepending entries; they could only add entries to the left, which are ignored.
  */
-export function clientKey(request: Request, trusted = trustedProxies()) {
+export function clientKey(request: Request, trusted: ProxyMatcher = trustedProxies()) {
   const hops = (request.headers.get('x-forwarded-for') ?? '').split(',').map((h) => h.trim()).filter(Boolean)
   for (let i = hops.length - 1; i >= 0; i--) {
     if (!trusted.has(hops[i]!)) return hops[i]!
@@ -191,8 +191,11 @@ export function clientKey(request: Request, trusted = trustedProxies()) {
   return request.headers.get('x-real-ip') || hops[0] || 'local'
 }
 
-function trustedProxies() {
-  return new Set((env().TRUSTED_PROXIES ?? '').split(',').map((s) => s.trim()).filter(Boolean))
+let proxies: { source: string | undefined; matcher: ProxyMatcher } | undefined
+function trustedProxies(): ProxyMatcher {
+  const source = env().TRUSTED_PROXIES
+  if (!proxies || proxies.source !== source) proxies = { source, matcher: parseTrustedProxies(source).matcher }
+  return proxies.matcher
 }
 
 let chatLimiter: AsyncRateLimiter | undefined
