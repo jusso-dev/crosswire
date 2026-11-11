@@ -1,4 +1,5 @@
 import { fmtAgo, fmtTime } from './format'
+import { statusWord } from '../shared/labels'
 
 /**
  * State primitives. Each axis has its own shape so they never blur together:
@@ -23,7 +24,11 @@ export function SeverityTag({ value }: { value: string | null | undefined }) {
   )
 }
 
-/** Relative age with the absolute time in the tooltip. `staleAfterMs` (with the render-time `now`) turns it into an explicit warning. */
+/**
+ * Relative age, with the full time (zone included) inside the same <time> element so keyboard,
+ * touch and screen reader users get it too, not only a mouse hover. Pass `now` from the loader so
+ * the server and the browser render the same words. `staleAfterMs` turns it into an explicit warning.
+ */
 export function Freshness({ at, label, staleAfterMs, now }: { at: string | Date | null | undefined; label?: string; staleAfterMs?: number; now?: number }) {
   if (!at) {
     return (
@@ -33,11 +38,13 @@ export function Freshness({ at, label, staleAfterMs, now }: { at: string | Date 
     )
   }
   const stale = staleAfterMs !== undefined && now !== undefined && now - new Date(at).getTime() > staleAfterMs
+  const exact = fmtTime(at)
   return (
-    <time className="cw-fresh" data-state={stale ? 'stale' : 'fresh'} dateTime={new Date(at).toISOString()} title={fmtTime(at)}>
+    <time className="cw-fresh" data-state={stale ? 'stale' : 'fresh'} dateTime={new Date(at).toISOString()} title={exact}>
       {stale ? 'stale · ' : ''}
       {label ? `${label} ` : ''}
-      {fmtAgo(at)}
+      {fmtAgo(at, now)}
+      <span className="cw-sr-only"> ({exact})</span>
     </time>
   )
 }
@@ -74,23 +81,10 @@ const STATUS_TONE: Record<string, 'ok' | 'warn' | 'danger' | 'info' | undefined>
   closed: undefined,
 }
 
-const STATUS_WORD: Record<string, string> = {
-  run: 'Ran',
-  proposed: 'Needs review',
-  approved: 'Approved',
-  failed: 'Failed',
-  rejected: 'Rejected',
-  expired: 'Expired',
-  open: 'Open',
-  closed: 'Closed',
-  pending: 'Pending',
-  executed: 'Executed',
-}
-
 export function StatusTag({ status }: { status: string }) {
   return (
     <span className="cw-badge" data-tone={STATUS_TONE[status]}>
-      {STATUS_WORD[status] ?? status}
+      {statusWord(status)}
     </span>
   )
 }

@@ -4,6 +4,7 @@ import { getDb } from '../db/client'
 import { pwnChanges, pwnIncidents, pwnTags } from '../db/schema'
 import { env } from '../env'
 import { politeFetch, type PoliteFetchOptions } from './http'
+import { safeHref } from '../../shared/links'
 
 // Parsers isolate upstream schema drift: unknown fields are ignored, missing optional fields default.
 const incidentSchema = z.looseObject({
@@ -47,6 +48,15 @@ const tagSchema = z.looseObject({
   url: z.string().nullish(),
 })
 const tagsFeed = z.looseObject({ tags: z.array(z.unknown()) })
+
+/**
+ * Feed links are checked here, before they are stored: only absolute http and https URLs are kept.
+ * Anything else (javascript:, data:, relative paths, junk) is stored as null, or as '' for the
+ * incident link whose column is required, and the screens show the title as plain text.
+ */
+export function feedUrl(raw: string | null | undefined): string | null {
+  return safeHref(raw) ?? null
+}
 
 export interface PwnFeeds {
   incidents: string
@@ -108,7 +118,7 @@ export async function ingestPwnWatch(payloads: { incidents: string; changes: str
       cveIds: (i.cveIds ?? []).map((c) => c.toUpperCase()),
       startedAt: i.startedAt ?? null,
       upstreamUpdatedAt: i.updatedAt ?? null,
-      url: i.url,
+      url: feedUrl(i.url) ?? '',
       source: 'pwn.watch',
       sourceUrl: urls.incidents,
       retrievedAt,
@@ -132,8 +142,8 @@ export async function ingestPwnWatch(payloads: { incidents: string; changes: str
       date: c.date ?? null,
       title: c.title,
       body: c.body ?? null,
-      url: c.url ?? null,
-      upstreamSourceUrl: c.sourceUrl ?? null,
+      url: feedUrl(c.url),
+      upstreamSourceUrl: feedUrl(c.sourceUrl),
       source: 'pwn.watch',
       sourceUrl: urls.changes,
       retrievedAt,
@@ -147,7 +157,7 @@ export async function ingestPwnWatch(payloads: { incidents: string; changes: str
       group: t.group ?? null,
       groupLabel: t.groupLabel ?? null,
       incidents: t.incidents ?? 0,
-      url: t.url ?? null,
+      url: feedUrl(t.url),
       source: 'pwn.watch',
       sourceUrl: urls.tags,
       retrievedAt,

@@ -7,6 +7,7 @@ import { ThemeToggle } from '../components/ThemeToggle'
 import { CommandLayer, PaletteButton, ShortcutsButton } from '../components/CommandPalette'
 import { getDisplayTimeZone, humanise } from '../components/format'
 import { RouteError } from '../components/errors'
+import { useAction } from '../components/action'
 
 /** Authenticated layout (#20, #23). Server-side redirect when signed out; server fns re-check every call. */
 export const Route = createFileRoute('/app')({
@@ -119,6 +120,7 @@ function AppShell() {
     })
   }, [pathname, search])
   const first = useRef(true)
+  const signOut = useAction()
 
   // On client-side navigation, move focus to the new page's heading so screen readers announce it
   // and keyboard users start at the content (WCAG 2.4.3). Query-string changes do not move focus.
@@ -213,13 +215,25 @@ function AppShell() {
               className="cw-btn"
               data-variant="ghost"
               type="button"
+              disabled={Boolean(signOut.busy)}
+              aria-busy={Boolean(signOut.busy) || undefined}
+              aria-describedby={signOut.error ? 'signout-error' : undefined}
               onClick={async () => {
-                await authClient.signOut()
-                await router.navigate({ to: '/sign-in' })
+                const r = await signOut.run('out', async () => {
+                  const res = await authClient.signOut()
+                  if (res.error) throw new Error('Sign-out did not finish. Try again.')
+                  return res
+                })
+                if (r) await router.navigate({ to: '/sign-in' })
               }}
             >
-              Sign out
+              {signOut.busy ? 'Signing out…' : 'Sign out'}
             </button>
+            {signOut.error && (
+              <span id="signout-error" className="cw-field-error" role="alert">
+                {signOut.error}
+              </span>
+            )}
           </span>
         </header>
         <main id="main" ref={main} className="cw-content" data-flush={flush ? '' : undefined} data-chat={chat ? '' : undefined}>

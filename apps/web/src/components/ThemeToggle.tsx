@@ -11,7 +11,12 @@ function apply(pref: Pref) {
 export function ThemeToggle() {
   const [pref, setPref] = useState<Pref>('system')
   useEffect(() => {
-    const saved = localStorage.getItem('cw-theme')
+    let saved: string | null = null
+    try {
+      saved = localStorage.getItem('cw-theme')
+    } catch {
+      // Storage blocked: follow the system theme.
+    }
     // Sync from storage after hydration (the pre-paint script already applied it).
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (saved === 'light' || saved === 'dark') setPref(saved)
@@ -31,8 +36,12 @@ export function ThemeToggle() {
         onChange={(e) => {
           const next = e.target.value as Pref
           setPref(next)
-          if (next === 'system') localStorage.removeItem('cw-theme')
-          else localStorage.setItem('cw-theme', next)
+          try {
+            if (next === 'system') localStorage.removeItem('cw-theme')
+            else localStorage.setItem('cw-theme', next)
+          } catch {
+            // Storage blocked: the choice applies to this page only.
+          }
           apply(next)
         }}
       >

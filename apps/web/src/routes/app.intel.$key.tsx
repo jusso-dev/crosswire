@@ -4,6 +4,8 @@ import { SeverityTag } from '../components/signals'
 import { Breadcrumbs, Notice, Term, SkeletonPage } from '../components/ui'
 import { plainMessage } from '../shared/messages'
 import { pageTitle } from '../components/errors'
+import { safeHref } from '../shared/links'
+import { plural } from '../components/format'
 
 /**
  * Cross-source compare as a per-source grid (rows = fields, columns = sources), so agreement and
@@ -24,6 +26,18 @@ export const Route = createFileRoute('/app/intel/$key')({
 const SOURCE_NAME: Record<string, string> = { 'pwn.watch': 'pwn.watch', 'cisa-kev': 'CISA KEV', nvd: 'NIST NVD', 'cve.watch': 'cve.watch', 'cloudflare-radar': 'Cloudflare Radar' }
 // What each source's date field actually records (from the ingest mapping in server/ti).
 const DATE_MEANING: Record<string, string> = { 'pwn.watch': 'Incident started', 'cisa-kev': 'Added to KEV', nvd: 'Published', 'cve.watch': 'Published' }
+
+/** Linked only when the stored URL is http or https; anything else stays plain text. */
+function SourceTitle({ url, title }: { url: string | null | undefined; title: string }) {
+  const href = safeHref(url)
+  if (!href) return <>{title}</>
+  return (
+    <a href={href} target="_blank" rel="noreferrer noopener">
+      {title}
+      <span className="cw-sr-only"> (opens in a new tab)</span>
+    </a>
+  )
+}
 
 function NotReported() {
   return <span className="cw-muted">not reported</span>
@@ -57,7 +71,7 @@ function Compare() {
           </span>
           {r.orgHits > 0 && (
             <Link to="/app/watches" className="cw-ml-auto">
-              {r.orgHits} watch hit{r.orgHits === 1 ? '' : 's'} in your organisation
+              {plural(r.orgHits, 'watch hit')} in your organisation
             </Link>
           )}
         </div>
@@ -99,7 +113,7 @@ function Compare() {
             <tr>
               <th scope="row">Title</th>
               {r.sources.map((s) => (
-                <td key={s.source}>{!s.present ? '' : s.title ? s.url ? <a href={s.url} target="_blank" rel="noreferrer noopener">{s.title}</a> : s.title : <NotReported />}</td>
+                <td key={s.source}>{!s.present ? '' : s.title ? <SourceTitle url={s.url} title={s.title} /> : <NotReported />}</td>
               ))}
             </tr>
             <tr>

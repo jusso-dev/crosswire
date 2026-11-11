@@ -60,12 +60,13 @@ export function PageHead({ title, intro, actions, crumbs }: { title: ReactNode; 
 
 /**
  * Feedback block. Tone is carried by a text label as well as colour ("Error:", "Warning:" …) so it
- * reads the same in a screen reader and in greyscale. Errors are announced (role=alert).
+ * reads the same in a screen reader and in greyscale. Errors are announced at once (role=alert); every
+ * other tone is a polite live region (role=status), so a notice that appears after an action is read out.
  */
 export function Notice({ tone, title, children }: { tone: 'error' | 'warn' | 'info' | 'demo' | 'ok'; title?: string; children: ReactNode }) {
   const word = { error: 'Error', warn: 'Warning', info: 'Note', demo: 'Demo data', ok: 'Done' }[tone]
   return (
-    <div className="cw-notice" data-tone={tone} role={tone === 'error' ? 'alert' : undefined}>
+    <div className="cw-notice" data-tone={tone} role={tone === 'error' ? 'alert' : 'status'}>
       <span className="cw-notice-icon" aria-hidden="true" />
       <div>
         <p className="cw-notice-title">

@@ -28,12 +28,13 @@ export function fmtTimeExact(iso: string | Date | null | undefined) {
 export function fmtAgo(iso: string | Date | null | undefined, now = Date.now()) {
   if (!iso) return EMPTY_VALUE
   const t = new Date(iso).getTime()
-  const mins = Math.round((now - t) / 60_000)
+  // Round down, so 59.5 minutes reads "59 min ago", never "60 min ago".
+  const mins = Math.floor((now - t) / 60_000)
   if (mins < 1) return 'just now'
   if (mins < 60) return `${mins} min ago`
-  const hrs = Math.round(mins / 60)
+  const hrs = Math.floor(mins / 60)
   if (hrs < 24) return `${hrs} h ago`
-  const days = Math.round(hrs / 24)
+  const days = Math.floor(hrs / 24)
   if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`
   return new Date(iso).toLocaleDateString('en-AU', { dateStyle: 'medium', timeZone: displayTimeZone })
 }
