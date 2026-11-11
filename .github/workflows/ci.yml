@@ -135,7 +135,7 @@ jobs:
             anchore/syft:v1.54.0@sha256:0356562f495d432056237fbea5cbc2d4839c9c75cd500784a66de2e7cc95ca7c \
             docker-archive:/image.tar -o spdx-json=/out/sbom.spdx.json
           rm image.tar
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom-ci.spdx.json
           path: sbom.spdx.json
@@ -183,7 +183,7 @@ jobs:
         run: pnpm --filter e2e exec playwright install --with-deps chromium
       # playwright.config.ts starts the mock model and the built app (webServer), migrating first.
       - run: pnpm test:e2e
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: playwright-report
