@@ -4,10 +4,12 @@ import { z } from 'zod'
 import { createHuntFn, deletePlaybookFn, fetchHunts, fetchPlaybooks, savePlaybookFn, startPlaybookFn } from '../fns/hunts'
 import { fmtTime } from '../components/format'
 import { Notice, Term, SkeletonPage } from '../components/ui'
-import { plainMessage } from '../shared/messages'
+import { useAction } from '../components/action'
+import { ConfirmDialog } from '../components/confirm'
 import { Freshness, StatusTag } from '../components/signals'
 import { INDICATOR_LABEL, builtinForKind, detectIndicator, normaliseIndicator, type IndicatorKind, type PlaybookCheck } from '../shared/indicator-playbooks'
-import { pageTitle } from '../components/errors'
+import { RouteError, pageTitle } from '../components/errors'
+import { Disclosure } from './-hunts/disclosure'
 
 /** Hunt list: one dense table with a URL-backed text filter and status filter (kept on back/forward). */
 export const Route = createFileRoute('/app/hunts')({
@@ -23,17 +25,14 @@ export const Route = createFileRoute('/app/hunts')({
     return { hunts, playbooks }
   },
   pendingComponent: () => <SkeletonPage label="Loading hunts" />,
-  errorComponent: ({ error }) => (
-    <Notice tone="error" title="Hunts did not load">
-      {plainMessage(error)} Refresh the page to try again.
-    </Notice>
-  ),
+  errorComponent: ({ error }) => <RouteError error={error} title="Hunts did not load" />,
   head: () => ({ meta: [{ title: pageTitle('Hunts') }] }),
   component: Hunts,
 })
 
 function Hunts() {
   const { hunts, playbooks } = Route.useLoaderData()
+  const { session } = Route.useRouteContext()
   const search = Route.useSearch()
   const navigate = useNavigate({ from: '/app/hunts' })
   const matchRoute = useMatchRoute()
@@ -59,14 +58,11 @@ function Hunts() {
 
       <CheckIndicator autoFocus={Boolean(search.check)} />
 
-      <details className="cw-panel2" open={moreOpen} onToggle={(event) => setMoreOpen(event.currentTarget.open)}>
-        <summary className="cw-panel2-head cw-pointer">
-          <h2 className="cw-inline-h">Blank hunt and saved playbooks</h2>
-        </summary>
+      <Disclosure title="Blank hunt and saved playbooks" open={moreOpen} onToggle={setMoreOpen}>
         <NewHunt open={Boolean(search.fromHit || search.title)} initialTitle={search.title ?? ''} fromHit={search.fromHit} />
-        <SavedPlaybookStart saved={playbooks} />
+        <SavedPlaybookStart saved={playbooks} canDelete={session.canApprove} />
         <SavePlaybook />
-      </details>
+      </Disclosure>
 
       <div className="cw-tablewrap cw-overflow-visible">
         <div className="cw-toolbar cw-attached">
@@ -85,7 +81,7 @@ function Hunts() {
             {shown.length} shown
           </span>
         </div>
-        <div className="cw-scroll-x">
+        <div className="cw-scroll-x" role="region" aria-label="Hunts" tabIndex={0}>
           {hunts.length === 0 ? (
             <p className="cw-empty cw-pad">
               No hunts yet. Start one above, or from any watch hit on the <Link to="/app/watches">Watches</Link> page.
@@ -99,6 +95,10 @@ function Hunts() {
             </p>
           ) : (
             <table className="cw-table">
+              <caption className="cw-sr-only">
+                {status === 'all' ? 'All hunts' : status === 'open' ? 'Open hunts' : 'Closed hunts'}
+                {q ? ` matching the filter` : ''}
+              </caption>
               <thead>
                 <tr>
                   <th scope="col">Hunt</th>
@@ -140,24 +140,30 @@ function NewHunt({ open, initialTitle, fromHit }: { open: boolean; initialTitle:
   const navigate = useNavigate()
   const [title, setTitle] = useState(initialTitle)
   const [hypothesis, setHypothesis] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const { run, busy, error } = useAction()
   const [expanded, setExpanded] = useState(open)
   return (
-    <details className="cw-panel2" open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
-      <summary className="cw-panel2-head cw-pointer">
-        <h2 className="cw-inline-h">Start a new hunt</h2>
-        {fromHit && <span className="cw-badge" data-tone="info">From a watch hit</span>}
-      </summary>
+    <Disclosure
+      title="Start a new hunt"
+      level={3}
+      open={expanded}
+      onToggle={setExpanded}
+      extra={
+        fromHit && (
+          <span className="cw-badge" data-tone="info">
+            From a watch hit
+          </span>
+        )
+      }
+    >
       <form
         className="cw-panel2-body cw-form"
-        onSubmit={async (e) => {
+        onSubmit={(e) => {
           e.preventDefault()
-          try {
+          void run('create', async () => {
             const h = await createHuntFn({ data: { title, hypothesis, watchHitId: fromHit } })
             await navigate({ to: '/app/hunts/$huntId', params: { huntId: h.id } })
-          } catch (err) {
-            setError(err instanceof Error ? err.message : String(err))
-          }
+          })
         }}
       >
         <label>
@@ -176,12 +182,12 @@ function NewHunt({ open, initialTitle, fromHit }: { open: boolean; initialTitle:
           </Notice>
         )}
         <div>
-          <button className="cw-btn" type="submit" disabled={!title.trim()}>
-            Start hunt
+          <button className="cw-btn" type="submit" disabled={busy !== null || !title.trim()} aria-busy={busy !== null || undefined}>
+            {busy ? 'Starting…' : 'Start hunt'}
           </button>
         </div>
       </form>
-    </details>
+    </Disclosure>
   )
 }
 
@@ -189,8 +195,7 @@ function CheckIndicator({ autoFocus }: { autoFocus: boolean }) {
   const navigate = useNavigate()
   const inputRef = useRef<HTMLInputElement>(null)
   const [indicator, setIndicator] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const { run, busy, error, setError } = useAction()
   const detected = detectIndicator(indicator)
   useEffect(() => {
     if (autoFocus) inputRef.current?.focus()
@@ -210,16 +215,10 @@ function CheckIndicator({ autoFocus }: { autoFocus: boolean }) {
             setError('That is not an IP address, domain, or file hash.')
             return
           }
-          setBusy(true)
-          setError(null)
-          try {
+          await run('check', async () => {
             const started = await startPlaybookFn({ data: { playbookId: playbook.id, indicator: found.value } })
             await navigate({ to: '/app/hunts/$huntId', params: { huntId: started.huntId } })
-          } catch (err) {
-            setError(err instanceof Error ? err.message : String(err))
-          } finally {
-            setBusy(false)
-          }
+          })
         }}
       >
         <label>
@@ -244,7 +243,7 @@ function CheckIndicator({ autoFocus }: { autoFocus: boolean }) {
             {error}
           </Notice>
         )}
-        <button className="cw-btn" type="submit" disabled={busy || !indicator.trim()}>
+        <button className="cw-btn" type="submit" disabled={busy !== null || !indicator.trim()} aria-busy={busy !== null || undefined}>
           {busy ? 'Proposing…' : 'Check this'}
         </button>
       </form>
@@ -254,15 +253,27 @@ function CheckIndicator({ autoFocus }: { autoFocus: boolean }) {
 
 type SavedPlaybook = { id: string; name: string; description: string; indicatorKind: IndicatorKind; checks: PlaybookCheck[] }
 
-function SavedPlaybookStart({ saved }: { saved: SavedPlaybook[] }) {
+function SavedPlaybookStart({ saved, canDelete }: { saved: SavedPlaybook[]; canDelete: boolean }) {
   const navigate = useNavigate()
   const router = useRouter()
   const [playbookId, setPlaybookId] = useState(saved[0]?.id ?? '')
   const selected = saved.find((playbook) => playbook.id === playbookId) ?? saved[0]
   const [indicator, setIndicator] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  if (!selected) return <p className="cw-empty">No saved playbooks yet.</p>
+  const { run, busy, error, setError } = useAction()
+  const [deleting, setDeleting] = useState<SavedPlaybook | null>(null)
+  if (!selected) return <p className="cw-empty cw-pad">No saved playbooks yet.</p>
+
+  const remove = async (playbook: SavedPlaybook) => {
+    const r = await run('delete', async () => {
+      const r = await deletePlaybookFn({ data: { playbookId: playbook.id } })
+      if (!r.ok) return r
+      setPlaybookId(saved.find((p) => p.id !== playbook.id)?.id ?? '')
+      await router.invalidate()
+      return r
+    })
+    if (r?.ok) setDeleting(null)
+  }
+
   return (
     <form
       className="cw-panel2-body cw-form"
@@ -273,16 +284,10 @@ function SavedPlaybookStart({ saved }: { saved: SavedPlaybook[] }) {
           setError(`That is not a valid ${INDICATOR_LABEL[selected.indicatorKind]}.`)
           return
         }
-        setBusy(true)
-        setError(null)
-        try {
+        await run('start', async () => {
           const started = await startPlaybookFn({ data: { playbookId: selected.id, indicator: value } })
           await navigate({ to: '/app/hunts/$huntId', params: { huntId: started.huntId } })
-        } catch (err) {
-          setError(err instanceof Error ? err.message : String(err))
-        } finally {
-          setBusy(false)
-        }
+        })
       }}
     >
       <h3>Use a saved playbook</h3>
@@ -301,37 +306,43 @@ function SavedPlaybookStart({ saved }: { saved: SavedPlaybook[] }) {
         {INDICATOR_LABEL[selected.indicatorKind]}
         <input value={indicator} onChange={(e) => setIndicator(e.target.value)} required maxLength={253} spellCheck={false} />
       </label>
-      {error && (
-        <Notice tone="error" title="Checks not proposed">
+      {error && !deleting && (
+        <Notice tone="error" title="That step did not complete">
           {error}
         </Notice>
       )}
       <div className="cw-cluster">
-        <button className="cw-btn" type="submit" disabled={busy || !indicator.trim()}>
-          {busy ? 'Proposing…' : 'Propose checks'}
+        <button className="cw-btn" type="submit" disabled={busy !== null || !indicator.trim()} aria-busy={busy === 'start' || undefined}>
+          {busy === 'start' ? 'Proposing…' : 'Propose checks'}
         </button>
-        <button
-          className="cw-btn"
-          data-variant="ghost"
-          type="button"
-          disabled={busy}
-          onClick={async () => {
-            setBusy(true)
-            setError(null)
-            try {
-              await deletePlaybookFn({ data: { playbookId: selected.id } })
-              setPlaybookId(saved.find((playbook) => playbook.id !== selected.id)?.id ?? '')
-              await router.invalidate()
-            } catch (err) {
-              setError(err instanceof Error ? err.message : String(err))
-            } finally {
-              setBusy(false)
-            }
-          }}
-        >
-          Delete saved playbook
-        </button>
+        {canDelete ? (
+          <button
+            className="cw-btn"
+            data-variant="ghost"
+            type="button"
+            disabled={busy !== null}
+            onClick={() => {
+              setError(null)
+              setDeleting(selected)
+            }}
+          >
+            Delete saved playbook…
+          </button>
+        ) : (
+          <span className="cw-help">An owner or approver can delete saved playbooks.</span>
+        )}
       </div>
+      <ConfirmDialog
+        open={deleting !== null}
+        tone="danger"
+        title={`Delete the playbook "${deleting?.name ?? ''}"?`}
+        body={<p>It is removed for everyone in this organisation. Hunts already started from it keep their searches.</p>}
+        confirmLabel="Delete playbook"
+        busy={busy === 'delete'}
+        error={deleting ? error : null}
+        onCancel={() => setDeleting(null)}
+        onConfirm={() => deleting && void remove(deleting)}
+      />
     </form>
   )
 }
@@ -342,8 +353,7 @@ function SavePlaybook() {
   const [description, setDescription] = useState('')
   const [indicatorKind, setIndicatorKind] = useState<IndicatorKind>('ip')
   const [checks, setChecks] = useState<PlaybookCheck[]>([{ name: '', target: 'defender', kql: '' }])
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
+  const { run, busy, error } = useAction()
   const setCheck = (index: number, patch: Partial<PlaybookCheck>) => setChecks((current) => current.map((check, i) => (i === index ? { ...check, ...patch } : check)))
   return (
     <details>
@@ -354,19 +364,13 @@ function SavePlaybook() {
         className="cw-panel2-body cw-form"
         onSubmit={async (e) => {
           e.preventDefault()
-          setBusy(true)
-          setError(null)
-          try {
+          void run('save', async () => {
             await savePlaybookFn({ data: { name, description, indicatorKind, checks } })
             setName('')
             setDescription('')
             setChecks([{ name: '', target: 'defender', kql: '' }])
             await router.invalidate()
-          } catch (err) {
-            setError(err instanceof Error ? err.message : String(err))
-          } finally {
-            setBusy(false)
-          }
+          })
         }}
       >
         <p className="cw-help cw-mt0">
@@ -426,7 +430,7 @@ function SavePlaybook() {
               Add check
             </button>
           )}
-          <button className="cw-btn" type="submit" disabled={busy || !name.trim()}>
+          <button className="cw-btn" type="submit" disabled={busy !== null || !name.trim()} aria-busy={busy !== null || undefined}>
             {busy ? 'Saving…' : 'Save playbook'}
           </button>
         </div>

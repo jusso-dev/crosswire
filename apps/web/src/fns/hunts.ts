@@ -5,6 +5,8 @@ import { addEvidence, approveAndRunKql, createHunt, getHunt, listHunts, proposeK
 import { deletePlaybook, listSavedPlaybooks, savePlaybook, startPlaybook } from '../server/hunting/playbooks'
 import { INDICATOR_KINDS } from '../shared/indicator-playbooks'
 import { getConnectorView, upsertConnector } from '../server/hunting/broker'
+import { refusalMessage } from '../server/hunting/errors'
+import { listOrgMembers } from '../server/orgs'
 import { env } from '../server/env'
 import { asJson } from '../shared/json'
 import { createSchedule, disableSchedule, listSchedules, reapproveSchedule } from '../server/hunting/schedules'
@@ -12,6 +14,10 @@ import { huntReportMarkdown } from '../server/hunting/report'
 import { canApprove } from '../server/response/rbac'
 
 const iso = (d: Date | null) => d?.toISOString() ?? null
+
+const actorOf = (s: { user: { id: string }; org: { role: 'owner' | 'approver' | 'analyst' } }) => ({ userId: s.user.id, role: s.org.role })
+
+const refuse = (err: unknown, step: string) => ({ ok: false as const, error: refusalMessage(err, step) })
 
 export const fetchHunts = createServerFn({ method: 'GET' })
   .middleware([authed])
@@ -34,7 +40,11 @@ export const fetchHunt = createServerFn({ method: 'GET' })
   .handler(async ({ context, data }) => {
     const h = await getHunt(context.session.org.id, data.huntId)
     if (!h) return null
+    // Names for the people on this hunt (#160). Members of this org only; anyone else is shown as
+    // "a former member" by the page.
+    const people = Object.fromEntries((await listOrgMembers(context.session.org.id)).map((m) => [m.userId, m.name?.trim() || m.email]))
     return {
+      people,
       hunt: { ...h.hunt, createdAt: h.hunt.createdAt.toISOString(), updatedAt: h.hunt.updatedAt.toISOString() },
       evidence: h.evidence.map((e) => ({ id: e.id, type: e.type, payload: asJson(e.payload), actorType: e.actorType, actorId: e.actorId, createdAt: e.createdAt.toISOString() })),
       proposals: h.proposals.map((p) => ({
@@ -48,6 +58,7 @@ export const fetchHunt = createServerFn({ method: 'GET' })
         proposedById: p.proposedById,
         requestedBy: p.requestedBy,
         decidedBy: p.decidedBy,
+        decidedAt: iso(p.decidedAt),
         expiresAt: p.expiresAt.toISOString(),
         ranAt: iso(p.ranAt),
         resultSummary: p.resultSummary ? asJson(p.resultSummary) : null,
@@ -93,8 +104,12 @@ export const setHuntStatusFn = createServerFn({ method: 'POST' })
   .middleware([authed])
   .validator(z.object({ huntId: z.string().min(1), status: z.enum(['open', 'closed']) }))
   .handler(async ({ context, data }) => {
-    await setHuntStatus(context.session.org.id, data.huntId, data.status)
-    return { ok: true }
+    try {
+      await setHuntStatus(context.session.org.id, actorOf(context.session), data.huntId, data.status)
+      return { ok: true as const }
+    } catch (err) {
+      return refuse(err, 'status')
+    }
   })
 
 export const proposeKqlFn = createServerFn({ method: 'POST' })
@@ -105,7 +120,7 @@ export const proposeKqlFn = createServerFn({ method: 'POST' })
       const p = await proposeKql(context.session.org.id, { type: 'user', id: context.session.user.id }, data)
       return { ok: true as const, id: p.id }
     } catch (err) {
-      return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
+      return refuse(err, 'propose_kql')
     }
   })
 
@@ -117,7 +132,7 @@ export const approveKqlFn = createServerFn({ method: 'POST' })
       const r = await approveAndRunKql(context.session.org.id, context.session.user.id, data.proposalId, data.kql, context.session.org.role)
       return r.status === 'run' ? { ok: true as const, status: 'run' as const, summary: asJson(r.summary) } : { ok: true as const, status: 'failed' as const, error: r.error }
     } catch (err) {
-      return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
+      return refuse(err, 'approve_kql')
     }
   })
 
@@ -129,7 +144,7 @@ export const rejectKqlFn = createServerFn({ method: 'POST' })
       await rejectKql(context.session.org.id, context.session.user.id, data.proposalId, data.reason)
       return { ok: true as const }
     } catch (err) {
-      return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
+      return refuse(err, 'reject_kql')
     }
   })
 
@@ -145,6 +160,8 @@ export const saveConnector = createServerFn({ method: 'POST' })
       clientId: z.uuid(),
       clientSecret: z.string().min(1).max(500).optional(),
       clientSecretRef: z.string().regex(/^env:[A-Z0-9_]+$/).optional(),
+      // Blank secret fields keep the stored secret (#122). This is the only way to remove it.
+      clearSecret: z.boolean().optional(),
       sentinelSubscriptionId: z.string().max(100).optional(),
       sentinelResourceGroup: z.string().max(100).optional(),
       sentinelWorkspaceName: z.string().max(100).optional(),
@@ -153,17 +170,16 @@ export const saveConnector = createServerFn({ method: 'POST' })
   )
   .handler(async ({ context, data }) => {
     if (context.session.org.role !== 'owner') throw new Error('Only org owners can configure hunting connectors.')
-    await upsertConnector(context.session.org.id, data)
+    await upsertConnector(context.session.org.id, data, context.session.user.id)
     return { ok: true }
   })
 
 
-const actorOf = (s: { user: { id: string }; org: { role: 'owner' | 'approver' | 'analyst' } }) => ({ userId: s.user.id, role: s.org.role })
-const wrap = async <T>(fn: () => Promise<T>) => {
+const wrap = async <T>(step: string, fn: () => Promise<T>) => {
   try {
     return { ok: true as const, result: await fn() }
   } catch (err) {
-    return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
+    return refuse(err, step)
   }
 }
 
@@ -171,17 +187,17 @@ const wrap = async <T>(fn: () => Promise<T>) => {
 export const createScheduleFn = createServerFn({ method: 'POST' })
   .middleware([authed])
   .validator(z.object({ proposalId: z.string().min(1), intervalMinutes: z.number().int(), approvalDays: z.number().int().optional() }))
-  .handler(async ({ context, data }) => wrap(async () => ({ id: (await createSchedule(context.session.org.id, actorOf(context.session), data)).id })))
+  .handler(async ({ context, data }) => wrap('create_schedule', async () => ({ id: (await createSchedule(context.session.org.id, actorOf(context.session), data)).id })))
 
 export const disableScheduleFn = createServerFn({ method: 'POST' })
   .middleware([authed])
   .validator(z.object({ id: z.string().min(1) }))
-  .handler(async ({ context, data }) => wrap(() => disableSchedule(context.session.org.id, actorOf(context.session), data.id)))
+  .handler(async ({ context, data }) => wrap('disable_schedule', () => disableSchedule(context.session.org.id, actorOf(context.session), data.id)))
 
 export const reapproveScheduleFn = createServerFn({ method: 'POST' })
   .middleware([authed])
   .validator(z.object({ id: z.string().min(1), approvalDays: z.number().int().optional() }))
-  .handler(async ({ context, data }) => wrap(() => reapproveSchedule(context.session.org.id, actorOf(context.session), data.id, data.approvalDays)))
+  .handler(async ({ context, data }) => wrap('reapprove_schedule', () => reapproveSchedule(context.session.org.id, actorOf(context.session), data.id, data.approvalDays)))
 
 const playbookCheck = z.object({
   name: z.string().min(1).max(80),
@@ -227,8 +243,12 @@ export const deletePlaybookFn = createServerFn({ method: 'POST' })
   .middleware([authed])
   .validator(z.object({ playbookId: z.uuid() }))
   .handler(async ({ context, data }) => {
-    await deletePlaybook(context.session.org.id, data.playbookId)
-    return { ok: true as const }
+    try {
+      await deletePlaybook(context.session.org.id, actorOf(context.session), data.playbookId)
+      return { ok: true as const }
+    } catch (err) {
+      return refuse(err, 'delete playbook')
+    }
   })
 
 /** Hunt report (#94): any member of the org can export its hunts. */

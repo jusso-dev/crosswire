@@ -7,12 +7,15 @@ import { assertSafeKql } from './safety'
 import { huntingClient } from './client'
 import { logger } from '../lib/logger'
 import type { OrgRole } from '../orgs'
+import { canApprove } from '../response/rbac'
 import { KQL_APPROVAL_MESSAGES, kqlApprovalBlock, type KqlApprovalPolicy } from '../../shared/kql-approval'
 
 export type Actor = { type: 'user'; id: string } | { type: 'agent'; id: string }
 
 export class NotFoundError extends Error {}
 export class StateError extends Error {}
+/** The caller's role does not allow this step. The message is written for the analyst. */
+export class ForbiddenStepError extends Error {}
 
 export async function createHunt(orgId: string, userId: string | null, input: { title: string; hypothesis?: string; threadId?: string | null; watchHitId?: string | null }) {
   const title = input.title.trim()
@@ -50,7 +53,13 @@ export async function getHunt(orgId: string, huntId: string) {
   return { hunt, evidence, proposals, origin: origin ?? null }
 }
 
-export async function setHuntStatus(orgId: string, huntId: string, status: 'open' | 'closed') {
+/**
+ * Close or reopen a hunt. Only owners and approvers may: closing turns off every scheduled search an
+ * approver signed off on, and reopening brings a case back into the shared queue.
+ */
+export async function setHuntStatus(orgId: string, actor: { userId: string; role: OrgRole }, huntId: string, status: 'open' | 'closed') {
+  if (!canApprove(actor.role)) throw new ForbiddenStepError('Only owners and approvers can close or reopen a hunt.')
+  await requireHunt(orgId, huntId)
   await getDb().update(huntCases).set({ status }).where(and(eq(huntCases.orgId, orgId), eq(huntCases.id, huntId)))
   if (status === 'closed') {
     // Closing a case stops its scheduled hunts (#92); reopening needs a human to re-approve them.

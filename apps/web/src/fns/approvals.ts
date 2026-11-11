@@ -1,25 +1,66 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
 import { authed } from './middleware'
-import { approvalContentHash, auditBundle, createProposal, decideProposal, dryRunProposal, executeProposal, findRollback, getProposal, listEvents, listProposals, proposeRollback, toView } from '../server/response/proposals'
+import {
+  approvalContentHash,
+  auditBundle,
+  countInbox,
+  createProposal,
+  decideProposal,
+  dryRunProposal,
+  executeProposal,
+  findRollback,
+  getProposal,
+  listEvents,
+  listProposalHistory,
+  listWaitingProposals,
+  ProposalNotFoundError,
+  ProposalStateError,
+  proposeRollback,
+  toView,
+} from '../server/response/proposals'
 import { executorMode } from '../server/response/executors'
-import { canApprove } from '../server/response/rbac'
+import { canApprove, ForbiddenError } from '../server/response/rbac'
 import { RESPONSE_ACTION_TYPES } from '../shared/response'
 import { asJson } from '../shared/json'
+import { plainMessage } from '../shared/messages'
 import { listOrgMembers } from '../server/orgs'
 import { env } from '../server/env'
+import { logger } from '../server/lib/logger'
+
+/** Refusals the approval rules raise on purpose. Their text is written for people. */
+const EXPECTED = [ProposalStateError, ProposalNotFoundError, ForbiddenError]
 
 const run = async <T>(fn: () => Promise<T>) => {
   try {
     return { ok: true as const, result: await fn() }
   } catch (err) {
-    return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
+    if (EXPECTED.some((E) => err instanceof E)) return { ok: false as const, error: (err as Error).message }
+    // Anything else (database, network, validation) is logged in full and shown in plain words.
+    logger.error('approval step failed', { error: err instanceof Error ? err.message : String(err) })
+    return { ok: false as const, error: plainMessage(err) }
   }
 }
 
-export const fetchProposals = createServerFn({ method: 'GET' })
+export const HISTORY_PAGE = 50
+
+/**
+ * Approvals inbox. Waiting items come from their own uncapped query, so a pending action is never cut
+ * off by history. Decided and All are paged newest first ("Load older"); counts are count(*).
+ */
+export const fetchInbox = createServerFn({ method: 'GET' })
   .middleware([authed])
-  .handler(async ({ context }) => (await listProposals(context.session.org.id)).map(toView))
+  .validator(z.object({ view: z.enum(['waiting', 'decided', 'all']).default('waiting'), before: z.string().min(1).max(100).optional() }))
+  .handler(async ({ context, data }) => {
+    const orgId = context.session.org.id
+    const [counts, items] = await Promise.all([
+      countInbox(orgId),
+      data.view === 'waiting'
+        ? listWaitingProposals(orgId).then((rows) => ({ items: rows, hasMore: false }))
+        : listProposalHistory(orgId, { view: data.view, before: data.before, limit: HISTORY_PAGE }),
+    ])
+    return { counts, items: items.items.map(toView), hasMore: items.hasMore }
+  })
 
 export const fetchProposal = createServerFn({ method: 'GET' })
   .middleware([authed])

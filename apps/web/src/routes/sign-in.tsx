@@ -4,7 +4,9 @@ import { z } from 'zod'
 import { authClient } from '../lib/auth-client'
 import { fetchAuthConfig, fetchSession } from '../fns/session'
 import { Wordmark } from '../components/ui'
-import { pageTitle } from '../components/errors'
+import { pageTitle, RouteError } from '../components/errors'
+import { useAction } from '../components/action'
+import { MIN_PASSWORD, signInOutcome, signUpOutcome } from './-sign-in/messages'
 
 function safeReturnTo(value: unknown) {
   return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//') && !value.startsWith('/\\') ? value : '/app'
@@ -17,6 +19,7 @@ export const Route = createFileRoute('/sign-in')({
   },
   loader: () => fetchAuthConfig(),
   head: () => ({ meta: [{ title: pageTitle('Sign in') }] }),
+  errorComponent: ({ error }) => <RouteError error={error} title="The sign-in page did not load" />,
   component: SignIn,
 })
 
@@ -25,25 +28,28 @@ function SignIn() {
   const { returnTo, error: initialError } = Route.useSearch()
   const navigate = useNavigate()
   const [mode, setMode] = useState<'in' | 'up'>('in')
-  const [error, setError] = useState<string | null>(initialError ? 'Sign-in failed. Try again or contact your administrator.' : null)
-  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState<{ text: string; field?: 'password' | 'email' } | null>(initialError ? { text: 'Sign-in failed. Try again or contact your administrator.' } : null)
+  const { run, busy, error } = useAction()
   const target = safeReturnTo(returnTo)
+  const shown = message?.text ?? error
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
     const form = new FormData(e.currentTarget)
     const email = String(form.get('email') ?? '')
     const password = String(form.get('password') ?? '')
-    setBusy(true)
-    setError(null)
-    const res =
-      mode === 'in'
-        ? await authClient.signIn.email({ email, password })
-        : await authClient.signUp.email({ email, password, name: String(form.get('name') ?? '') || email.split('@')[0]! })
-    setBusy(false)
-    // Generic message: no user enumeration.
-    if (res.error) return setError(mode === 'in' ? 'Invalid email or password.' : (res.error.message ?? 'Could not create the account.'))
-    await navigate({ href: target })
+    setMessage(null)
+    const outcome = await run(mode, async () =>
+      mode === 'in' ? signInOutcome(await authClient.signIn.email({ email, password })) : signUpOutcome(await authClient.signUp.email({ email, password, name: String(form.get('name') ?? '') || email.split('@')[0]! })),
+    )
+    if (!outcome) return
+    if (outcome.kind === 'signed-in') return void (await navigate({ href: target }))
+    setMessage(outcome)
+  }
+
+  const switchMode = () => {
+    setMessage(null)
+    setMode(mode === 'in' ? 'up' : 'in')
   }
 
   return (
@@ -79,25 +85,35 @@ function SignIn() {
           )}
           <label>
             Email
-            <input name="email" type="email" required autoComplete="email" />
+            <input name="email" type="email" required autoComplete={mode === 'in' ? 'username' : 'email'} aria-invalid={message?.field === 'email' || undefined} />
           </label>
           <label>
             Password
-            <input name="password" type="password" required minLength={12} autoComplete={mode === 'in' ? 'current-password' : 'new-password'} aria-describedby="pw-help" aria-invalid={error ? true : undefined} />
-            <span id="pw-help" className="cw-help">
-              At least 12 characters.
-            </span>
+            <input
+              name="password"
+              type="password"
+              required
+              minLength={mode === 'up' ? MIN_PASSWORD : undefined}
+              autoComplete={mode === 'in' ? 'current-password' : 'new-password'}
+              aria-describedby={mode === 'up' ? 'pw-help' : undefined}
+              aria-invalid={message?.field === 'password' || (mode === 'in' && Boolean(message)) || undefined}
+            />
+            {mode === 'up' && (
+              <span id="pw-help" className="cw-help">
+                At least {MIN_PASSWORD} characters.
+              </span>
+            )}
           </label>
-          {error && (
+          {shown && (
             <p className="cw-field-error" role="alert">
-              {error}
+              {shown}
             </p>
           )}
           <div className="cw-row">
-            <button className="cw-btn" type="submit" disabled={busy}>
+            <button className="cw-btn" type="submit" disabled={Boolean(busy)} aria-busy={Boolean(busy) || undefined}>
               {busy ? (mode === 'in' ? 'Signing in…' : 'Creating account…') : mode === 'in' ? 'Sign in' : 'Create account'}
             </button>
-            <button className="cw-btn" data-variant="ghost" type="button" onClick={() => setMode(mode === 'in' ? 'up' : 'in')}>
+            <button className="cw-btn" data-variant="ghost" type="button" disabled={Boolean(busy)} onClick={switchMode}>
               {mode === 'in' ? 'Create an account' : 'I have an account'}
             </button>
           </div>
