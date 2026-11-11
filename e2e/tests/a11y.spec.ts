@@ -1,5 +1,5 @@
 import AxeBuilder from '@axe-core/playwright'
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { horizontalOverflow } from '../support/helpers'
 
 /**
@@ -92,4 +92,85 @@ test('every page passes axe WCAG 2.2 AA in light and dark', async ({ page, brows
     await page.setViewportSize({ width: 1280, height: 900 })
   }
   expect(problems, problems.join('\n')).toEqual([])
+})
+
+/** Measure the rendered ring, including scroll containers that can clip it (#162). */
+async function expectVisibleFocus(control: Locator) {
+  await expect(control).toBeFocused()
+  await expect.poll(() => control.evaluate((el) => {
+    const style = getComputedStyle(el)
+    const width = parseFloat(style.outlineWidth)
+    const outside = parseFloat(style.outlineOffset) + width
+    const box = el.getBoundingClientRect()
+    const clipped: Array<{ parent: string; left: number; right: number; top: number; bottom: number; scrollLeft: number; scrollWidth: number; width: number }> = []
+    for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+      const css = getComputedStyle(parent)
+      const rect = parent.getBoundingClientRect()
+      const left = rect.left + parent.clientLeft
+      const top = rect.top + parent.clientTop
+      if ((css.overflowX !== 'visible' && (box.left - outside < left - 0.5 || box.right + outside > left + parent.clientWidth + 0.5)) ||
+          (css.overflowY !== 'visible' && (box.top - outside < top - 0.5 || box.bottom + outside > top + parent.clientHeight + 0.5))) {
+        clipped.push({ parent: parent.className || parent.tagName, left: box.left - outside - left, right: left + parent.clientWidth - box.right - outside, top: box.top - outside - top, bottom: top + parent.clientHeight - box.bottom - outside, scrollLeft: parent.scrollLeft, scrollWidth: parent.scrollWidth, width: parent.clientWidth })
+      }
+    }
+    return { visible: el.matches(':focus-visible'), width, style: style.outlineStyle, clipped }
+  })).toEqual({ visible: true, width: 2, style: 'solid', clipped: [] })
+}
+
+test('segments, tabs and navigation keep visible focus and selection in both themes (#162)', async ({ page }, info) => {
+  page.setDefaultTimeout(10_000)
+  for (const theme of ['light', 'dark']) {
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 900 })
+      await page.goto('/app/approvals')
+      await page.waitForLoadState('networkidle')
+      await page.getByLabel('Theme').selectOption(theme)
+      const segments = page.getByRole('group', { name: 'Show', exact: true })
+      const buttons = segments.getByRole('button')
+      await page.keyboard.press('Tab') // keyboard modality before programmatic focus
+      await buttons.first().focus()
+      for (let index = 0; index < await buttons.count(); index++) {
+        const button = buttons.nth(index)
+        await expectVisibleFocus(button)
+        await page.keyboard.press('Space')
+        await expect(button).toHaveAttribute('aria-pressed', 'true')
+        const marker = await button.evaluate((el) => {
+          const css = getComputedStyle(el)
+          const before = getComputedStyle(el, '::before')
+          // Canvas resolves OKLCH to sRGB for the WCAG luminance calculation.
+          const ctx = document.createElement('canvas').getContext('2d')!
+          const luminance = (colour: string) => {
+            ctx.fillStyle = colour
+            ctx.fillRect(0, 0, 1, 1)
+            const rgb = [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3).map((byte) => {
+              const value = byte / 255
+              return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+            })
+            return rgb[0]! * 0.2126 + rgb[1]! * 0.7152 + rgb[2]! * 0.0722
+          }
+          const foreground = luminance(before.color)
+          const background = luminance(css.backgroundColor)
+          return { content: before.content, contrast: (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05) }
+        })
+        expect(marker.content).toContain('✓')
+        expect(marker.contrast).toBeGreaterThanOrEqual(3)
+        if (index < await buttons.count() - 1) await page.keyboard.press('Tab')
+      }
+      await info.attach(`segments-${theme}-${width}`, { body: await segments.screenshot(), contentType: 'image/png' })
+
+      await page.goto('/app/agents')
+      await page.waitForLoadState('networkidle')
+      for (const selector of ['.cw-tabs', '.cw-nav']) {
+        const group = page.locator(selector)
+        const links = group.getByRole('link')
+        await page.keyboard.press('Tab')
+        await links.first().focus()
+        for (let index = 0; index < await links.count(); index++) {
+          await expectVisibleFocus(links.nth(index))
+          if (index < await links.count() - 1) await page.keyboard.press('Tab')
+        }
+        await info.attach(`${selector.slice(1)}-${theme}-${width}`, { body: await group.screenshot(), contentType: 'image/png' })
+      }
+    }
+  }
 })
