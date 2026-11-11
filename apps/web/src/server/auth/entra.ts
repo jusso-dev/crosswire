@@ -1,7 +1,7 @@
 import { and, desc, eq } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { account, entraRoleMappings, orgMemberships, orgs } from '../db/schema'
-import { addMembership, changeMemberRole, findOrgByEntraTenant, highestRole, isRemovedMember, slugify, type OrgRole } from '../orgs'
+import { changeMemberRole, findOrgByEntraTenant, highestRole, placeSsoMember, slugify, type OrgRole } from '../orgs'
 import { env } from '../env'
 import { writeAudit } from '../audit'
 import { claimBootstrapOwner } from '../ops/bootstrap'
@@ -127,14 +127,15 @@ export async function syncEntraSignIn(userId: string, claims: EntraClaims): Prom
   const tid = typeof claims.tid === 'string' ? claims.tid : ''
   if (!tid) throw new UnknownTenantError('')
   const { orgId, created } = await ensureEntraOrg(tid, userId)
-  if (await isRemovedMember(orgId, userId)) await refuse('MEMBER_REMOVED', orgId, userId)
   const [org] = await getDb().select({ requireGroup: orgs.entraRequireMappedGroup }).from(orgs).where(eq(orgs.id, orgId)).limit(1)
   const mappings = await orgMappings(orgId)
   const d = decideEntraRole(mappings, claims)
   if (org?.requireGroup && !d.role) await refuse('NOT_IN_MAPPED_GROUP', orgId, userId, { overage: d.overage })
   const auditData = { matched: d.matched, ...(d.overage ? { groupsOverage: true } : {}) }
 
-  const joined = !created && (await addMembership(orgId, userId, d.role ?? 'analyst', d.role ? 'entra' : 'manual'))
+  const placement = await placeSsoMember(orgId, userId, d.role ?? 'analyst', d.role ? 'entra' : 'manual')
+  if (placement === 'removed') await refuse('MEMBER_REMOVED', orgId, userId)
+  const joined = placement === 'joined'
   if (created || joined) await writeAudit({ category: 'auth', action: 'sso_linked', actorType: 'user', actorId: userId, orgId, data: { provider: 'microsoft' } })
   if (joined && d.role) await writeAudit({ category: 'auth', action: 'entra_role_synced', actorType: 'system', orgId, targetType: 'user', targetId: userId, data: { from: null, to: d.role, ...auditData } })
   // The org was found by this token's tenant, so the bootstrap email claim is tenant-bound (#188).

@@ -1,7 +1,7 @@
 import { and, eq } from 'drizzle-orm'
 import { getDb } from '../db/client'
 import { orgMemberships, orgs, ssoOrgBindings } from '../db/schema'
-import { addMembership, isRemovedMember } from '../orgs'
+import { placeSsoMember } from '../orgs'
 import { writeAudit } from '../audit'
 
 /**
@@ -35,12 +35,11 @@ export async function provisionSamlUser({ user, provider }: { user: { id: string
     await writeAudit({ category: 'auth', action: 'saml_unbound_provider', result: 'failure', actorType: 'user', actorId: user.id, data: { providerId: provider.providerId } })
     return null
   }
-  // A person an owner removed is not added back (#195).
-  if (await isRemovedMember(binding.orgId, user.id)) {
+  // Check removal and place atomically against a concurrent owner removal (#195).
+  if (await placeSsoMember(binding.orgId, user.id, 'analyst') === 'removed') {
     await writeAudit({ category: 'auth', action: 'sso_refused', result: 'failure', actorType: 'user', actorId: user.id, orgId: binding.orgId, data: { reason: 'member_removed', providerId: provider.providerId } })
     return null
   }
-  await addMembership(binding.orgId, user.id, 'analyst')
   // Needs a verified email (#188): SAML has no tenant id to bind the claim to.
   const { claimBootstrapOwner } = await import('../ops/bootstrap')
   await claimBootstrapOwner(binding.orgId, user.id)

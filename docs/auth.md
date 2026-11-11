@@ -129,7 +129,8 @@ affects another.
 
 Turning on "Only people in a mapped group can sign in" is refused when your own last Microsoft
 sign-in would not match a mapping, and the last mapping cannot be removed while it is on. This
-keeps an owner from locking everyone out. Adding, removing and the setting itself are owner-only
+check and the toggle share a transaction lock with mapping removal, so concurrent requests cannot
+leave the setting on with no mappings. Adding, removing and the setting itself are owner-only
 and audited (`entra_mapping_added`, `entra_mapping_removed`,
 `entra_require_mapped_group_changed`).
 
@@ -166,8 +167,9 @@ for most installs.
 Owners remove a member in **Settings → People and roles** (`removeMemberFn`). The member loses
 access at once and a `member_removed` audit row is written. Owners cannot remove themselves, and
 the last owner cannot be removed. Repeat searches they approved are paused. Because SSO places people on every sign-in, a removal row
-(`org_member_removals`) keeps the person out of that org on later Entra and SAML sign-ins. To let
-them back in:
+(`org_member_removals`) keeps the person out of that org on later Entra and SAML sign-ins. Placement
+and removal share a transaction lock, so an in-flight sign-in cannot restore membership after
+removal commits. To let them back in, delete that record:
 
 ```sql
 delete from org_member_removals where org_id = '<org id>' and user_id = '<user id>';

@@ -83,14 +83,18 @@ async function lastStoredClaims(userId: string): Promise<EntraClaims | null> {
  */
 export async function setEntraRequireMappedGroup(orgId: string, actorId: string, on: boolean) {
   await requireOwner(orgId, actorId)
-  if (on) {
-    const { mappings } = await listEntraMappings(orgId)
-    if (mappings.length === 0) throw new MemberChangeError('Add at least one group or app role mapping first.')
-    const claims = await lastStoredClaims(actorId)
-    if (!claims || !decideEntraRole(mappings, claims).role) {
-      throw new MemberChangeError('Your own last Microsoft sign-in matched no mapping, so turning this on would lock you out. Add a mapping for one of your groups, sign in again, then retry.')
+  const claims = on ? await lastStoredClaims(actorId) : null
+  await getDb().transaction(async (tx) => {
+    // Same lock as removeEntraMapping: its last-mapping check and this toggle must agree.
+    await tx.select({ id: orgs.id }).from(orgs).where(eq(orgs.id, orgId)).for('update')
+    if (on) {
+      const mappings = await tx.select({ kind: entraRoleMappings.kind, value: entraRoleMappings.value, role: entraRoleMappings.role }).from(entraRoleMappings).where(eq(entraRoleMappings.orgId, orgId))
+      if (mappings.length === 0) throw new MemberChangeError('Add at least one group or app role mapping first.')
+      if (!claims || !decideEntraRole(mappings, claims).role) {
+        throw new MemberChangeError('Your own last Microsoft sign-in matched no mapping, so turning this on would lock you out. Add a mapping for one of your groups, sign in again, then retry.')
+      }
     }
-  }
-  await getDb().update(orgs).set({ entraRequireMappedGroup: on }).where(eq(orgs.id, orgId))
+    await tx.update(orgs).set({ entraRequireMappedGroup: on }).where(eq(orgs.id, orgId))
+  })
   await writeAudit({ category: 'auth', action: 'entra_require_mapped_group_changed', actorType: 'user', actorId, orgId, data: { to: on } })
 }

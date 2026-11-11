@@ -48,6 +48,17 @@ export async function addMembership(orgId: string, userId: string, role: OrgRole
   return rows.length > 0
 }
 
+/** SSO placement and removal share the org lock, so a sign-in cannot undo a committed removal. */
+export async function placeSsoMember(orgId: string, userId: string, role: OrgRole, roleSource: RoleSource = 'manual'): Promise<'joined' | 'existing' | 'removed'> {
+  return getDb().transaction(async (tx) => {
+    await tx.select({ id: orgs.id }).from(orgs).where(eq(orgs.id, orgId)).for('update')
+    const [removed] = await tx.select({ id: orgMemberRemovals.id }).from(orgMemberRemovals).where(and(eq(orgMemberRemovals.orgId, orgId), eq(orgMemberRemovals.userId, userId))).limit(1)
+    if (removed) return 'removed'
+    const rows = await tx.insert(orgMemberships).values({ orgId, userId, role, roleSource }).onConflictDoNothing().returning({ id: orgMemberships.id })
+    return rows.length > 0 ? 'joined' : 'existing'
+  })
+}
+
 export async function findOrgByEntraTenant(tid: string) {
   const [row] = await getDb().select().from(orgs).where(eq(orgs.entraTenantId, tid)).limit(1)
   return row
@@ -228,6 +239,8 @@ export async function changeMemberRole(input: RoleChangeInput): Promise<RoleChan
  */
 export async function removeMember(orgId: string, userId: string, actorId: string) {
   const removed = await getDb().transaction(async (tx) => {
+    // Take the shared placement lock before membership locks, in the same order as SSO.
+    await tx.select({ id: orgs.id }).from(orgs).where(eq(orgs.id, orgId)).for('update')
     const owners = await lockOwners(tx, orgId)
     if (!owners.includes(actorId)) throw new MemberChangeError('Only owners can remove people.')
     if (actorId === userId) throw new MemberChangeError('You cannot remove yourself. Ask another owner.')

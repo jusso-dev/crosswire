@@ -1,9 +1,9 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import path from 'node:path'
 import postgres from 'postgres'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { migrate } from 'drizzle-orm/postgres-js/migrator'
-import { eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { setDb, getDb, type Db } from '../src/server/db/client'
 import * as schema from '../src/server/db/schema'
 import { approveAndRunKql, createHunt, proposeKql } from '../src/server/hunting/hunts'
@@ -13,6 +13,10 @@ import { appendRunEvent, listRunEvents, reconcileStaleRuns, startRun } from '../
 import { resetEnvForTests } from '../src/server/env'
 import { makeOrg, team } from './helpers'
 import { responseRaceSuite } from './response-races'
+import { addEntraMapping, removeEntraMapping, setEntraRequireMappedGroup } from '../src/server/auth/entra-mappings'
+import { EntraSignInRefused, syncEntraSignIn } from '../src/server/auth/entra'
+import { bindProviderToOrg, provisionSamlUser } from '../src/server/auth/saml'
+import { removeMember } from '../src/server/orgs'
 
 /**
  * Real Postgres (postgres-js driver) checks for queries PGlite accepts but production rejects, e.g.
@@ -69,6 +73,111 @@ d('real Postgres (postgres-js)', () => {
   })
   afterAll(async () => {
     await client?.end({ timeout: 5 })
+  })
+
+  /** Run the real first transaction, holding its commit until the competitor waits on its lock. */
+  async function raceBeforeCommit<T, U>(first: () => Promise<T>, second: () => Promise<U>) {
+    const db = getDb()
+    const transact = db.transaction.bind(db)
+    let staged!: (pid: number) => void
+    const ready = new Promise<number>((resolve) => { staged = resolve })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const spy = vi.spyOn(db, 'transaction').mockImplementationOnce((callback, config) =>
+      transact(async (tx) => {
+        const result = await callback(tx)
+        const [row] = (await tx.execute(sql`select pg_backend_pid() as pid`)) as unknown as [{ pid: number }]
+        staged(row.pid)
+        await gate
+        return result
+      }, config),
+    )
+    const a = first()
+    let b: Promise<U> | undefined
+    try {
+      const pid = await Promise.race([ready, a.then(() => { throw new Error('First operation did not reach the commit barrier') })])
+      b = second()
+      // Attach rejection handlers immediately, including during the lock wait.
+      const results = Promise.allSettled([a, b] as const)
+      await vi.waitFor(async () => {
+        const [row] = await client<{ blocked: boolean }[]>`
+          select exists(select 1 from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))) as blocked
+        `
+        expect(row?.blocked).toBe(true)
+      }, { timeout: 5000, interval: 10 })
+      release()
+      return await results
+    } finally {
+      release()
+      spy.mockRestore()
+      await Promise.allSettled(b ? [a, b] : [a])
+    }
+  }
+
+  it('cannot enable mapped-group sign-in while the last mapping is being removed', async () => {
+    const { orgId, owner } = await team()
+    const group = crypto.randomUUID()
+    const { id } = await addEntraMapping(orgId, owner, { kind: 'group', value: group, role: 'owner' })
+    const claims = Buffer.from(JSON.stringify({ groups: [group] })).toString('base64url')
+    await getDb().insert(schema.account).values({ id: crypto.randomUUID(), accountId: owner, providerId: 'microsoft', userId: owner, idToken: `header.${claims}.signature` })
+    const [removed, enabled] = await raceBeforeCommit(
+      () => removeEntraMapping(orgId, owner, id),
+      () => setEntraRequireMappedGroup(orgId, owner, true),
+    )
+    expect(removed.status).toBe('fulfilled')
+    expect(enabled).toMatchObject({ status: 'rejected', reason: { message: 'Add at least one group or app role mapping first.' } })
+    const [org] = await getDb().select().from(schema.orgs).where(eq(schema.orgs.id, orgId))
+    expect(org?.entraRequireMappedGroup).toBe(false)
+  })
+
+  it('cannot remove the last mapping while enabling mapped-group sign-in commits', async () => {
+    const { orgId, owner } = await team()
+    const group = crypto.randomUUID()
+    const { id } = await addEntraMapping(orgId, owner, { kind: 'group', value: group, role: 'owner' })
+    const claims = Buffer.from(JSON.stringify({ groups: [group] })).toString('base64url')
+    await getDb().insert(schema.account).values({ id: crypto.randomUUID(), accountId: owner, providerId: 'microsoft', userId: owner, idToken: `header.${claims}.signature` })
+    const [enabled, removed] = await raceBeforeCommit(
+      () => setEntraRequireMappedGroup(orgId, owner, true),
+      () => removeEntraMapping(orgId, owner, id),
+    )
+    expect(enabled.status).toBe('fulfilled')
+    expect(removed).toMatchObject({ status: 'rejected', reason: { message: expect.stringContaining('last mapping') } })
+    expect(await getDb().select().from(schema.entraRoleMappings).where(eq(schema.entraRoleMappings.id, id))).toHaveLength(1)
+  })
+
+  it.each(['entra', 'saml'] as const)('%s sign-in cannot restore membership while removal commits', async (provider) => {
+    const { orgId, owner, analyst } = await team()
+    const tid = crypto.randomUUID()
+    await getDb().update(schema.orgs).set({ entraTenantId: tid }).where(eq(schema.orgs.id, orgId))
+    const providerId = `race-${crypto.randomUUID()}`
+    await bindProviderToOrg(providerId, orgId, owner)
+    const [removed, signedIn] = await raceBeforeCommit(
+      () => removeMember(orgId, analyst, owner),
+      () => provider === 'entra' ? syncEntraSignIn(analyst, { tid }) : provisionSamlUser({ user: { id: analyst }, provider: { providerId } }),
+    )
+    expect(removed.status).toBe('fulfilled')
+    if (provider === 'entra') {
+      expect(signedIn).toMatchObject({ status: 'rejected', reason: new EntraSignInRefused('MEMBER_REMOVED') })
+    } else {
+      expect(signedIn).toEqual({ status: 'fulfilled', value: null })
+    }
+    expect(await getDb().select().from(schema.orgMemberships).where(and(eq(schema.orgMemberships.orgId, orgId), eq(schema.orgMemberships.userId, analyst)))).toHaveLength(0)
+    expect(await getDb().select().from(schema.orgMemberRemovals).where(and(eq(schema.orgMemberRemovals.orgId, orgId), eq(schema.orgMemberRemovals.userId, analyst)))).toHaveLength(1)
+  })
+
+  it.each(['entra', 'saml'] as const)('removal wins after an earlier %s placement commits', async (provider) => {
+    const { orgId, owner, analyst } = await team()
+    const tid = crypto.randomUUID()
+    await getDb().update(schema.orgs).set({ entraTenantId: tid }).where(eq(schema.orgs.id, orgId))
+    const providerId = `race-${crypto.randomUUID()}`
+    await bindProviderToOrg(providerId, orgId, owner)
+    const [, removed] = await raceBeforeCommit(
+      () => provider === 'entra' ? syncEntraSignIn(analyst, { tid }) : provisionSamlUser({ user: { id: analyst }, provider: { providerId } }),
+      () => removeMember(orgId, analyst, owner),
+    )
+    expect(removed.status).toBe('fulfilled')
+    expect(await getDb().select().from(schema.orgMemberships).where(and(eq(schema.orgMemberships.orgId, orgId), eq(schema.orgMemberships.userId, analyst)))).toHaveLength(0)
+    expect(await getDb().select().from(schema.orgMemberRemovals).where(and(eq(schema.orgMemberRemovals.orgId, orgId), eq(schema.orgMemberRemovals.userId, analyst)))).toHaveLength(1)
   })
 
   it('claims and runs a due schedule exactly once across concurrent workers', async () => {
