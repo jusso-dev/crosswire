@@ -137,8 +137,59 @@ test('a second approver approves through a confirmation that names the target', 
     const confirm = page.getByRole('alertdialog')
     await expect(confirm).toContainText('Approve "[DEMO] Isolate demo-wks-001"?')
     await expect(confirm).toContainText('demo-wks-001')
-    // No default focus on Approve.
-    await expect(confirm.getByRole('button', { name: 'Cancel' })).toBeFocused()
+    // Confirmation owns the keyboard: no navigation, search, help or palette over it (#127).
+    const approvalUrl = page.url()
+    const approve = page.getByRole('button', { name: 'Approve…', exact: true })
+    const cancel = confirm.getByRole('button', { name: 'Cancel', exact: true })
+    await expect(cancel).toBeFocused()
+    for (const key of ['g', 'w', '/', 'Shift+Slash', 'Control+k', 'Meta+k']) {
+      await page.keyboard.press(key)
+      await expect(confirm).toBeVisible()
+      await expect(cancel).toBeFocused()
+      await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeHidden()
+      await expect(page.getByRole('heading', { name: 'Keyboard shortcuts' })).toBeHidden()
+    }
+    await page.waitForLoadState('networkidle')
+    await expect(page).toHaveURL(approvalUrl)
+
+    // Tab moves between dialog actions. At a boundary Chromium may focus browser chrome,
+    // represented by body, but must never reach a background control.
+    await page.keyboard.press('Tab')
+    await expect(confirm.getByRole('button', { name: /Approve demo-wks-001/ })).toBeFocused()
+    await page.keyboard.press('Shift+Tab')
+    await expect(cancel).toBeFocused()
+    for (const key of ['Shift+Tab', 'Shift+Tab', 'Tab', 'Tab', 'Tab']) {
+      await page.keyboard.press(key)
+      expect(await page.evaluate(() => {
+        const active = document.activeElement
+        return active === document.body || Boolean(active?.closest('dialog[open][role="alertdialog"]'))
+      })).toBe(true)
+    }
+    await cancel.focus()
+    await approve.evaluate((button) => button.focus())
+    await expect(cancel).toBeFocused() // native modal prevents focus moving into the background
+    await page.keyboard.press('Escape')
+    await expect(confirm).toBeHidden()
+    await expect(approve).toBeFocused()
+
+    // Enter on a newly opened confirmation cancels. Explicit Cancel also restores the opener.
+    await approve.click()
+    await expect(cancel).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect(confirm).toBeHidden()
+    await expect(approve).toBeFocused()
+    const reject = page.getByRole('button', { name: 'Reject…', exact: true })
+    await reject.click()
+    await expect(cancel).toBeFocused()
+    await cancel.click()
+    await expect(reject).toBeFocused()
+
+    // Palette still opens once confirmation has closed, including from a text field.
+    await page.getByPlaceholder('Why you approve or reject').focus()
+    await page.keyboard.press('ControlOrMeta+k')
+    await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await approve.click()
     await confirm.getByRole('button', { name: /Approve demo-wks-001/ }).click()
     await expect(page.getByLabel('Action context').getByText('Approved', { exact: true })).toBeVisible()
     await approverCtx.close()
