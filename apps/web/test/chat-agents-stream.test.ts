@@ -56,13 +56,14 @@ describe('chat relay (#128)', () => {
 
 /**
  * A tiny stand-in for `document.querySelector` over a list of elements, enough to check the open
- * dialog selector: tag, `open` and `role`. There is no DOM in this test set-up.
+ * dialog selector: tag, `open`, `role` and `aria-modal`. There is no DOM in this test set-up.
  */
-type FakeEl = { tag: string; open?: boolean; role?: string }
+type FakeEl = { tag: string; open?: boolean; role?: string; ariaModal?: string }
 function fakeDoc(els: FakeEl[]) {
   const matches = (el: FakeEl, part: string) => {
     if (part === 'dialog[open]') return el.tag === 'dialog' && Boolean(el.open)
     if (part === '[role="alertdialog"]:not(dialog)') return el.role === 'alertdialog' && el.tag !== 'dialog'
+    if (part === '[role="dialog"][aria-modal="true"]:not(dialog)') return el.role === 'dialog' && el.ariaModal === 'true' && el.tag !== 'dialog'
     throw new Error(`fakeDoc does not know the selector part ${part}`)
   }
   return { querySelector: (sel: string) => (els.some((el) => sel.split(',').some((part) => matches(el, part.trim()))) ? ({} as Element) : null) }
@@ -99,11 +100,14 @@ describe('keyboard shortcuts (#168, #177)', () => {
     expect(shouldHandleShortcut(key(), doc('dialog[open]'))).toBe(false)
     expect(shouldHandleShortcut(key(), doc('[role="alertdialog"]'))).toBe(false)
     expect(shouldHandleShortcut(key(), fakeDoc([{ tag: 'dialog', role: 'alertdialog', open: true }]))).toBe(false)
+    expect(shouldHandleShortcut(key(), fakeDoc([{ tag: 'aside', role: 'dialog', ariaModal: 'true' }]))).toBe(false)
   })
 
   it('still works when a confirmation is mounted but closed', () => {
     // ConfirmDialog keeps its <dialog role="alertdialog"> in the page while closed.
     expect(shouldHandleShortcut(key(), fakeDoc([{ tag: 'dialog', role: 'alertdialog', open: false }, { tag: 'dialog' }]))).toBe(true)
+    expect(shouldHandleShortcut(key(), fakeDoc([{ tag: 'dialog', role: 'dialog', ariaModal: 'true', open: false }]))).toBe(true)
+    expect(shouldHandleShortcut(key(), fakeDoc([{ tag: 'aside', role: 'dialog', ariaModal: 'false' }]))).toBe(true)
   })
 
   it('stores the single-key setting, on by default, and survives a storage error', () => {

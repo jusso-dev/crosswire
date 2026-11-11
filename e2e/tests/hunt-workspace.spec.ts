@@ -27,8 +27,21 @@ test('hunt workspace: keyboard, inspector, filters, history, theme', async ({ pa
   await expect(grid).toBeVisible()
   await expect(page.getByText(/Showing a stored sample of 20 of 1500 rows/)).toBeVisible()
 
+  // The named scroll region is keyboard reachable; modified arrow keys stay with the browser.
+  const region = page.getByRole('region', { name: 'Result rows', exact: true })
+  await region.focus()
+  await expect(region).toBeFocused()
+  const firstRow = grid.locator('tbody tr').first()
+  await firstRow.focus()
+  const beforeInspecting = page.url()
+  for (const key of ['Control+ArrowDown', 'Meta+ArrowDown', 'Alt+ArrowDown']) {
+    await page.keyboard.press(key)
+    await expect(firstRow).toBeFocused()
+    await expect(page).toHaveURL(beforeInspecting)
+    await expect(page.getByRole('complementary', { name: 'Row 1' })).toBeHidden()
+  }
+
   // Keyboard: Enter opens the inspector, j/k move from the grid or the inspector.
-  await grid.locator('tbody tr').first().focus()
   await page.keyboard.press('Enter')
   const inspector = page.getByRole('complementary', { name: 'Row 1' })
   await expect(inspector).toBeVisible()
@@ -39,6 +52,24 @@ test('hunt workspace: keyboard, inspector, filters, history, theme', async ({ pa
   await expect(page.getByRole('complementary', { name: 'Row 3' })).toBeVisible()
   await page.keyboard.press('k')
   await expect(page).toHaveURL(/row=1/)
+
+  // Modified inspector keys cannot step rows. Both desktop close paths return focus to the row.
+  const secondRow = grid.locator('tbody tr[data-index="1"]')
+  const secondInspector = page.getByRole('complementary', { name: 'Row 2' })
+  await secondInspector.getByRole('heading', { name: 'Row 2' }).focus()
+  for (const key of ['Control+ArrowDown', 'Meta+ArrowDown', 'Alt+ArrowDown']) {
+    await page.keyboard.press(key)
+    await expect(page).toHaveURL(/row=1/)
+    await expect(secondInspector).toBeVisible()
+  }
+  await page.keyboard.press('Escape')
+  await expect(secondInspector).toBeHidden()
+  await expect(secondRow).toBeFocused()
+  await page.keyboard.press('Enter')
+  await secondInspector.getByRole('button', { name: 'Close inspector' }).click()
+  await expect(secondInspector).toBeHidden()
+  await expect(secondRow).toBeFocused()
+  await page.keyboard.press('Enter')
 
   // Raw JSON view of the record, with provenance.
   await page.getByRole('button', { name: 'Raw JSON' }).click()
@@ -112,6 +143,16 @@ test('hunt workspace: at 1000px the inspector overlay keeps focus and the backgr
   await grid.locator('tbody tr').first().click()
   const dialog = page.getByRole('dialog', { name: 'Row 1' })
   await expect(dialog.getByRole('heading', { name: 'Row 1' })).toBeFocused()
+  const inspectingUrl = page.url()
+  // An ARIA modal owns the keyboard just like a native confirmation (#163).
+  for (const key of ['g', 'w', '/', 'Shift+Slash', 'Control+k', 'Meta+k']) {
+    await page.keyboard.press(key)
+    await expect(dialog.getByRole('heading', { name: 'Row 1' })).toBeFocused()
+    await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeHidden()
+    await expect(page.getByRole('heading', { name: 'Keyboard shortcuts' })).toBeHidden()
+  }
+  await page.waitForLoadState('networkidle')
+  await expect(page).toHaveURL(inspectingUrl)
   for (let i = 0; i < 12; i++) {
     await page.keyboard.press('Tab')
     await expect(dialog.locator(':focus')).toHaveCount(1)
