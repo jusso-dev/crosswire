@@ -11,7 +11,7 @@ import { loadPolicy } from './policy'
 import { approvedDirectiveBlock } from './directives'
 import { prepareModelMessages } from './egress'
 import { appendRunEvent, finishRun, getRun, recordRunOutput, reconcileStaleRuns, requestRunCancel, startRun } from './runs'
-import { acquireRunSlot, checkBudget, claimDailyBudget, outputCharCap, providerFallback, recordObservedUsage, recordUnmeasuredUsage, releaseDailyClaim, releaseOnce, usageFromChunk } from './budgets'
+import { acquireRunSlot, checkBudget, claimDailyBudget, outputCharCap, providerFallback, recordObservedUsage, recordUnmeasuredUsage, releaseDailyClaim, releaseOnce, usageFromChunk, usageFromChunks } from './budgets'
 import { sha256 } from './canonical'
 import { SQUAD_SDK_PIN } from './squad-sdk'
 
@@ -290,7 +290,9 @@ export class LlmAgentRuntime implements AgentRuntime {
       )
       const answer = typeof text === 'string' ? text : ((text as { text?: string }).text ?? '')
       if (run) {
-        await settleUsage({ orgId: input.orgId, runId: run.id, agentKey: agent, provider: env().MODEL_PROVIDER, model: described.model ?? described.provider, usage: usageFromChunk(text), assistantText: answer })
+        // chat({ stream: false }) returns { text, chunks }. The counts are on the RUN_FINISHED chunks (#185).
+        const chunks = typeof text === 'object' && text && 'chunks' in text && Array.isArray(text.chunks) ? text.chunks : []
+        await settleUsage({ orgId: input.orgId, runId: run.id, agentKey: agent, provider: env().MODEL_PROVIDER, model: described.model ?? described.provider, usage: usageFromChunks(chunks), assistantText: answer })
         settled = true
       }
       if (run) await recordRunOutput(run.id, input.orgId, 'assistant', answer)

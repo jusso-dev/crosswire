@@ -411,6 +411,21 @@ export function usageFromChunk(chunk: unknown): { inputTokens: number; outputTok
   return { inputTokens, outputTokens }
 }
 
+/**
+ * Add up the counts from every RUN_FINISHED in a finished turn (#185). Each one carries a single model
+ * call's usage, so a turn with tool calls has several. Null when none of them has a count.
+ */
+export function usageFromChunks(chunks: Iterable<unknown>): { inputTokens: number; outputTokens: number } | null {
+  let total: { inputTokens: number; outputTokens: number } | null = null
+  for (const chunk of chunks) {
+    if (!chunk || typeof chunk !== 'object' || (chunk as { type?: unknown }).type !== 'RUN_FINISHED') continue
+    const usage = usageFromChunk(chunk)
+    if (!usage) continue
+    total = { inputTokens: (total?.inputTokens ?? 0) + usage.inputTokens, outputTokens: (total?.outputTokens ?? 0) + usage.outputTokens }
+  }
+  return total
+}
+
 function integer(value: unknown) {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : null
 }
