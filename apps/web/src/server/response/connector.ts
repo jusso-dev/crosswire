@@ -3,7 +3,7 @@ import { getDb } from '../db/client'
 import { orgResponseConnectors } from '../db/schema'
 import { decryptSecret, encryptSecret } from '../lib/crypto'
 import { writeAudit } from '../audit'
-import { entraSts, type Sts, type TokenResult } from '../hunting/broker'
+import { FingerprintedTokenCache, connectorFingerprint, entraSts, type Sts } from '../hunting/broker'
 
 /**
  * Response connector (#88). A second, separate Entra app per org with only response permissions
@@ -85,6 +85,8 @@ export async function upsertResponseConnector(
     clientSecretEnc: keepSecret ? existing.clientSecretEnc : input.clientSecret ? encryptSecret(input.clientSecret) : null,
     clientSecretRef: keepSecret ? existing.clientSecretRef : input.clientSecret ? null : (input.clientSecretRef ?? null),
     playbookAllowlist: playbooks,
+    // Set explicitly on insert and on conflict: other processes key their token cache on it (#194).
+    updatedAt: new Date(),
   }
   await getDb().insert(orgResponseConnectors).values(values).onConflictDoUpdate({ target: orgResponseConnectors.orgId, set: values })
   responseTokenBroker().clear(orgId)
@@ -98,27 +100,30 @@ export async function upsertResponseConnector(
   })
 }
 
-/** Response-only token broker. Separate cache and credential source from the hunting broker. */
+/**
+ * Response-only token broker. Separate cache and credential source from the hunting broker. The
+ * connector is read on every call and the cache is keyed on its fingerprint (#194), so another
+ * replica never keeps acting with the old app or tenant after the response connector changes.
+ */
 export class ResponseTokenBroker {
-  private cache = new Map<string, TokenResult>()
+  private cache = new FingerprintedTokenCache()
   constructor(private readonly sts: Sts = entraSts) {}
 
   async acquire({ orgId, scope }: { orgId: string; scope: string }): Promise<string> {
-    const key = `${orgId}|${scope}`
-    const hit = this.cache.get(key)
-    if (hit && hit.expiresAt - 60_000 > Date.now()) return hit.accessToken
     const c = await getResponseConnector(orgId)
     if (!c) throw new ResponseNotConfiguredError()
+    const fingerprint = connectorFingerprint(c)
+    const hit = this.cache.get(orgId, scope, fingerprint)
+    if (hit) return hit
     const clientSecret = resolveResponseSecret(c)
     if (!clientSecret) throw new ResponseNotConfiguredError()
     const token = await this.sts.clientCredentials({ tenantId: c.tenantId, clientId: c.clientId, clientSecret, scope })
-    this.cache.set(key, token)
+    this.cache.set(orgId, scope, fingerprint, token)
     return token.accessToken
   }
 
   clear(orgId?: string) {
-    if (!orgId) return this.cache.clear()
-    for (const k of this.cache.keys()) if (k.startsWith(`${orgId}|`)) this.cache.delete(k)
+    this.cache.clear(orgId)
   }
 }
 
