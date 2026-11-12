@@ -1,9 +1,11 @@
-import { Link, Outlet, createFileRoute, redirect, useRouter, useRouterState } from '@tanstack/react-router'
+import { Link, Outlet, createFileRoute, getRouteApi, redirect, useRouter, useRouterState } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import { fetchSession } from '../fns/session'
 import { authClient } from '../lib/auth-client'
 import { Mark } from '../components/ui'
 import { ThemeToggle } from '../components/ThemeToggle'
+import { TimeZonePicker } from '../components/TimeZonePicker'
+import { timeZoneLabel } from '../shared/timezone'
 import { CommandLayer, PaletteButton, ShortcutsButton } from '../components/CommandPalette'
 import { getDisplayTimeZone, humanise } from '../components/format'
 import { RouteError } from '../components/errors'
@@ -65,6 +67,9 @@ function rememberedSearch(str: string | undefined) {
   return Object.keys(out).length ? (out as never) : undefined
 }
 
+/** Display settings from the root loader: the chosen zone and the organisation default (#161). */
+const rootApi = getRouteApi('__root__')
+
 const ROLE_HINT: Record<string, string> = {
   owner: 'can manage people and settings, and approve actions',
   approver: 'can approve or reject actions',
@@ -73,6 +78,7 @@ const ROLE_HINT: Record<string, string> = {
 
 function AppShell() {
   const { session } = Route.useRouteContext()
+  const appConfig = rootApi.useLoaderData()
   const timeZone = getDisplayTimeZone()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   // The resolved location updates only after the destination's loader finishes and it renders.
@@ -196,7 +202,7 @@ function AppShell() {
           ))}
         </nav>
         <div className="cw-rail-foot">
-          <span>Times shown in {humanise(timeZone)}</span>
+          <span>Times shown in {timeZoneLabel(timeZone)}</span>
           <a href="https://github.com/jusso-dev/crosswire/blob/main/docs/day-1-operator-playbook.md" target="_blank" rel="noreferrer noopener">
             First-day guide<span className="cw-sr-only"> (opens in a new tab)</span>
           </a>
@@ -217,6 +223,7 @@ function AppShell() {
               <ShortcutsButton />
             </span>
             <ThemeToggle />
+            <TimeZonePicker preference={appConfig.preference} defaultTimeZone={appConfig.defaultTimeZone} />
             <span>{session.user.email}</span>
             <button
               className="cw-btn"

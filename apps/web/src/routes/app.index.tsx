@@ -342,7 +342,7 @@ function Emerging({ d }: { d: Data }) {
               <span className="cw-list-title">
                 <FeedLink url={i.url} title={i.title} />
               </span>
-              <span className="cw-list-side">{i.status === 'live' ? 'Live incident' : i.status ? `Status: ${i.status}` : 'Status not reported'}</span>
+              <span className="cw-list-side">{i.status === 'live' ? 'Live incident' : i.status ? `Status: ${humanise(i.status)}` : 'Status not reported'}</span>
               <span className="cw-list-meta">
                 {i.product && <span>{i.product}</span>}
                 {i.cveIds.slice(0, 2).map((c) => (

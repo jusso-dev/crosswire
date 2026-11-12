@@ -1,4 +1,4 @@
-import { fmtUsd, utcMidnightLocal } from '../../components/format'
+import { fmtUsd, resetPhrase } from '../../components/format'
 import { Notice } from '../../components/ui'
 import type { fetchAgentDesk } from '../../fns/agents'
 import { budgetPercent } from './helpers'
@@ -16,7 +16,7 @@ export function BudgetMeter({ budget, isOwner }: { budget: Desk['budget']; isOwn
   const used = budgetPercent(budget.inputTokens, budget.dailyInputCap)
   const refusing = budget.refusing
   const tone = refusing === 'tokens' ? 'danger' : used >= 80 ? 'warn' : 'ok'
-  const reset = `${utcMidnightLocal()} (midnight UTC)`
+  const reset = resetPhrase()
   const raise = (setting: string) => (isOwner ? `You can raise it in the deployment settings (${setting}).` : 'Ask an owner if you need it raised.')
   return (
     <section aria-labelledby="budget-title" className="cw-usage">

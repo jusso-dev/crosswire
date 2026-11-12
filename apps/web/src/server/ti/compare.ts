@@ -28,7 +28,7 @@ export interface CompareResult {
 
 const ATTRIBUTION: Record<string, string> = {
   'pwn.watch': 'Source: pwn.watch (https://pwn.watch)',
-  'cisa-kev': 'Source: CISA Known Exploited Vulnerabilities catalog',
+  'cisa-kev': 'Source: CISA Known Exploited Vulnerabilities catalogue',
   nvd: 'Source: NIST NVD',
   'cve.watch': 'Source: cve.watch',
 }
