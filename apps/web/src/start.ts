@@ -32,8 +32,13 @@ const requestLogger = createMiddleware({ type: 'request' }).server(async ({ requ
   // Per-request CSP nonce. src/router.tsx reads it from the global start context and hands it to
   // the router (`ssr.nonce`), which stamps it on every script it renders.
   const cspNonce = sec.newCspNonce()
+  // Display zone for this request (#161): the person's cw-tz cookie when valid, else APP_TIMEZONE.
+  // Read by components/format.ts during server rendering, so concurrent requests never share a zone.
+  const { env } = await import('./server/env')
+  const { resolveTimeZone, timeZoneFromCookieHeader } = await import('./shared/timezone')
+  const displayTimeZone = resolveTimeZone(timeZoneFromCookieHeader(request.headers.get('cookie')), env().APP_TIMEZONE)
   try {
-    const result = await next({ context: { cspNonce } })
+    const result = await next({ context: { cspNonce, displayTimeZone } })
     const status = result.response.status
     const isHttps = url.protocol === 'https:' || request.headers.get('x-forwarded-proto') === 'https'
     try {

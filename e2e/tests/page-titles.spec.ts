@@ -18,7 +18,8 @@ test('main pages update their browser title during navigation and history', asyn
     [/^Hunts$/, 'Hunts'],
     [/^Ask an agent$/, 'Ask an agent'],
     [/^Approvals/, 'Approvals'],
-    [/^Agents$/, 'Agents'],
+    // The link name gains a badge ("Agents 1 running") while another spec has a run going.
+    [/^Agents(\s|$)/, 'Agents'],
     [/^Settings$/, 'Settings'],
   ]
   for (const [link, expected] of destinations) {

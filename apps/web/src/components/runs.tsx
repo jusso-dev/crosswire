@@ -117,7 +117,7 @@ export function StopRunButton({ runId, target = 'this run', onStopped, size = 's
       setMsg('Stop requested. The run stops shortly.')
       // Only a real stop marks the reply as stopped; a finished or refused run does not.
       onStopped?.()
-    } else setMsg(`Nothing to stop. This run already ${r.status === 'interrupted' ? 'stopped' : r.status}.`)
+    } else setMsg(`Nothing to stop. This run has already ${r.status === 'interrupted' ? 'stopped' : runStatusView(r.status).word.toLowerCase()}.`)
     // In chat the stream itself ends when the server stops the run, so no reload is needed there.
     if (refresh) await router.invalidate().catch(() => {})
   }

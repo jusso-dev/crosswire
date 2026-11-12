@@ -31,7 +31,7 @@ function dayOf(d: Date) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: getDisplayTimeZone(), year: 'numeric', month: '2-digit', day: '2-digit' }).format(d)
 }
 
-/** Groups by calendar day in APP_TIMEZONE: Today, the previous 7 days, Older. */
+/** Groups by calendar day in the display zone (the person's choice or APP_TIMEZONE): Today, the previous 7 days, Older. */
 function groupThreads(threads: Thread[]) {
   const today = dayOf(new Date())
   const daysAgo = (iso: string) => (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${dayOf(new Date(iso))}T00:00:00Z`)) / 86_400_000

@@ -11,8 +11,9 @@ const THEME_BOOT = `(function(){try{var t=localStorage.getItem('cw-theme');if(t!
 const FAVICON = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path d="M3 9c8 0 9 14 26 14" fill="none" stroke="#1d2533" stroke-width="3" stroke-linecap="round"/><path d="M3 23c8 0 9-14 26-14" fill="none" stroke="#2f6bf0" stroke-width="3" stroke-linecap="round"/><circle cx="16" cy="16" r="4" fill="#fff" stroke="#2f6bf0" stroke-width="3"/></svg>')}`
 
 export const Route = createRootRoute({
-  // Display time zone (APP_TIMEZONE, default Australia/Sydney). Loader data is dehydrated from the
-  // server, so the client does not refetch it during hydration.
+  // Display time zone: the person's choice (cw-tz cookie, #161) or APP_TIMEZONE. Loader data is
+  // dehydrated from the server, so the client does not refetch it during hydration. Changing the
+  // choice sets the cookie and invalidates the router, which reruns this loader.
   loader: async () => {
     const cfg = await fetchAppConfig()
     setDisplayTimeZone(cfg.timeZone)

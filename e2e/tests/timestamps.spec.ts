@@ -33,3 +33,32 @@ test('exact freshness times are available by keyboard and touch (#161)', async (
   expect(overflow.px, `Overflow from ${overflow.culprit}`).toBeLessThanOrEqual(1)
   await info.attach('exact-time-narrow', { body: await page.screenshot(), contentType: 'image/png' })
 })
+
+test('a person can show times in UTC or their own zone, and it survives a reload (#161)', async ({ page, context }) => {
+  await page.goto('/app/hunts')
+  await page.waitForLoadState('networkidle')
+  const picker = page.getByLabel('Time zone')
+  await expect(picker).toHaveValue('')
+  const freshness = page.locator('.cw-fresh').first()
+  const iso = await freshness.locator('time').first().getAttribute('datetime')
+  const exactIn = (timeZone: string) =>
+    new Date(iso!).toLocaleString('en-AU', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', timeZoneName: 'short', timeZone })
+
+  await picker.selectOption('UTC')
+  await expect(picker).toBeEnabled()
+  await expect(freshness.locator('time').first()).toHaveAttribute('title', exactIn('UTC'))
+  await expect(page.locator('.cw-rail-foot')).toContainText('Times shown in UTC')
+
+  await page.reload()
+  await page.waitForLoadState('networkidle')
+  await expect(page.getByLabel('Time zone')).toHaveValue('UTC')
+  await expect(page.locator('.cw-fresh').first().locator('time').first()).toHaveAttribute('title', exactIn('UTC'))
+
+  await page.getByLabel('Time zone').selectOption('America/New_York')
+  await expect(page.locator('.cw-fresh').first().locator('time').first()).toHaveAttribute('title', exactIn('America/New_York'))
+
+  // Back to the organisation default clears the cookie.
+  await page.getByLabel('Time zone').selectOption('')
+  await expect(page.locator('.cw-fresh').first().locator('time').first()).toHaveAttribute('title', exactIn(TEST_TIME_ZONE))
+  expect((await context.cookies()).some((c) => c.name === 'cw-tz')).toBe(false)
+})
