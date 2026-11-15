@@ -5,7 +5,7 @@
 # same commit gets the same base layers (#156); Dependabot (docker ecosystem) proposes digest bumps.
 # Written out in full, not through an ARG, so Dependabot can read and update it.
 
-FROM node:24-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS base
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS base
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH CI=true
 RUN corepack enable
 WORKDIR /repo
@@ -21,7 +21,7 @@ RUN pnpm --filter web build
 # Production-only dependency tree for the runtime stage.
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm --filter web deploy --prod --legacy /out
 
-FROM node:24-bookworm-slim@sha256:01d566e8d94d8c619591d78652babfccd3c6992a3dffa9ed5ab39e11cf6c70e9 AS runtime
+FROM node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54 AS runtime
 ENV NODE_ENV=production PORT=3000 HOST=0.0.0.0 SQUAD_DIR=/app/.squad MIGRATIONS_DIR=/app/drizzle
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*
