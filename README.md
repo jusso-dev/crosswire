@@ -6,6 +6,13 @@ The product idea builds on [bradygaster/squad](https://github.com/bradygaster/sq
 
 > **Status:** v1 (Phases 0–8 plus Later) is implemented; the v1 ship gate (#84) waits on a walk-through on a real Azure deploy. **v2** ([milestone](https://github.com/jusso-dev/crosswire/milestone/11)) adds live Sentinel/Defender executors with rollback-as-proposal, approved scheduled hunts, Teams/Slack notifications, parallel Lead fan-out and hunt reports. The [milestones](https://github.com/jusso-dev/crosswire/milestones) and [issues](https://github.com/jusso-dev/crosswire/issues) are the build plan (Phases 0–8 plus Later).
 
+## Part of the Microsoft security logging stack
+
+1. **[microsoft-security-logging-guide](https://github.com/jusso-dev/microsoft-security-logging-guide)** — What to log: product-by-product guidance on getting high-value security logs from Microsoft products into Microsoft Sentinel and Microsoft Defender XDR.
+2. **[soc-ready-logging](https://github.com/jusso-dev/soc-ready-logging)** — OWASP and ACSC ISM aligned security logging guidance, schemas, wrappers, starter SIEM detections and agent skills for custom software vendors.
+3. **[Bower](https://github.com/jusso-dev/Bower)** — Self-hosted security log normaliser and Australian privacy gateway that selects, redacts, buffers and proves delivery of custom-app and multi-cloud events into Microsoft Sentinel.
+4. **[blueboard](https://github.com/jusso-dev/blueboard)** and **[crosswire](https://github.com/jusso-dev/crosswire)** *(you are here)* — Open-source SOC workspaces on top of those logs: **blueboard** is a shared incident board where AI agents and SOC analysts detect, enrich, contain and eradicate together over MCP with human-approved actions; **crosswire** is a Copilot and Squad agent kit for hunting in Defender XDR and Sentinel, cross-comparing threat intel and proposing gated response.
+
 ## Who it is for
 
 - SOC, MDR, and Microsoft security teams that hunt in Defender XDR and Sentinel
