@@ -36,17 +36,17 @@ importers:
         specifier: ^5.3.0
         version: 5.3.0
       '@tanstack/ai':
-        specifier: 1.4.0
-        version: 1.4.0(@opentelemetry/api@1.10.0)(zod@4.6.7)
+        specifier: 1.5.0
+        version: 1.5.0(@opentelemetry/api@1.10.0)(zod@4.6.7)
       '@tanstack/ai-client':
         specifier: 1.1.0
         version: 1.1.0(@opentelemetry/api@1.10.0)(zod@4.6.7)
       '@tanstack/ai-openai':
         specifier: 1.1.1
-        version: 1.1.1(@tanstack/ai@1.4.0(@opentelemetry/api@1.10.0)(zod@4.6.7))(ws@8.22.1)(zod@4.6.7)
+        version: 1.1.1(@tanstack/ai@1.5.0(@opentelemetry/api@1.10.0)(zod@4.6.7))(ws@8.22.1)(zod@4.6.7)
       '@tanstack/ai-react':
         specifier: 1.0.2
-        version: 1.0.2(@opentelemetry/api@1.10.0)(@tanstack/ai@1.4.0(@opentelemetry/api@1.10.0)(zod@4.6.7))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
+        version: 1.0.2(@opentelemetry/api@1.10.0)(@tanstack/ai@1.5.0(@opentelemetry/api@1.10.0)(zod@4.6.7))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
       '@tanstack/react-router':
         specifier: 1.170.46
         version: 1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -60,8 +60,8 @@ importers:
         specifier: 0.45.4
         version: 0.45.4(@electric-sql/pglite@0.5.16)(@opentelemetry/api@1.10.0)(@types/pg@8.15.6)(kysely@0.29.9)(postgres@4.1.1)(sql.js@1.15.2)
       nodemailer:
-        specifier: 10.5.0
-        version: 10.5.0
+        specifier: 10.6.0
+        version: 10.6.0
       postgres:
         specifier: 4.1.1
         version: 4.1.1
@@ -671,45 +671,54 @@ packages:
     resolution: {integrity: sha512-tJZPpxAD5pC66SqgrsLEXgFLuXwZbwV8gLY8VOxvbi/YSfCRIVo5i9ouTfWRqLRaXfl0VqoeXdZZ97OBkQXL/A==}
     cpu: [arm64]
     os: [darwin]
+    deprecated: 'Legacy platform dependency. Migrate the parent SDK to @microsoft/copilot-sdk. Migration docs: https://github.com/microsoft/copilot-sdk/blob/main/docs/v2-breaking-changes.md'
 
   '@github/copilot-sdk-darwin-x64@1.0.29':
     resolution: {integrity: sha512-k/yW518h4tYi/9gCcfuk3mfvEqgIkvtDH/ZHN2qY0lvaVqdWoikJDNvXi78z60CD6F8Acp4OWNkbH11nqw0pGA==}
     cpu: [x64]
     os: [darwin]
+    deprecated: 'Legacy platform dependency. Migrate the parent SDK to @microsoft/copilot-sdk. Migration docs: https://github.com/microsoft/copilot-sdk/blob/main/docs/v2-breaking-changes.md'
 
   '@github/copilot-sdk-linux-arm64@1.0.29':
     resolution: {integrity: sha512-Lrh5C/IbCfMq0h4t60INVrba9QVpJQvEmwFjYv6N/g3510efxJUGsih87tYOEEW2y5eVKFi2Yz9NzYti28FVag==}
     cpu: [arm64]
     os: [linux]
+    deprecated: 'Legacy platform dependency. Migrate the parent SDK to @microsoft/copilot-sdk. Migration docs: https://github.com/microsoft/copilot-sdk/blob/main/docs/v2-breaking-changes.md'
 
   '@github/copilot-sdk-linux-x64@1.0.29':
     resolution: {integrity: sha512-9NOSDpiByMJN+cF1du54XNdAv6r27MntTS+WH02jbosD21V/FnXMO8+czkKfRMkM6EqSU6Rn7ur/Fn+dN/5okw==}
     cpu: [x64]
     os: [linux]
+    deprecated: 'Legacy platform dependency. Migrate the parent SDK to @microsoft/copilot-sdk. Migration docs: https://github.com/microsoft/copilot-sdk/blob/main/docs/v2-breaking-changes.md'
 
   '@github/copilot-sdk-linuxmusl-arm64@1.0.29':
     resolution: {integrity: sha512-YBEIIau2vc/Ge8KsdsCNCuTET+/96w6gOwbMD9h9HRhwBAcR6pl/wVExbJPeBy8/6/ClS+1HzHRDp+hvYioAJw==}
     cpu: [arm64]
     os: [linux]
+    deprecated: 'Legacy platform dependency. Migrate the parent SDK to @microsoft/copilot-sdk. Migration docs: https://github.com/microsoft/copilot-sdk/blob/main/docs/v2-breaking-changes.md'
 
   '@github/copilot-sdk-linuxmusl-x64@1.0.29':
     resolution: {integrity: sha512-9Ozj1/6ThDzZ7kCrWce6o9LsdwglXSGXFihAjc8XXpiuCyw7QntVB86GPpfZZxzcsxQFznDnJm+EtUzfNyutSQ==}
     cpu: [x64]
     os: [linux]
+    deprecated: 'Legacy platform dependency. Migrate the parent SDK to @microsoft/copilot-sdk. Migration docs: https://github.com/microsoft/copilot-sdk/blob/main/docs/v2-breaking-changes.md'
 
   '@github/copilot-sdk-win32-arm64@1.0.29':
     resolution: {integrity: sha512-YkZLU4/AjjgNpdMVbgECExW1O9SnxaAd/Tu7wZiYQNhxRcrHaLyyTKQ9ChNOUIFSQzF4giTkXDGqdg4T4uHa1w==}
     cpu: [arm64]
     os: [win32]
+    deprecated: 'Legacy platform dependency. Migrate the parent SDK to @microsoft/copilot-sdk. Migration docs: https://github.com/microsoft/copilot-sdk/blob/main/docs/v2-breaking-changes.md'
 
   '@github/copilot-sdk-win32-x64@1.0.29':
     resolution: {integrity: sha512-kThYn4vyZ57WySZjzF0FJQTBjOgdxhaiIJbo9bfPdP0zptJvGzAhoxko4qkAoJjrVOK9R5u7cVydQ0IALrnCkA==}
     cpu: [x64]
     os: [win32]
+    deprecated: 'Legacy platform dependency. Migrate the parent SDK to @microsoft/copilot-sdk. Migration docs: https://github.com/microsoft/copilot-sdk/blob/main/docs/v2-breaking-changes.md'
 
   '@github/copilot-sdk@1.0.29':
     resolution: {integrity: sha512-oyK/z1CdXAUwx8j84CFD0h90ZNuzOD7eYMrSsqpjAhk3OBcBGWytvt1z3zgDsK069XflP5FcgsGpxFYMXbxG+w==}
     engines: {node: ^20.19.0 || >=22.12.0}
+    deprecated: 'Deprecated: migrate to @microsoft/copilot-sdk. Migration docs: https://github.com/microsoft/copilot-sdk/blob/main/docs/v2-breaking-changes.md'
 
   '@grpc/grpc-js@1.14.7':
     resolution: {integrity: sha512-W4W/fcBMGRVtG6dW2c7cw2mnpS3hvbBd+oQXjh2iYFTZDk1JJmcNqkM5KSaPubQpamlUUurrlb7G1s9NJeERmQ==}
@@ -1481,6 +1490,9 @@ packages:
   '@tanstack/ai-event-client@1.0.1':
     resolution: {integrity: sha512-IURnn4oRKJbtbAuC3GcXRcuKHi8DrPmwuACqaTq6ApSGlyJyHhq0NTksKEmzql2Z12+njFjsKSXG9c7UbSHTxg==}
 
+  '@tanstack/ai-event-client@1.1.0':
+    resolution: {integrity: sha512-g4ctAzbvC1CuAjjTnp8iH5hlnFzVPJybVhuRMItUb5ISC4bQsrhUyhrsZ4QHW1brEpaAhfdss+MpdWux+7glUw==}
+
   '@tanstack/ai-openai@1.1.1':
     resolution: {integrity: sha512-IzieUf8FmAaZOVV4ADM3PrL0W7GQ+SPB1BOLHU/EG+cVGcg+KuunlflNrjJJB7pcvJTZUoOhgBn2ljn8NH4mdw==}
     peerDependencies:
@@ -1503,8 +1515,8 @@ packages:
   '@tanstack/ai-utils@1.1.0':
     resolution: {integrity: sha512-li47v/794azVLourgteS/+jjH/ZF+cIp/3RMVA1VybtKAFiMy3ZGxREU10OzfUghMzYLdfpK2l6ahvlWxNVHug==}
 
-  '@tanstack/ai@1.4.0':
-    resolution: {integrity: sha512-3f0D9gFCk8LUe9qAPCsRkjlXU2bqbIKKMGGo9P6Q6O0vR+5/0N/J3x1J2QWYY8L3LNvJliZBDnutudEIRzNU8w==}
+  '@tanstack/ai@1.5.0':
+    resolution: {integrity: sha512-GyiXuJGRgLsvo+OepnaY/ggTEf2VOB8iR+8pXvOsiqYL2Y9i5uXklrF51HnGFrzrlr/pG8AnxZ4voDJ+Svb6cg==}
     engines: {node: '>=18'}
     peerDependencies:
       '@opentelemetry/api': '>=1.9.0'
@@ -2821,8 +2833,8 @@ packages:
     resolution: {integrity: sha512-6li2QanLsAXpIH2R6j77MzRyvOyrvdTqlKtO4CgBdHGNvN99ZZfyxszHc5o5+IZBWD5u6Hzwg83JoGXmqZNG9Q==}
     engines: {node: '>=18'}
 
-  nodemailer@10.5.0:
-    resolution: {integrity: sha512-L/w/HH5MqpzMDuZD7fQdt/+KqymuvrpaApaIjAH2XA3ILePwlcvXCVVvP75xVrXCEt2ggK2marrrHHFB5Qu0kA==}
+  nodemailer@10.6.0:
+    resolution: {integrity: sha512-jWanL7D9GD3jvUDYKmoC5rWTiG8MnBgnN2yV68bgMKip1zUJhiSTyz7Eg+18y8sk5OvdVDzws5nZK5arSI4f5Q==}
     engines: {node: '>=20.0.0'}
 
   obug@3.0.0:
@@ -4894,7 +4906,7 @@ snapshots:
 
   '@tanstack/ai-client@1.1.0(@opentelemetry/api@1.10.0)(zod@4.6.7)':
     dependencies:
-      '@tanstack/ai': 1.4.0(@opentelemetry/api@1.10.0)(zod@4.6.7)
+      '@tanstack/ai': 1.5.0(@opentelemetry/api@1.10.0)(zod@4.6.7)
       '@tanstack/ai-event-client': 1.0.1
       '@tanstack/ai-utils': 1.1.0
       '@tanstack/store': 0.11.2
@@ -4906,11 +4918,15 @@ snapshots:
     dependencies:
       '@tanstack/devtools-event-client': 0.4.4
 
-  '@tanstack/ai-openai@1.1.1(@tanstack/ai@1.4.0(@opentelemetry/api@1.10.0)(zod@4.6.7))(ws@8.22.1)(zod@4.6.7)':
+  '@tanstack/ai-event-client@1.1.0':
     dependencies:
-      '@tanstack/ai': 1.4.0(@opentelemetry/api@1.10.0)(zod@4.6.7)
+      '@tanstack/devtools-event-client': 0.4.4
+
+  '@tanstack/ai-openai@1.1.1(@tanstack/ai@1.5.0(@opentelemetry/api@1.10.0)(zod@4.6.7))(ws@8.22.1)(zod@4.6.7)':
+    dependencies:
+      '@tanstack/ai': 1.5.0(@opentelemetry/api@1.10.0)(zod@4.6.7)
       '@tanstack/ai-utils': 1.1.0
-      '@tanstack/openai-base': 1.0.2(@tanstack/ai@1.4.0(@opentelemetry/api@1.10.0)(zod@4.6.7))(ws@8.22.1)(zod@4.6.7)
+      '@tanstack/openai-base': 1.0.2(@tanstack/ai@1.5.0(@opentelemetry/api@1.10.0)(zod@4.6.7))(ws@8.22.1)(zod@4.6.7)
       openai: 7.53.0(ws@8.22.1)(zod@4.6.7)
     transitivePeerDependencies:
       - '@aws-sdk/credential-provider-node'
@@ -4921,9 +4937,9 @@ snapshots:
       - ws
       - zod
 
-  '@tanstack/ai-react@1.0.2(@opentelemetry/api@1.10.0)(@tanstack/ai@1.4.0(@opentelemetry/api@1.10.0)(zod@4.6.7))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
+  '@tanstack/ai-react@1.0.2(@opentelemetry/api@1.10.0)(@tanstack/ai@1.5.0(@opentelemetry/api@1.10.0)(zod@4.6.7))(@types/react@19.3.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)':
     dependencies:
-      '@tanstack/ai': 1.4.0(@opentelemetry/api@1.10.0)(zod@4.6.7)
+      '@tanstack/ai': 1.5.0(@opentelemetry/api@1.10.0)(zod@4.6.7)
       '@tanstack/ai-client': 1.1.0(@opentelemetry/api@1.10.0)(zod@4.6.7)
       '@tanstack/markdown': 0.0.13(react@19.3.1)
       '@types/react': 19.3.0
@@ -4937,12 +4953,12 @@ snapshots:
 
   '@tanstack/ai-utils@1.1.0': {}
 
-  '@tanstack/ai@1.4.0(@opentelemetry/api@1.10.0)(zod@4.6.7)':
+  '@tanstack/ai@1.5.0(@opentelemetry/api@1.10.0)(zod@4.6.7)':
     dependencies:
       '@ag-ui/core': 1.0.0(zod@4.6.7)
       '@cfworker/json-schema': 4.1.6
       '@standard-schema/spec': 1.1.0
-      '@tanstack/ai-event-client': 1.0.1
+      '@tanstack/ai-event-client': 1.1.0
       '@tanstack/ai-utils': 1.1.0
       fast-json-patch: 3.1.1
       partial-json: 0.1.7
@@ -4959,9 +4975,9 @@ snapshots:
     optionalDependencies:
       react: 19.3.1
 
-  '@tanstack/openai-base@1.0.2(@tanstack/ai@1.4.0(@opentelemetry/api@1.10.0)(zod@4.6.7))(ws@8.22.1)(zod@4.6.7)':
+  '@tanstack/openai-base@1.0.2(@tanstack/ai@1.5.0(@opentelemetry/api@1.10.0)(zod@4.6.7))(ws@8.22.1)(zod@4.6.7)':
     dependencies:
-      '@tanstack/ai': 1.4.0(@opentelemetry/api@1.10.0)(zod@4.6.7)
+      '@tanstack/ai': 1.5.0(@opentelemetry/api@1.10.0)(zod@4.6.7)
       '@tanstack/ai-utils': 1.1.0
       openai: 7.53.0(ws@8.22.1)(zod@4.6.7)
     transitivePeerDependencies:
@@ -6460,7 +6476,7 @@ snapshots:
 
   node-releases@2.0.63: {}
 
-  nodemailer@10.5.0: {}
+  nodemailer@10.6.0: {}
 
   obug@3.0.0: {}
 
